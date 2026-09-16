@@ -1,5 +1,6 @@
 #include "otsdaq-mu2e/FEInterfaces/DTCFrontEndInterface.h"
 #include "dtcInterfaceLib/EVBErrorStatus.h"
+#include "otsdaq/FECore/FEVInterfacesManager.h"
 #include "otsdaq/FECore/MakeInterface.h"
 #include "otsdaq/Macros/BinaryStringMacros.h"
 // #include "otsdaq/Macros/InterfacePluginMacros.h"
@@ -696,12 +697,14 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::EnableDTCLink),
 	    std::vector<std::string>{"Target Link (Default = -1 := all links)",
-	                             "Set Link RX/TX Enable (Default := false)"},
+	                             "Set Link Tx Enable (Default := false)",
+	                             "Set Link Rx Enable (Default := false)"},
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
-	    "This FE Macro enables/disables a target DTC Link 0-7 (i.e., 0-5 ROCs, 6 CFO, 7 "
-	    "EVB).");
+	    "This FE Macro independently sets Tx and Rx enable for a target DTC Link 0-7 "
+	    "(i.e., 0-5 ROCs, 6 CFO, 7 EVB), or all links with -1. "
+	    "Both settings are applied; false disables the corresponding direction.");
 
 	registerFEMacroFunction(
 	    "Reset ALL (CFO/ROC/EVB) DTC Links",
@@ -835,9 +838,9 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
-	    "Display all EVB counters: config (0x9154/0x9158), pipeline word counters "
-	    "(0x9200-0x920C), per-DTC BRAM stats (types 0x0-0x8 via 0x9160), "
-	    "and 10GbE RX packet errors (0x9590).");
+	    "Display all EVB counters: config (0x9154/0x9158), error/status flags (0x9370), "
+	    "pipeline word counters (0x9200-0x920C), and per-DTC BRAM stats "
+	    "(types 0x0-0x8 via 0x9160).");
 
 	//------------------
 
@@ -6213,19 +6216,18 @@ void DTCFrontEndInterface::EnableDTCLink(__ARGS__)
 {
 	DTCLib::DTC_Link_ID linkIndex = DTCLib::DTC_Link_ID(
 	    __GET_ARG_IN__("Target Link (Default = -1 := all links)", uint8_t, -1 /* ALL */));
-	bool enable = __GET_ARG_IN__("Set Link RX/TX Enable (Default := false)", bool, false);
+	bool enableTx = __GET_ARG_IN__("Set Link Tx Enable (Default := false)", bool, false);
+	bool enableRx = __GET_ARG_IN__("Set Link Rx Enable (Default := false)", bool, false);
 
 	__FE_COUTV__(linkIndex);
-	__FE_COUTV__(enable);
+	__FE_COUTV__(enableTx);
+	__FE_COUTV__(enableRx);
 
 	for(DTC_Link_ID link = (linkIndex == DTC_Link_ID(-1) ? DTC_Link_ID(0) : linkIndex);
 	    link <= (linkIndex == DTC_Link_ID(-1) ? DTC_Link_ID(7) : linkIndex);
 	    ++link)
 	{
-		if(enable)
-			getDTC()->EnableLink(link);
-		else
-			getDTC()->DisableLink(link);
+		getDTC()->EnableLink(link, DTCLib::DTC_LinkEnableMode(enableTx, enableRx));
 	}
 
 	__SET_ARG_OUT__("Result", getDTC()->FormatLinkEnable());
@@ -6534,6 +6536,10 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	  << std::setw(8) << evbErrorStatus << std::dec << std::setfill(' ') << "\n";
 	for(const auto& line : DTCLib::DecodeEVBErrorStatus(evbErrorStatus))
 		o << "  " << line << "\n";
+	const bool rxStatsCollision = (evbErrorStatus >> 7) & 1u;
+	if(rxStatsCollision)
+		o << "  *** Bit 7 set: bit 1 and the Rx-type BRAM rows/rates on this DTC are unreliable "
+		     "(RX bookkeeping collision). Use word-count parity for loss. ***\n";
 	o << "\n";
 
 	o << "=== EVB Pipeline Counters ===\n";
@@ -6578,6 +6584,8 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	  << dtc->ReadEVBBufferManagerOutputWords(reg9208) << "\n";
 	o << "  DMA output words:             " << dtc->ReadEVBDMAOutputWords(reg9208)
 	  << "\n";
+	o << "  Tx Packets sent:              "
+	  << dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType_TxPacketCount, 0) << "\n";
 	o << "\n";
 
 	uint8_t startNode = dtc->ReadEVBStartNode();
@@ -6618,6 +6626,13 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	EVBBRAMSnapshot currentSnapshot;
 	currentSnapshot.timestamp = std::chrono::steady_clock::now();
 
+	auto isRxCollisionRow = [](uint8_t type) {
+		return type == DTCLib::DTC_EVBStatsType_RxCount ||
+		       type == DTCLib::DTC_EVBStatsType_RxMissingPacketCount ||
+		       type == DTCLib::DTC_EVBStatsType_RxByteCount ||
+		       type == DTCLib::DTC_EVBStatsType_RxIdleCount;
+	};
+
 	for(uint8_t t = 0; t < NUM_BRAM_TYPES; ++t)
 	{
 		bool rawCount = (t == DTCLib::DTC_EVBStatsType_RxMissingPacketCount);
@@ -6644,6 +6659,8 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 				o << "  " << std::setw(10) << std::right << std::fixed
 				  << std::setprecision(1) << (val / 1000.0);
 		}
+		if(rxStatsCollision && isRxCollisionRow(t))
+			o << "  <- collision; ignore";
 		o << "\n";
 	}
 	o << "  * = raw count or packed hex value (not K)\n";
@@ -6654,7 +6671,7 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		{
 			auto it = currentSnapshot.values.find(
 			    (uint16_t(DTCLib::DTC_EVBStatsType_RxCount) << 8) | (uint8_t)selfSlot);
-			if(it != currentSnapshot.values.end() && it->second != 0)
+			if(!rxStatsCollision && it != currentSnapshot.values.end() && it->second != 0)
 				o << "  *** WARNING: RxCount[self MAC#" << macAddr << "] raw = " << it->second
 				  << " (expected 0: a DTC never receives from itself) ***\n";
 		}
@@ -6737,6 +6754,8 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 				else
 					o << "  " << std::setw(10) << std::right << "N/A";
 			}
+			if(rxStatsCollision && isRxCollisionRow(t))
+				o << "  <- collision; ignore";
 			o << "\n";
 		}
 		o << "  * = raw /s (not K/s)\n";
@@ -6746,12 +6765,82 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 
 	evbBRAMSnapshot_ = currentSnapshot;
 
-	o << "=== EVB 10GbE SERDES ===\n";
-	o << "  RX Packet Error Count (0x9590): " << dtc->ReadEVBSERDESRXPacketErrorCounter()
-	  << "\n";
+	o << getEVBWireParity();
 
 	__SET_ARG_OUT__("Result", "\n" + o.str());
 }  //end EVBStatus()
+
+//========================================================================
+// Wire loss = words the sender staged for the wire minus words the receiver took off it.
+// Exact per direction only with two DTCs; with more, the sum over all DTCs must be zero.
+std::string DTCFrontEndInterface::getEVBWireParity(void)
+{
+	std::stringstream o;
+	o << "=== EVB Wire Parity (wc_ddr_to_tx sender - wc_gbe_rx receiver, mod 65536) ===\n";
+	if(!parentInterfaceManager_)
+	{
+		o << "  (no interface manager; cannot see peer DTCs)\n";
+		return o.str();
+	}
+
+	struct Node
+	{
+		std::string uid;
+		int         mac;
+		uint16_t    ddrToTx, gbeRx;
+	};
+	std::vector<Node> nodes;
+	for(const auto& fe : parentInterfaceManager_->getFEInterfaces())
+	{
+		auto* dtcFE = dynamic_cast<DTCFrontEndInterface*>(fe.second.get());
+		if(!dtcFE || !dtcFE->thisDTC_)
+			continue;
+		try
+		{
+			DTCLib::DTC* d = dtcFE->thisDTC_;
+			nodes.push_back({fe.first, d->ReadEVBLocalMACAddress(),
+			                 d->ReadEVBDDRToTXWords(), d->ReadEVBGBERXWords()});
+		}
+		catch(const std::exception& e)
+		{
+			o << "  " << fe.first << ": read error: " << e.what() << "\n";
+		}
+	}
+
+	uint16_t txSum = 0, rxSum = 0;
+	for(const auto& n : nodes)
+	{
+		o << "  " << std::setw(8) << std::left << n.uid << " MAC 0x" << std::hex << n.mac
+		  << std::dec << "  ddr_to_tx=" << std::setw(5) << n.ddrToTx
+		  << "  gbe_rx=" << std::setw(5) << n.gbeRx << "\n";
+		txSum = static_cast<uint16_t>(txSum + n.ddrToTx);
+		rxSum = static_cast<uint16_t>(rxSum + n.gbeRx);
+	}
+	if(nodes.size() == 2)
+	{
+		for(size_t s = 0; s < 2; ++s)
+		{
+			const Node& snd  = nodes[s];
+			const Node& rcv  = nodes[1 - s];
+			uint16_t    lost = static_cast<uint16_t>(snd.ddrToTx - rcv.gbeRx);
+			o << "  " << snd.uid << " -> " << rcv.uid << ": " << (lost ? "LOSS " : "OK   ")
+			  << lost << " words";
+			if(lost && lost % 186 == 0)
+				o << "  (= " << lost / 186 << " full 186-word TX packet" << (lost > 186 ? "s" : "") << ")";
+			o << "\n";
+		}
+	}
+	else if(nodes.size() > 2)
+	{
+		uint16_t lost = static_cast<uint16_t>(txSum - rxSum);
+		o << "  all senders - all receivers: " << (lost ? "LOSS " : "OK   ") << lost
+		  << " words (per-direction needs exactly 2 DTCs)\n";
+	}
+	else
+		o << "  (only " << nodes.size() << " DTC visible in this FESupervisor)\n";
+	o << "\n";
+	return o.str();
+}  //end getEVBWireParity()
 
 // //========================================================================
 // void DTCFrontEndInterface::ResetEVBLinkRx(__ARGS__)
@@ -7643,6 +7732,20 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			kv("Average Data Rate")
 			    << ((double)threadStruct->totalSubeventBytesTransferred_) / (ns / 1000.0)
 			    << " MB/s" << __E__;
+			uint64_t eventsReleased = threadStruct->thisDTC_->GetEVBEventsReleased();
+			double durationSec = ns / 1000.0 / 1000.0 / 1000.0;
+			uint8_t numDest = threadStruct->thisDTC_->GetEVBNumSources();
+			double evtRate = eventsReleased / durationSec;
+			double fullRate = eventsReleased * numDest / durationSec;
+			kv("Average Event Rate")
+			    << std::fixed << std::setprecision(1)
+			    << (evtRate >= 1000.0 ? evtRate / 1000.0 : evtRate)
+			    << (evtRate >= 1000.0 ? " kEvents/s" : " Events/s") << __E__;
+			kv("Extrapolated Full EVB Event Rate")
+			    << std::fixed << std::setprecision(1)
+			    << (fullRate >= 1000.0 ? fullRate / 1000.0 : fullRate)
+			    << (fullRate >= 1000.0 ? " kEvents/s" : " Events/s")
+			    << " (x" << (int)numDest << " nodes)" << __E__;
 		}
 		else
 			statusSs << "Data Transfer Duration too short to establish data rate."
@@ -7729,19 +7832,26 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
                 statusSs << "\t " << std::left << std::setw(hwW) << (label + ":") << std::right;
                 return statusSs;
 			};
-			hw("wc_roc_input") << threadStruct->thisDTC_->ReadEVBROCInputWords() << __E__;
-			hw("wc_self_transfer") << threadStruct->thisDTC_->ReadEVBSelfTransferWords() << __E__;
-			hw("wc_gbe_ddr_fifo") << threadStruct->thisDTC_->ReadEVBDDRFIFOWriteWords() << __E__;
-			hw("wc_ddr_to_tx") << threadStruct->thisDTC_->ReadEVBDDRToTXWords() << __E__;
-			hw("wc_gbe_rx") << threadStruct->thisDTC_->ReadEVBGBERXWords() << __E__;
-			hw("wc_bufmgr_output") << threadStruct->thisDTC_->ReadEVBBufferManagerOutputWords() << __E__;
-			hw("wc_output_stream") << threadStruct->thisDTC_->ReadEVBDMAOutputWords() << __E__;
+			// read each counter once so the printed values and the check agree
+			uint16_t rocIn    = threadStruct->thisDTC_->ReadEVBROCInputWords();
 			uint16_t selfXfer = threadStruct->thisDTC_->ReadEVBSelfTransferWords();
+			uint16_t ddrFifo  = threadStruct->thisDTC_->ReadEVBDDRFIFOWriteWords();
+			uint16_t ddrToTx  = threadStruct->thisDTC_->ReadEVBDDRToTXWords();
+			uint16_t gbeRx    = threadStruct->thisDTC_->ReadEVBGBERXWords();
 			uint16_t bufmgr   = threadStruct->thisDTC_->ReadEVBBufferManagerOutputWords();
 			uint16_t output   = threadStruct->thisDTC_->ReadEVBDMAOutputWords();
-			statusSs << "\t Zero-sum check (output == self + bufmgr): " << output << " == "
-			         << selfXfer << " + " << bufmgr << " = " << (selfXfer + bufmgr)
-			         << " => " << (output == (selfXfer + bufmgr) ? "PASS" : "MISMATCH") << __E__;
+			hw("wc_roc_input") << rocIn << __E__;
+			hw("wc_self_transfer") << selfXfer << __E__;
+			hw("wc_gbe_ddr_fifo") << ddrFifo << __E__;
+			hw("wc_ddr_to_tx") << ddrToTx << __E__;
+			hw("wc_gbe_rx") << gbeRx << __E__;
+			hw("wc_bufmgr_output") << bufmgr << __E__;
+			hw("wc_output_stream") << output << __E__;
+			// counters are 16-bit and wrap, so the sum must be compared mod 2^16
+			uint16_t expected = static_cast<uint16_t>(selfXfer + bufmgr);
+			statusSs << "\t Zero-sum check (output == (self + bufmgr) mod 65536): "
+			         << (output == expected ? "PASS" : "MISMATCH") << " <= " << output
+			         << " == (" << selfXfer << " + " << bufmgr << ") mod 65536 = " << expected << __E__;
 		}
 		catch(const std::exception& e)
 		{
@@ -8866,6 +8976,18 @@ void DTCFrontEndInterface::BufferTest_detached(__ARGS__)
 	// // outSs << "Reading back: " << (doNotReadBack?"false":"true") << __E__;
 	// if(fp) outSs << "Binary data file saved at: " << filename << __E__;
 	// outSs << ostr.str();
+
+	if(bufferTestThreadStruct_ && bufferTestThreadStruct_->inEVBMode_)
+	{
+		try
+		{
+			outSs << getEVBWireParity();
+		}
+		catch(const std::exception& e)
+		{
+			outSs << "EVB Wire Parity: " << e.what() << __E__;
+		}
+	}
 
 	if(TTEST(1))
 		std::cout << "Untruncated output: \n"

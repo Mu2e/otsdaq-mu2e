@@ -181,6 +181,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
   private:
 	void createROCs(void);
 	void registerFEMacros(void);
+	std::string getEVBWireParity(void);
 
 	int                     timing_chain_first_substep_ = -1;
 	bool                    rtfPhaseEdgeRetried_        = false;
