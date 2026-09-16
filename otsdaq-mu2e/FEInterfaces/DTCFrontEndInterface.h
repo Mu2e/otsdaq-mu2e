@@ -105,19 +105,19 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 
 		DTCLib::DTC* thisDTC_;
 
-		bool                  inSubeventMode_   = false;
-		bool                  inEVBMode_        = false;
-		uint8_t               evbNumDestNodes_  = 1;
-		std::set<uint8_t>     evbSourcesSeenForTag_;  // EVB mode: source DTC IDs that have delivered the current expected tag
-		bool                  evbTagSynced_     = false;  // EVB mode: expected tag has been synced to the first subevent seen after (re)start
-		std::map<uint8_t /*source_dtc_id*/, std::vector<uint64_t>> evbRocFragmentsBySource_;    // EVB mode: ROC fragment counts per source DTC, per link
+		bool                                                       inSubeventMode_  = false;
+		bool                                                       inEVBMode_       = false;
+		uint8_t                                                    evbNumDestNodes_ = 1;
+		std::set<uint8_t>                                          evbSourcesSeenForTag_;        // EVB mode: source DTC IDs that have delivered the current expected tag
+		bool                                                       evbTagSynced_ = false;        // EVB mode: expected tag has been synced to the first subevent seen after (re)start
+		std::map<uint8_t /*source_dtc_id*/, std::vector<uint64_t>> evbRocFragmentsBySource_;     // EVB mode: ROC fragment counts per source DTC, per link
 		std::map<uint8_t /*source_dtc_id*/, std::vector<uint64_t>> evbRocPayloadBytesBySource_;  // EVB mode: ROC payload bytes per source DTC, per link
-		bool                  activeMatch_      = false;
-		std::atomic<uint64_t> expectedEventTag_ = -1, nextEventWindowTag_ = -1;
-		bool                  saveBinaryData_                  = false;
-		bool                  saveSubeventHeadersToBinaryData_ = false;
-		bool                  doNotResetCounters_              = false;
-		bool                  skipBy32_                        = false;
+		bool                                                       activeMatch_      = false;
+		std::atomic<uint64_t>                                      expectedEventTag_ = -1, nextEventWindowTag_ = -1;
+		bool                                                       saveBinaryData_                  = false;
+		bool                                                       saveSubeventHeadersToBinaryData_ = false;
+		bool                                                       doNotResetCounters_              = false;
+		bool                                                       skipBy32_                        = false;
 
 		std::atomic<uint64_t>                      eventsCount_;
 		std::atomic<uint64_t>                      subeventsCount_;
@@ -134,7 +134,6 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		std::atomic<uint64_t> evbTotalDataWordsRead_{0};
 		std::atomic<uint64_t> evbCloseFillersCount_{0};
 		std::atomic<uint64_t> evbFramingErrors_{0};
-
 
 		uint64_t                                           totalSubeventBytesTransferred_;
 		std::chrono::time_point<std::chrono::steady_clock> transferStartTime_,
@@ -179,8 +178,8 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	    bufferTestThreadStruct_;
 
   private:
-	void createROCs(void);
-	void registerFEMacros(void);
+	void        createROCs(void);
+	void        registerFEMacros(void);
 	std::string getEVBWireParity(void);
 
 	int                     timing_chain_first_substep_ = -1;
@@ -200,7 +199,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 
 	struct EVBBRAMSnapshot
 	{
-		std::chrono::steady_clock::time_point timestamp;
+		std::chrono::steady_clock::time_point         timestamp;
 		std::map<uint16_t /*type<<8|slot*/, uint32_t> values;
 	};
 	EVBBRAMSnapshot evbBRAMSnapshot_;
