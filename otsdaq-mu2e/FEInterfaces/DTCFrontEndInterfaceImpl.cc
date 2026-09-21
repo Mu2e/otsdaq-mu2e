@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "otsdaq-mu2e/FEInterfaces/DTCFrontEndInterface.h"
 #include "otsdaq/FECore/MakeInterface.h"
 #include "otsdaq/Macros/BinaryStringMacros.h"
@@ -2232,8 +2233,10 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 								          << (hasRealROCs ? "3b" : "3a") << " ["
 								          << real_roc_flow_reason_ << "]"
 								          << " edge fix FAILED:"
-								          << " CFO Rx Clock Markers <= 1000 (" << markers
-								          << ") after 3s wait — CFO clock not arriving.";
+								          << " No CFO Clock Markers arriving."
+								          << " Waiting for 1000 clock markers, "
+								          << markers << " clock markers received"
+								          << " after 3s wait.";
 								__FE_SS_THROW__;
 							}
 						}
@@ -5241,6 +5244,7 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 
 	const std::string& rocUID         = feMacroIt->second.first;
 	const std::string& rocFEMacroName = feMacroIt->second.second;
+    __SET_PCT_DONE__(0);
 
 	if(rocUID == "")
 	{
@@ -5271,8 +5275,7 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 
 		FEVInterface::frontEndMacroConstArgs_t inputArgs = inputArgs_inst;
 
-		// Capture per-ROC outputs independently so each ROC macro can run in parallel
-		// and the combined result can still be assembled in a deterministic order.
+		// Capture each ROC result while running one complete ROC at a time.
 		struct RocMacroLaunchResult
 		{
 			DTCLib::DTC_Link_ID                                linkID;
@@ -5281,8 +5284,7 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 			std::string                                        error;
 		};
 
-		// First collect the matching ROCs in map iteration order. That lets the
-		// execution happen concurrently while preserving the original output ordering.
+		// Collect targets, then execute them in ascending hardware link order.
 		std::vector<RocMacroLaunchResult> selectedRocs;
 		for(auto& roc : rocs_)
 		{
@@ -5332,36 +5334,31 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 			   PLOTLY_PLOT /* defined at FEVinterface.h */)  //leave built-in arg as DEFAULT
 				argOut.second = "";
 
-		// Launch one worker thread per selected ROC FE Macro.
-		std::vector<std::thread> launchThreads;
-		launchThreads.reserve(selectedRocs.size());
-		for(auto& selectedRoc : selectedRocs)
-		{
-			launchThreads.emplace_back([&inputArgs, &rocFEMacroName, &selectedRoc]() {
-				try
-				{
-					__COUT__ << "ROC FE Macro thread start. rocLink="
-					         << selectedRoc.linkID << " macro=" << rocFEMacroName
-					         << " threadid=" << std::this_thread::get_id() << __E__;
-					selectedRoc.roc->runSelfFrontEndMacro(
-					    rocFEMacroName, inputArgs, selectedRoc.outputArgs);
-					__COUT__ << "ROC FE Macro thread done. rocLink=" << selectedRoc.linkID
-					         << " macro=" << rocFEMacroName
-					         << " threadid=" << std::this_thread::get_id() << __E__;
-				}
-				catch(const std::exception& e)
-				{
-					selectedRoc.error = e.what();
-				}
-				catch(...)
-				{
-					selectedRoc.error = "Unknown exception while running ROC FE Macro.";
-				}
-			});
-		}
-
-		for(auto& launchThread : launchThreads)
-			launchThread.join();
+        std::sort(selectedRocs.begin(), selectedRocs.end(),
+                  [](const auto& a, const auto& b) { return a.linkID < b.linkID; });
+        for(size_t rocIndex = 0; rocIndex < selectedRocs.size(); ++rocIndex)
+        {
+            auto& selectedRoc = selectedRocs[rocIndex];
+            __COUT__ << "ROC FE Macro start. rocLink=" << selectedRoc.linkID
+                     << " macro=" << rocFEMacroName << __E__;
+            // Fail immediately on an exception. Do not start another ROC after
+            // an uncompleted hardware transaction on this DTC.
+            try {
+                selectedRoc.roc->runSelfFrontEndMacro(
+                    rocFEMacroName, inputArgs, selectedRoc.outputArgs,
+                    [this, rocIndex, total = selectedRocs.size()](unsigned int percent) {
+                        __SET_PCT_DONE__(std::min<size_t>(99, (100 * rocIndex + percent) / total));
+                    });
+            } catch(const std::exception& e) {
+                selectedRoc.error = e.what();
+                break;
+            } catch(...) {
+                selectedRoc.error = "Unknown exception while running ROC FE Macro.";
+                break;
+            }
+            __COUT__ << "ROC FE Macro done. rocLink=" << selectedRoc.linkID
+                     << " macro=" << rocFEMacroName << __E__;
+        }
 
 		for(const auto& selectedRoc : selectedRocs)
 			if(!selectedRoc.error.empty())
@@ -5372,7 +5369,7 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 				__FE_SS_THROW__;
 			}
 
-		// Merge per-ROC outputs after all threads complete, keeping the original
+		// Merge per-ROC outputs after sequential execution, keeping the original
 		// CSV/array formatting expected by the FE Macro response.
 		bool arrayNotation = selectedRocs.size() > 1;
 		bool openedArray   = false;
@@ -5425,9 +5422,11 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 			__FE_SS_THROW__;
 		}
 
-		rocIt->second->runSelfFrontEndMacro(rocFEMacroName, argsIn, argsOut);
+        rocIt->second->runSelfFrontEndMacro(rocFEMacroName, argsIn, argsOut,
+            [this](unsigned int percent) { __SET_PCT_DONE__(std::min(99u, percent)); });
 	}
 
+    __SET_PCT_DONE__(100);
 }  // end RunROCFEMacro()
 
 //========================================================================
