@@ -26,6 +26,19 @@
 		function init() {
 			Debug.log("HardwareOverview init()");
 
+			// The Tracker desktop icon intentionally shares this legacy URL.
+			// Route only that named desktop window to the dedicated Tracker page.
+			try {
+				if (DesktopContent.getDesktopWindowTitle().trim() === "Tracker") {
+					window.location.replace(
+						"/WebPath/UserWebPath/WebGUI_tracker/html/Tracker.html");
+					return;
+				}
+			}
+			catch (e) {
+				Debug.log("Unable to inspect desktop title; continuing Hardware Overview: " + e);
+			}
+
 			DesktopContent.tooltip("Mu2e Hardware Overview",
 				"View configured FE interfaces, DTCs, and ROCs. " +
 				"Click a device to see settings and run macros.");

@@ -1052,7 +1052,8 @@ TransitionTypeInfo DBRunInfo::getTransitionTypeInfo(
 ///		               transition type_id (mapped from runStopType), and current timestamp.
 void DBRunInfo::updateRunInfo(unsigned int       runConditionID,
                               RunTransitionType  runTransitionType,
-                              const std::string& comment)
+                              const std::string& comment,
+                              const std::string& metadata)
 {
 	// For Mu2e, the runConditionID is the run number (for now!)
 	unsigned int runNumber = runConditionID;
@@ -1111,14 +1112,32 @@ void DBRunInfo::updateRunInfo(unsigned int       runConditionID,
 				__SS_THROW__;
 			}
 
+			bool discardRun = false;
+			if(!metadata.empty())
+			{
+				try
+				{
+					auto j = nlohmann::json::parse(metadata);
+					if(j.contains("discardRun"))
+						discardRun = j["discardRun"].get<bool>();
+				}
+				catch(const nlohmann::json::exception& e)
+				{
+					__COUT_WARN__ << "Failed to parse metadata JSON: " << e.what()
+					              << __E__;
+				}
+			}
+
 			std::ostringstream endCommentQueryStream;
-			endCommentQueryStream << "INSERT INTO " << dbSchema_ << ".run_end_info("
-			                      << "run_number, "
-			                      << "comment, "
-			                      << "create_time) "
-			                      << "VALUES ("
-			                      << boost::numeric_cast<long int>(runNumber) << ","
-			                      << escapedComment << ",CURRENT_TIMESTAMP);";
+			endCommentQueryStream
+			    << "INSERT INTO " << dbSchema_ << ".run_end_info("
+			    << "run_number, "
+			    << "comment, "
+			    << "discard_run, "
+			    << "create_time) "
+			    << "VALUES (" << boost::numeric_cast<long int>(runNumber) << ","
+			    << escapedComment << "," << (discardRun ? "TRUE" : "NULL")
+			    << ",CURRENT_TIMESTAMP);";
 
 			std::string endCommentQuery = endCommentQueryStream.str();
 			PGresult*   endCommentRes   = PQexec(runInfoDbConn_, endCommentQuery.c_str());

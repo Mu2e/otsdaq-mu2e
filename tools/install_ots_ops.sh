@@ -19,7 +19,7 @@ SPACK_SCRIPT_NAME="mu2e-quick-spack-start.sh"
 CONFIG_REPO="git@github.com:Mu2e/otsdaq_mu2e_config.git"
 SECRETS_DIR="$HOME/.secrets"
 
-SUBSYSTEMS=("shift" "trigger" "cfo" "calo" "crv" "stm" "dcs" "tracker")
+SUBSYSTEMS=("shift" "trigger" "cfo" "calo" "crv" "stm" "dcs" "dqm" "tracker")
 
 # ==========================================
 # Workspace Setup
@@ -41,7 +41,14 @@ echo "Cloning otsdaq-mu2e-config..."
 set +e
 git clone "$CONFIG_REPO" otsdaq-mu2e-config
 CLONE_STATUS=$?
-set -e # Re-enable exit-on-error
+set +e # Leave exit-on-error off; later commands may return non-zero benignly
+
+if [ $CLONE_STATUS -eq 0 ]; then
+    cd otsdaq-mu2e-config
+    git fetch --all --quiet
+    git checkout mu2e/ots_ops
+    cd ..
+fi
 
 if [ $CLONE_STATUS -ne 0 ]; then
     echo ""
@@ -74,7 +81,17 @@ chmod +x "$SPACK_SCRIPT_NAME"
 unset SPACK_ROOT
 
 echo "Running Spack setup (this may take a while)..."
-./"$SPACK_SCRIPT_NAME" --all-packages --develop --dev-only --dev-artdaq --dev-otsdaq
+(./"$SPACK_SCRIPT_NAME" --all-packages --develop --dev-only --artdaq --otsdaq)
+if [ $? -ne 0 ]; then
+    echo "ERROR: Spack setup failed!"
+    exit 1
+fi
+
+# ==========================================
+# Cleanup spack install artifacts
+# ==========================================
+echo "Cleaning up install artifacts..."
+rm -f setup-env.sh setup_spack_build_system_v0.28.sh fonts.* mu2e-quick-spack-start.sh mu2e-quick-spack-start.lastrun.sh
 
 # ==========================================
 # Configuration and Secrets
@@ -84,6 +101,8 @@ if [ -f "setup_ots.sh" ]; then
     mv setup_ots.sh old.setup_ots.sh
 fi
 ln -s otsdaq-mu2e-config/hwdev_spack_fast_setup_ots.sh setup_ots.sh
+ln -s otsdaq-mu2e-config/setup_kinit.sh kinit_setup.sh
+ln -s ../otsdaq-mu2e-config/status.sh srcs/status.sh
 
 # Check for secrets, warn if missing
 echo "Checking for database setup secrets..."
@@ -97,6 +116,21 @@ else
     echo "Link: https://mu2e-docdb.fnal.gov/cgi-bin/sso/RetrieveFile?docid=50596"
     read -p "Press Enter to continue once the files are in the current directory, or Ctrl+C to abort..."
 fi
+
+if [ -f "$SECRETS_DIR/ecl_setup_ots.sh" ]; then
+    cp "$SECRETS_DIR/ecl_setup_ots.sh" ./
+fi
+
+# ==========================================
+# Switch repos to mu2e/ots_ops and rebuild
+# ==========================================
+echo "Switching repos to mu2e/ots_ops where ahead of develop..."
+cd srcs
+bash status.sh --checkout
+cd ..
+
+echo "Rebuilding with mu2e/ots_ops changes..."
+bash -ic "source setup_ots.sh cfo && mb"
 
 # ==========================================
 # Subsystem Processing
@@ -113,6 +147,21 @@ for subsystem in "${SUBSYSTEMS[@]}"; do
     cp otsdaq-mu2e-config/CoreTableInfoNames.dat "$USER_DATA/ServiceData/"
     cp "otsdaq-mu2e-config/Data_${subsystem}/ServiceData/ActiveTableGroups.cfg" "$USER_DATA/ServiceData/ActiveTableGroups.cfg"
     ln -sf "../../otsdaq-mu2e-config/webPortTranslation.dat" "$USER_DATA/ServiceData/webPortTranslation.dat"
+
+    # Copy security.dat
+    SECURITY_SRC="otsdaq-mu2e-config/Data_${subsystem}/ServiceData/OtsWizardData/security.dat"
+    if [ -f "$SECURITY_SRC" ]; then
+        mkdir -p "$USER_DATA/ServiceData/OtsWizardData/"
+        cp "$SECURITY_SRC" "$USER_DATA/ServiceData/OtsWizardData/"
+    fi
+
+    # Copy login data for shift subsystem
+    if [ "$subsystem" == "shift" ]; then
+        mkdir -p "$USER_DATA/ServiceData/LoginData/HashesData/"
+        mkdir -p "$USER_DATA/ServiceData/LoginData/UsersData/"
+        cp "otsdaq-mu2e-config/Data_shift/ServiceData/LoginData/HashesData/hashes.xml" "$USER_DATA/ServiceData/LoginData/HashesData/" 2>/dev/null
+        cp "otsdaq-mu2e-config/Data_shift/ServiceData/LoginData/UsersData/users.xml" "$USER_DATA/ServiceData/LoginData/UsersData/" 2>/dev/null
+    fi
 
     # Execute the DAQ setup inside a subshell `(...)`
     # This ensures that sourced environment variables don't pollute the next iteration

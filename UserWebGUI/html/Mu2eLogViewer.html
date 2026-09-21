@@ -1,0 +1,849 @@
+<!DOCTYPE HTML>
+<html lang="en">
+<head>
+	<title>Mu2e Log Viewer</title>
+
+	<link href='/WebPath/css/fonts.css?family=Inconsolata:400' rel='stylesheet' type='text/css'>
+	<link href='/WebPath/css/fonts.css?family=Comfortaa:700,400' rel='stylesheet' type='text/css'>
+	<link rel="stylesheet" type="text/css" href="/WebPath/UserWebPath/css/Mu2e.css">
+
+	<script type="text/JavaScript" src="/WebPath/js/Globals.js"></script>
+	<script type="text/JavaScript" src="/WebPath/js/Debug.js"></script>
+	<script type="text/JavaScript" src="/WebPath/js/DesktopContent.js"></script>
+	<script type="text/JavaScript" src="/WebPath/UserWebPath/js/Mu2e.js"></script>
+
+	<style>
+		body {
+			background-color: transparent;
+			font-family: 'Comfortaa', sans-serif;
+			margin: 0;
+			padding: 0;
+			overflow: hidden;
+		}
+
+		#searchInput { min-width: 150px; flex-grow: 1; max-width: 300px; }
+		#pauseBtn.paused { background: #f8d7da; border-color: #c00; color: #c00; }
+		.mu2e-log-entry:nth-child(odd) { background: rgba(0,0,0,0.03); }
+		.mu2e-log-entry:nth-child(even) { background: transparent; }
+	</style>
+
+	<script>
+	"use strict";
+
+	// =========================================================================
+	// Mu2e system configuration
+	// Each system maps to one ConsoleSupervisor on a known base port
+	// (ots_ops values). The offset is auto-detected from the serving port.
+	// =========================================================================
+	var SYSTEMS = {
+		"Trigger":  {port: 3045},
+		"Calo":     {port: 3025},
+		"CFO":      {port: 3095},
+		"Tracker":  {port: 3065},
+		"CRV":      {port: 3085},
+		"Shift":    {port: 3075},
+		"DQM":      {port: 5029},
+		"STM":      {port: 30351},
+		"DCS":      {port: 5019},
+	};
+
+	var SHIFT_BASE_PORT = 3075;
+
+	// Auto-detect port offset by comparing the serving gateway port
+	// against the known base ports (e.g. ots_trk uses offset 900).
+	var _portOffset = 0;
+	var _offsetApplied = false;
+
+	function applyPortOffset() {
+		if (_offsetApplied) return;
+
+		// Prefer the real server port from DesktopContent (works through tunnels)
+		var myPort = 0;
+		var source = "";
+		if (typeof DesktopContent !== "undefined" && DesktopContent._serverOrigin) {
+			var m = DesktopContent._serverOrigin.match(/:(\d+)/);
+			if (m) { myPort = parseInt(m[1]); source = "DesktopContent._serverOrigin"; }
+		}
+		// Fallback to window.location.port
+		if (!myPort) {
+			myPort = parseInt(window.location.port) || 0;
+			source = "window.location.port";
+		}
+		// Page is served from the Shift gateway; offset = serving port - Shift base port
+		_portOffset = myPort - SHIFT_BASE_PORT;
+		if (_portOffset < 0) _portOffset = 0;
+		console.log("[Mu2eLogViewer] Port offset: " + _portOffset + " (from " + source + "=" + myPort + ")");
+		if (_portOffset) {
+			for (var name in SYSTEMS)
+				SYSTEMS[name].port += _portOffset;
+		}
+		_offsetApplied = true;
+		if (_portOffset)
+			console.log("[Mu2eLogViewer] Applied offset " + _portOffset + " to all SYSTEMS ports");
+	}
+
+	var CONSOLE_LID = 260;
+
+	// =========================================================================
+	// Message field indices — must match ConsoleSupervisor JSON output order
+	// (same as Console.html)
+	// =========================================================================
+	var MSG_FIELDS = ["Level","Label","Source","Msg","Time","File","Line","Custom","Hostname","Count"];
+	var F_LEVEL    = 0,
+	    F_LABEL    = 1,
+	    F_SOURCE   = 2,
+	    F_MSG      = 3,
+	    F_TIME     = 4,
+	    F_FILE     = 5,
+	    F_LINE     = 6,
+	    F_CUSTOM   = 7,
+	    F_HOSTNAME = 8,
+	    F_COUNT    = 9;
+
+	// =========================================================================
+	// State
+	// =========================================================================
+	var _initDone        = false;
+	var _currentSystem   = "";
+	var _pollTimer       = 0;
+	var _lastUpdateCount = 0;
+	var _lastUpdateIndex = -1;
+	var _paused          = false;
+	var _scrollFollow    = true;
+	var _newestOnTop     = true;
+	var _totalMessages   = 0;
+	var _maxClientMessages = 2000;
+	var _REFRESH_IDLE    = 2000;
+	var _REFRESH_ACTIVE  = 500;
+	var _lastSearchQuery = "";
+
+	var _knownHostnames  = {};
+	var _knownSources    = {};
+	var _knownApps       = {};
+	var _hostnameShortMap = {};
+	var _knownHostList   = [];
+
+	var _filterStyleEls  = {};
+
+	// URL-parameter preselections: applied once when the dropdown first
+	// sees a matching value, then cleared so the user can change freely.
+	var _preselect = { source: null, node: null, app: null };
+
+	var _monthArr = ["Jan","Feb","Mar","Apr","May","Jun",
+	                 "Jul","Aug","Sep","Oct","Nov","Dec"];
+
+	// =========================================================================
+	// Utility functions (from Console.html)
+	// =========================================================================
+	function convertForClient(str) {
+		var t, s, i, c;
+		var tabSz = 8;
+		while ((t = str.indexOf("\t")) != -1) {
+			s = "";
+			c = (tabSz - (t % tabSz));
+			if (c <= 1) c += tabSz;
+			for (i = 0; i < c; ++i) s += "&nbsp;";
+			str = [str.slice(0, t), s, str.slice(t + 1)].join('');
+		}
+		return str
+			.replace(/%26/g, "&amp;")
+			.replace(/%3C/g, "&lt;")
+			.replace(/%3E/g, "&gt;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/%22/g, "&quot;")
+			.replace(/%27/g, "&#039;")
+			.replace(/%0A%0D/g, "<br>")
+			.replace(/%20%20/g, "&nbsp;&nbsp;");
+	}
+
+	function formatTime(t) {
+		var date = new Date(t * 1000);
+		var mm = date.getMinutes() < 10 ? "0" + date.getMinutes() : date.getMinutes();
+		var ss = date.getSeconds() < 10 ? "0" + date.getSeconds() : date.getSeconds();
+		var m = _monthArr[date.getMonth()];
+		var d = ('0' + date.getDate()).slice(-2);
+		var y = date.getFullYear() - 2000;
+		return d + m + y + "." + date.getHours() + ":" + mm + ":" + ss;
+	}
+
+	// =========================================================================
+	// Hostname shortening (from Console.html pattern)
+	// =========================================================================
+	function getShortenedHostname(hostname) {
+		if (_hostnameShortMap[hostname]) return _hostnameShortMap[hostname];
+		_knownHostList.push(hostname);
+		recomputeShortenedHostnames();
+		return _hostnameShortMap[hostname] || hostname;
+	}
+
+	function recomputeShortenedHostnames() {
+		var shorts = [];
+		for (var i = 0; i < _knownHostList.length; ++i) {
+			var h = _knownHostList[i];
+			var dot = h.indexOf(".");
+			shorts.push(dot > 0 ? h.slice(0, dot) : h);
+		}
+		// strip common prefix up to a "-" boundary (e.g. "mu2e-")
+		if (shorts.length > 1) {
+			var minLen = shorts.reduce(function(m,s){ return Math.min(m,s.length); }, 9999);
+			var commonPrefix = 0;
+			for (var ci = 0; ci < minLen; ++ci) {
+				var ch = shorts[0][ci];
+				var allMatch = true;
+				for (var hi = 1; hi < shorts.length; ++hi) {
+					if (shorts[hi][ci] !== ch) { allMatch = false; break; }
+				}
+				if (!allMatch) break;
+				if (ch === "-") commonPrefix = ci + 1;
+			}
+			if (commonPrefix > 0) {
+				for (var i = 0; i < shorts.length; ++i)
+					shorts[i] = shorts[i].slice(commonPrefix) || shorts[i];
+			}
+		}
+		for (var i = 0; i < _knownHostList.length; ++i)
+			_hostnameShortMap[_knownHostList[i]] = shorts[i];
+	}
+
+	// Make a CSS-safe class name from a string
+	function cssClass(str) {
+		if (!str) return "";
+		return str.replace(/[^a-zA-Z0-9_-]/g, "_");
+	}
+
+	// =========================================================================
+	// Layout
+	// =========================================================================
+	function layoutPage() {
+		var bar = document.getElementById("filterBar");
+		var status = document.getElementById("statusBar");
+		var area = document.getElementById("messageArea");
+		var wh = window.innerHeight;
+		var barH = bar.offsetHeight;
+		var statusH = status.offsetHeight;
+		area.style.height = (wh - barH - statusH) + "px";
+	}
+
+	// =========================================================================
+	// Initialization
+	// =========================================================================
+	function init() {
+		if (_initDone) return;
+		_initDone = true;
+		Debug.log("Mu2eLogViewer init()");
+		applyPortOffset();
+
+		// Populate System dropdown
+		var sel = document.getElementById("systemSelect");
+		for (var name in SYSTEMS) {
+			var opt = document.createElement("option");
+			opt.value = name;
+			opt.textContent = name;
+			sel.appendChild(opt);
+		}
+		var urlParams = new URLSearchParams(window.location.search);
+		var startSystem = urlParams.get("system") || "Trigger";
+		if (!SYSTEMS[startSystem]) startSystem = "Trigger";
+		sel.value = startSystem;
+
+		// Attach event handlers
+		sel.onchange = function() { switchSystem(this.value); };
+		initCheckdrop("sourceSelect");
+		initCheckdrop("nodeSelect");
+		initCheckdrop("appSelect");
+		document.getElementById("levelSelect").onchange = applyFilters;
+		document.getElementById("searchInput").oninput = applySearchFilter;
+		document.getElementById("pauseBtn").onclick = togglePause;
+		document.getElementById("clearBtn").onclick = clearMessages;
+		document.getElementById("orderBtn").onclick = toggleOrder;
+
+		// Close checkdrops when clicking outside
+		document.addEventListener("click", function(e) {
+			var drops = document.querySelectorAll(".mu2e-checkdrop.open");
+			for (var i = 0; i < drops.length; ++i) {
+				if (!drops[i].contains(e.target)) drops[i].classList.remove("open");
+			}
+		});
+
+		// Track user scrolling
+		document.getElementById("messageArea").addEventListener("scroll", function() {
+			var el = this;
+			var atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 30;
+			_scrollFollow = atBottom;
+		});
+
+		var startLevel = urlParams.get("level") || "Warning";
+		document.getElementById("levelSelect").value = startLevel;
+
+		var startSearch = urlParams.get("search") || "";
+		if (startSearch) document.getElementById("searchInput").value = startSearch;
+
+		_preselect.source = urlParams.get("source") || null;
+		_preselect.node   = urlParams.get("node")   || null;
+		_preselect.app    = urlParams.get("app")     || null;
+
+		window.addEventListener("resize", layoutPage);
+		layoutPage();
+
+		// Start with URL-specified or default system (also applies filters)
+		switchSystem(startSystem);
+	}
+
+	// =========================================================================
+	// System switching
+	// =========================================================================
+	function switchSystem(name) {
+		if (_pollTimer) clearTimeout(_pollTimer);
+		_pollTimer = 0;
+
+		_currentSystem = name;
+		_lastUpdateCount = 0;
+		_lastUpdateIndex = -1;
+		_totalMessages = 0;
+		_knownHostnames = {};
+		_knownSources = {};
+		_knownApps = {};
+		_hostnameShortMap = {};
+		_knownHostList = [];
+
+		// Reset dropdowns
+		clearCheckdrop("sourceSelect");
+		clearCheckdrop("nodeSelect");
+		clearCheckdrop("appSelect");
+
+		// Clear display
+		document.getElementById("messageArea").innerHTML = "";
+		clearFilterStyles();
+		applyFilters();
+
+		updateStatus("Connecting...", false);
+		getConsoleUpdates();
+	}
+
+	// =========================================================================
+	// Polling — modeled on Console.html getConsoleUpdates/handleRefreshConsole
+	// =========================================================================
+	function getConsoleUpdates() {
+		if (_pollTimer) clearTimeout(_pollTimer);
+		_pollTimer = 0;
+
+		var sys = SYSTEMS[_currentSystem];
+		if (!sys) return;
+		applyPortOffset();
+
+		// Build URL — use the real server hostname (not tunnel localhost)
+		var hostname = window.location.hostname;
+		if (typeof DesktopContent !== "undefined" && DesktopContent._serverOrigin) {
+			var m = DesktopContent._serverOrigin.match(/:\/\/([^:\/]+)/);
+			if (m) hostname = m[1];
+		}
+		var origin = window.location.protocol + "//" +
+		             hostname + ":" + sys.port;
+		var url = origin +
+		          "/urn:xdaq-application:lid=" + CONSOLE_LID +
+		          "/Request?RequestType=GetConsoleMsgs";
+
+		// POST body: cookie + request params (same format as DesktopContent)
+		var cc = DesktopContent._cookieCodeMailbox || "0";
+		var postData = "CookieCode=" + cc +
+		               "&RequestOrigin=" + origin +
+		               "&lcount=" + _lastUpdateCount +
+		               "&lindex=" + _lastUpdateIndex;
+
+		var req = new XMLHttpRequest();
+		req.onreadystatechange = function() {
+			if (req.readyState !== 4) return;
+			handleConsoleResponse(req);
+		};
+		req.onerror = function() {
+			updateStatus("Connection error", false);
+			_pollTimer = setTimeout(getConsoleUpdates, _REFRESH_IDLE);
+		};
+		req.open("POST", url, true);
+		req.setRequestHeader("Content-Type", "text/plain;charset=UTF-8");
+		req.send(postData);
+	}
+
+	function handleConsoleResponse(req) {
+		if (!req || req.status !== 200 || !req.responseXML) {
+			updateStatus("Disconnected", false);
+			_pollTimer = setTimeout(getConsoleUpdates, _REFRESH_IDLE);
+			return;
+		}
+
+		// Check for server-side error (e.g. stale lastUpdateCount)
+		var errEl = getXMLVal(req, "Error");
+		if (errEl) {
+			console.log("[Mu2eLogViewer] Server error, resetting counters: " +
+				errEl.substring(0, 120));
+			_lastUpdateCount = 0;
+			_lastUpdateIndex = -1;
+			_pollTimer = setTimeout(getConsoleUpdates, _REFRESH_IDLE);
+			return;
+		}
+
+		// Update counters (same as Console.html)
+		var tmp;
+		tmp = getXMLVal(req, "last_update_index");
+		if (tmp) _lastUpdateIndex = tmp;
+		tmp = getXMLVal(req, "last_update_count");
+		if (tmp) _lastUpdateCount = tmp;
+
+		var nextInterval = _REFRESH_IDLE;
+
+		// Parse messages JSON
+		var msgsEl = req.responseXML.getElementsByTagName("messages")[0];
+		var msgStr;
+		if (msgsEl && msgsEl.children.length &&
+		    (msgStr = msgsEl.children[0].getAttribute("value")) &&
+		    msgStr.length > 5) {
+
+			var msgArr;
+			try { msgArr = JSON.parse(msgStr); }
+			catch(e) { msgArr = []; }
+
+			if (msgArr.length > 0) {
+				nextInterval = _REFRESH_ACTIVE;
+				renderMessages(msgArr);
+			}
+		}
+
+		updateStatus("Connected", true);
+		_pollTimer = setTimeout(getConsoleUpdates, nextInterval);
+	}
+
+	function getXMLVal(req, tagName) {
+		if (!req.responseXML) return null;
+		var els = req.responseXML.getElementsByTagName(tagName);
+		if (els.length === 0) return null;
+		return els[0].getAttribute("value");
+	}
+
+	// =========================================================================
+	// Rendering
+	// =========================================================================
+	function renderMessages(msgArr) {
+		var area = document.getElementById("messageArea");
+		var htmlParts = [];
+		var dropdownsChanged = false;
+
+		for (var i = 0; i < msgArr.length; ++i) {
+			var m = msgArr[i];
+			var level    = m[MSG_FIELDS[F_LEVEL]]    || "";
+			var label    = m[MSG_FIELDS[F_LABEL]]    || "";
+			var source   = m[MSG_FIELDS[F_SOURCE]]   || "";
+			var msg      = m[MSG_FIELDS[F_MSG]]      || "";
+			var time     = m[MSG_FIELDS[F_TIME]]      || "";
+			var file     = m[MSG_FIELDS[F_FILE]]      || "";
+			var line     = m[MSG_FIELDS[F_LINE]]      || "";
+			var hostname = m[MSG_FIELDS[F_HOSTNAME]] || "";
+
+			if (source == "xdaq.exe") source = "OTSDAQ";
+
+			var hostCss = cssClass(hostname);
+			var srcCss = cssClass(source);
+			var appCss = cssClass(label);
+			var levelCss = cssClass(level);
+
+			// Track new values for dropdowns
+			if (!_knownHostnames[hostname]) {
+				_knownHostnames[hostname] = true;
+				dropdownsChanged = true;
+			}
+			if (!_knownSources[source]) {
+				_knownSources[source] = true;
+				dropdownsChanged = true;
+			}
+			if (label && !_knownApps[label]) {
+				_knownApps[label] = true;
+				dropdownsChanged = true;
+			}
+
+			var fileStr = convertForClient(file + ":" + line);
+			var msgStr = convertForClient(msg);
+			var shortHost = getShortenedHostname(hostname);
+
+			htmlParts.push("<div class='mu2e-log-entry lvl-" + levelCss +
+				" host-" + hostCss +
+				" src-" + srcCss +
+				" app-" + appCss +
+				"'>" +
+				"<span class='mu2e-log-host'>" + Mu2e.esc(shortHost) + " | </span>" +
+				"<span class='mu2e-log-level'>" + Mu2e.esc(level) + "</span>" +
+				"<span class='mu2e-log-time'> (" + formatTime(time) + ") </span>" +
+				"<span class='mu2e-log-label'>" + Mu2e.esc(label) + ":</span> " +
+				"<span class='mu2e-log-file'>" + fileStr + "</span> " +
+				"<span class='mu2e-log-text'>" + msgStr + "</span>" +
+				"</div>");
+
+			_totalMessages++;
+		}
+
+		if (!_paused) {
+			var html;
+			if (_newestOnTop) {
+				html = htmlParts.reverse().join("");
+				area.insertAdjacentHTML("afterbegin", html);
+			} else {
+				html = htmlParts.join("");
+				area.insertAdjacentHTML("beforeend", html);
+			}
+			trimMessages(area);
+			if (!_newestOnTop && _scrollFollow) {
+				area.scrollTop = area.scrollHeight;
+			}
+		}
+
+		if (dropdownsChanged) {
+			updateDropdowns();
+			applyFilters();
+		}
+		updateStatusCounts();
+	}
+
+	function trimMessages(area) {
+		var excess = area.children.length - _maxClientMessages;
+		if (excess <= 0) return;
+		// Build a range to remove in one operation
+		var range = document.createRange();
+		if (_newestOnTop) {
+			range.setStartBefore(area.children[_maxClientMessages]);
+			range.setEndAfter(area.lastElementChild);
+		} else {
+			range.setStartBefore(area.firstElementChild);
+			range.setEndAfter(area.children[excess - 1]);
+		}
+		range.deleteContents();
+	}
+
+	// =========================================================================
+	// Checkbox dropdown management
+	// =========================================================================
+	function initCheckdrop(id) {
+		var el = document.getElementById(id);
+		var btn = el.querySelector(".mu2e-checkdrop-btn");
+		btn.onclick = function(e) {
+			e.stopPropagation();
+			// close others
+			var others = document.querySelectorAll(".mu2e-checkdrop.open");
+			for (var i = 0; i < others.length; ++i)
+				if (others[i] !== el) others[i].classList.remove("open");
+			el.classList.toggle("open");
+		};
+	}
+
+	function clearCheckdrop(id) {
+		var el = document.getElementById(id);
+		el.querySelector(".mu2e-checkdrop-list").innerHTML = "";
+		el.querySelector(".mu2e-checkdrop-btn").textContent = "All";
+		el.classList.remove("open");
+	}
+
+	function getCheckdropValues(id) {
+		var boxes = document.getElementById(id).querySelectorAll("input[type=checkbox]:checked");
+		var vals = [];
+		for (var i = 0; i < boxes.length; ++i) vals.push(boxes[i].value);
+		return vals;
+	}
+
+	function updateCheckdropLabel(id, labelFn) {
+		var el = document.getElementById(id);
+		var btn = el.querySelector(".mu2e-checkdrop-btn");
+		var vals = getCheckdropValues(id);
+		var total = el.querySelectorAll("input[type=checkbox]").length;
+		if (vals.length === 0 || vals.length === total) {
+			btn.textContent = "All";
+		} else {
+			var display = labelFn ? vals.map(labelFn) : vals;
+			if (display.length <= 2)
+				btn.textContent = display.join(", ");
+			else
+				btn.textContent = display.length + " selected";
+		}
+	}
+
+	var _CHECKDROP_PRESELECT_KEY = {
+		sourceSelect: "source", nodeSelect: "node", appSelect: "app"
+	};
+
+	function rebuildCheckdrop(id, items, labelFn) {
+		var el = document.getElementById(id);
+		el._labelFn = labelFn || null;
+		var list = el.querySelector(".mu2e-checkdrop-list");
+		var prev = getCheckdropValues(id);
+
+		var psKey = _CHECKDROP_PRESELECT_KEY[id];
+		var psVal = psKey ? _preselect[psKey] : null;
+		var psMatches = {};
+		if (psVal) {
+			var psLower = psVal.toLowerCase();
+			for (var pi = 0; pi < items.length; ++pi) {
+				var il = items[pi].toLowerCase();
+				if (il === psLower || il.indexOf(psLower) === 0 || psLower.indexOf(il) === 0)
+					psMatches[items[pi]] = true;
+			}
+		}
+		var hasPsMatch = Object.keys(psMatches).length > 0;
+
+		list.innerHTML = "";
+		for (var i = 0; i < items.length; ++i) {
+			var lbl = document.createElement("label");
+			var cb = document.createElement("input");
+			cb.type = "checkbox";
+			cb.value = items[i];
+			if (hasPsMatch)
+				cb.checked = !!psMatches[items[i]];
+			else if (prev.indexOf(items[i]) !== -1)
+				cb.checked = true;
+			cb.onchange = function() {
+				updateCheckdropLabel(id, el._labelFn);
+				applyFilters();
+			};
+			lbl.appendChild(cb);
+			lbl.appendChild(document.createTextNode(
+				labelFn ? labelFn(items[i]) : items[i]));
+			list.appendChild(lbl);
+		}
+		if (hasPsMatch) _preselect[psKey] = null;
+		updateCheckdropLabel(id, labelFn);
+	}
+
+	function updateDropdowns() {
+		rebuildCheckdrop("sourceSelect",
+			Object.keys(_knownSources).sort());
+		rebuildCheckdrop("nodeSelect",
+			Object.keys(_knownHostnames).sort(), getShortenedHostname);
+		rebuildCheckdrop("appSelect",
+			Object.keys(_knownApps).sort());
+	}
+
+	// =========================================================================
+	// CSS-based filtering (technique from Console.html)
+	// =========================================================================
+	function clearFilterStyles() {
+		for (var key in _filterStyleEls) {
+			if (_filterStyleEls[key] && _filterStyleEls[key].parentNode)
+				_filterStyleEls[key].parentNode.removeChild(_filterStyleEls[key]);
+		}
+		_filterStyleEls = {};
+	}
+
+	function setFilterStyle(key, css) {
+		if (_filterStyleEls[key] && _filterStyleEls[key].parentNode)
+			_filterStyleEls[key].parentNode.removeChild(_filterStyleEls[key]);
+
+		if (!css) { delete _filterStyleEls[key]; return; }
+
+		var el = document.createElement("style");
+		el.appendChild(document.createTextNode(css));
+		document.head.appendChild(el);
+		_filterStyleEls[key] = el;
+	}
+
+	function applyFilters() {
+		var srcVals  = getCheckdropValues("sourceSelect");
+		var nodeVals = getCheckdropValues("nodeSelect");
+		var appVals  = getCheckdropValues("appSelect");
+		var level    = document.getElementById("levelSelect").value;
+
+		var srcTotal  = document.getElementById("sourceSelect").querySelectorAll("input[type=checkbox]").length;
+		var nodeTotal = document.getElementById("nodeSelect").querySelectorAll("input[type=checkbox]").length;
+		var appTotal  = document.getElementById("appSelect").querySelectorAll("input[type=checkbox]").length;
+
+		var srcAll  = (srcVals.length === 0  || srcVals.length === srcTotal);
+		var nodeAll = (nodeVals.length === 0 || nodeVals.length === nodeTotal);
+		var appAll  = (appVals.length === 0  || appVals.length === appTotal);
+
+		// Levels to hide
+		var hiddenLevels = [];
+		if (level !== "All") {
+			var levelOrder = ["TRACE+","TRACE","Debug","Info","Warning","Error"];
+			var idx = levelOrder.indexOf(level);
+			for (var i = 0; i < idx; ++i)
+				hiddenLevels.push(levelOrder[i]);
+		}
+
+		// Build single combined CSS
+		var css = "";
+
+		// Hide levels below threshold (always works, independent)
+		for (var i = 0; i < hiddenLevels.length; ++i)
+			css += ".mu2e-log-entry.lvl-" + cssClass(hiddenLevels[i]) +
+			       " { display: none !important; }\n";
+
+		// Combined source/node/app filter
+		if (!(srcAll && nodeAll && appAll)) {
+			css += ".mu2e-log-entry { display: none; }\n";
+
+			var srcClasses  = srcAll  ? [""] : srcVals.map(function(v)  { return ".src-"  + cssClass(v); });
+			var nodeClasses = nodeAll ? [""] : nodeVals.map(function(v) { return ".host-" + cssClass(v); });
+			var appClasses  = appAll  ? [""] : appVals.map(function(v)  { return ".app-"  + cssClass(v); });
+
+			var selectors = [];
+			for (var si = 0; si < srcClasses.length; ++si)
+				for (var ni = 0; ni < nodeClasses.length; ++ni)
+					for (var ai = 0; ai < appClasses.length; ++ai)
+						selectors.push(".mu2e-log-entry" +
+							srcClasses[si] + nodeClasses[ni] + appClasses[ai]);
+
+			css += selectors.join(",\n") + " { display: block; }\n";
+		}
+
+		setFilterStyle("combo", css || null);
+
+		applySearchFilter();
+	}
+
+	function applySearchFilter() {
+		var query = document.getElementById("searchInput").value.toLowerCase();
+		if (query === _lastSearchQuery) return;
+		_lastSearchQuery = query;
+
+		var area = document.getElementById("messageArea");
+		var entries = area.getElementsByClassName("mu2e-log-entry");
+
+		// Batch all reads first, then all writes (avoid layout thrashing)
+		var hideList = [];
+		var showList = [];
+		for (var i = 0; i < entries.length; ++i) {
+			if (!query) {
+				showList.push(entries[i]);
+			} else {
+				var text = entries[i].textContent.toLowerCase();
+				if (text.indexOf(query) !== -1)
+					showList.push(entries[i]);
+				else
+					hideList.push(entries[i]);
+			}
+		}
+		for (var i = 0; i < showList.length; ++i)
+			showList[i].classList.remove("search-hidden");
+		for (var i = 0; i < hideList.length; ++i)
+			hideList[i].classList.add("search-hidden");
+
+		document.getElementById("shownCount").textContent = showList.length;
+	}
+
+	// =========================================================================
+	// Pause / Clear
+	// =========================================================================
+	function togglePause() {
+		_paused = !_paused;
+		var btn = document.getElementById("pauseBtn");
+		if (_paused) {
+			btn.textContent = "Resume";
+			btn.classList.add("paused");
+		} else {
+			btn.textContent = "Pause";
+			btn.classList.remove("paused");
+		}
+	}
+
+	function toggleOrder() {
+		_newestOnTop = !_newestOnTop;
+		var btn = document.getElementById("orderBtn");
+		btn.textContent = _newestOnTop ? "Newest first" : "Oldest first";
+
+		// Reverse existing messages in the display
+		var area = document.getElementById("messageArea");
+		var children = Array.prototype.slice.call(area.children);
+		area.innerHTML = "";
+		for (var i = children.length - 1; i >= 0; --i)
+			area.appendChild(children[i]);
+	}
+
+	function clearMessages() {
+		document.getElementById("messageArea").innerHTML = "";
+		_totalMessages = 0;
+		updateStatusCounts();
+	}
+
+	// =========================================================================
+	// Status bar
+	// =========================================================================
+	function updateStatus(text, connected) {
+		var dot = document.getElementById("connectionDot");
+		dot.className = "status-dot " + (connected ? "status-on" : "status-off");
+		document.getElementById("connectionText").textContent = text;
+	}
+
+	function updateStatusCounts() {
+		var area = document.getElementById("messageArea");
+		document.getElementById("totalCount").textContent = area.children.length;
+		document.getElementById("systemName").textContent = _currentSystem;
+	}
+
+	// =========================================================================
+	// init — called automatically by DesktopContent.js
+	// =========================================================================
+
+	</script>
+</head>
+<body onload='//init() called by DesktopContent.js' onresize="layoutPage();">
+
+	<!-- Filter bar -->
+	<div id="filterBar" class="mu2e-toolbar">
+		<label>System:</label>
+		<select id="systemSelect"></select>
+
+		<div class="mu2e-toolbar-sep"></div>
+
+		<label>Source:</label>
+		<div id="sourceSelect" class="mu2e-checkdrop">
+			<button type="button" class="mu2e-checkdrop-btn">All</button>
+			<div class="mu2e-checkdrop-list"></div>
+		</div>
+
+		<label>Node:</label>
+		<div id="nodeSelect" class="mu2e-checkdrop">
+			<button type="button" class="mu2e-checkdrop-btn">All</button>
+			<div class="mu2e-checkdrop-list"></div>
+		</div>
+
+		<label>App:</label>
+		<div id="appSelect" class="mu2e-checkdrop">
+			<button type="button" class="mu2e-checkdrop-btn">All</button>
+			<div class="mu2e-checkdrop-list"></div>
+		</div>
+
+		<div class="mu2e-toolbar-sep"></div>
+
+		<label>Level:</label>
+		<select id="levelSelect">
+			<option value="All">All</option>
+			<option value="Error">Error</option>
+			<option value="Warning">Warning</option>
+			<option value="Info">Info</option>
+			<option value="Debug">Debug</option>
+			<option value="TRACE">TRACE</option>
+			<option value="TRACE+">TRACE+</option>
+		</select>
+
+		<label>Search:</label>
+		<input type="text" id="searchInput" placeholder="filter text...">
+
+		<div class="mu2e-toolbar-sep"></div>
+
+		<button id="orderBtn" class="mu2e-toolbar-btn">Newest first</button>
+		<button id="pauseBtn" class="mu2e-toolbar-btn">Pause</button>
+		<button id="clearBtn" class="mu2e-toolbar-btn">Clear</button>
+	</div>
+
+	<!-- Message display -->
+	<div id="messageArea" class="mu2e-log"></div>
+
+	<!-- Status bar -->
+	<div id="statusBar" class="mu2e-statusbar">
+		<span id="connectionDot" class="status-dot status-unknown"></span>
+		<span id="connectionText">Initializing...</span>
+		<span>|</span>
+		<span>System: <b id="systemName">---</b></span>
+		<span>|</span>
+		<span>Messages: <b id="totalCount">0</b></span>
+		<span>|</span>
+		<span>Showing: <b id="shownCount">0</b></span>
+	</div>
+
+</body>
+</html>

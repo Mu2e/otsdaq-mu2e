@@ -68,7 +68,8 @@ class DBRunInfo : public RunInfoVInterface
 
 	virtual void updateRunInfo(unsigned int /* runConditionID */,
 	                           RunTransitionType /* runTransitionType */,
-	                           const std::string& /* comment */);
+	                           const std::string& /* comment */,
+	                           const std::string& /* metadata */ = "");
 
 	/// Get functions ----
 
