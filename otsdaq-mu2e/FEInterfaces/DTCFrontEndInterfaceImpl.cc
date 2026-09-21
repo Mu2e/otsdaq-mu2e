@@ -5244,7 +5244,7 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 
 	const std::string& rocUID         = feMacroIt->second.first;
 	const std::string& rocFEMacroName = feMacroIt->second.second;
-    __SET_PCT_DONE__(0);
+	__SET_PCT_DONE__(0);
 
 	if(rocUID == "")
 	{
@@ -5334,31 +5334,40 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 			   PLOTLY_PLOT /* defined at FEVinterface.h */)  //leave built-in arg as DEFAULT
 				argOut.second = "";
 
-        std::sort(selectedRocs.begin(), selectedRocs.end(),
-                  [](const auto& a, const auto& b) { return a.linkID < b.linkID; });
-        for(size_t rocIndex = 0; rocIndex < selectedRocs.size(); ++rocIndex)
-        {
-            auto& selectedRoc = selectedRocs[rocIndex];
-            __COUT__ << "ROC FE Macro start. rocLink=" << selectedRoc.linkID
-                     << " macro=" << rocFEMacroName << __E__;
-            // Fail immediately on an exception. Do not start another ROC after
-            // an uncompleted hardware transaction on this DTC.
-            try {
-                selectedRoc.roc->runSelfFrontEndMacro(
-                    rocFEMacroName, inputArgs, selectedRoc.outputArgs,
-                    [this, rocIndex, total = selectedRocs.size()](unsigned int percent) {
-                        __SET_PCT_DONE__(std::min<size_t>(99, (100 * rocIndex + percent) / total));
-                    });
-            } catch(const std::exception& e) {
-                selectedRoc.error = e.what();
-                break;
-            } catch(...) {
-                selectedRoc.error = "Unknown exception while running ROC FE Macro.";
-                break;
-            }
-            __COUT__ << "ROC FE Macro done. rocLink=" << selectedRoc.linkID
-                     << " macro=" << rocFEMacroName << __E__;
-        }
+		std::sort(selectedRocs.begin(),
+		          selectedRocs.end(),
+		          [](const auto& a, const auto& b) { return a.linkID < b.linkID; });
+		for(size_t rocIndex = 0; rocIndex < selectedRocs.size(); ++rocIndex)
+		{
+			auto& selectedRoc = selectedRocs[rocIndex];
+			__COUT__ << "ROC FE Macro start. rocLink=" << selectedRoc.linkID
+			         << " macro=" << rocFEMacroName << __E__;
+			// Fail immediately on an exception. Do not start another ROC after
+			// an uncompleted hardware transaction on this DTC.
+			try
+			{
+				selectedRoc.roc->runSelfFrontEndMacro(
+				    rocFEMacroName,
+				    inputArgs,
+				    selectedRoc.outputArgs,
+				    [this, rocIndex, total = selectedRocs.size()](unsigned int percent) {
+					    __SET_PCT_DONE__(
+					        std::min<size_t>(99, (100 * rocIndex + percent) / total));
+				    });
+			}
+			catch(const std::exception& e)
+			{
+				selectedRoc.error = e.what();
+				break;
+			}
+			catch(...)
+			{
+				selectedRoc.error = "Unknown exception while running ROC FE Macro.";
+				break;
+			}
+			__COUT__ << "ROC FE Macro done. rocLink=" << selectedRoc.linkID
+			         << " macro=" << rocFEMacroName << __E__;
+		}
 
 		for(const auto& selectedRoc : selectedRocs)
 			if(!selectedRoc.error.empty())
@@ -5422,11 +5431,13 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 			__FE_SS_THROW__;
 		}
 
-        rocIt->second->runSelfFrontEndMacro(rocFEMacroName, argsIn, argsOut,
-            [this](unsigned int percent) { __SET_PCT_DONE__(std::min(99u, percent)); });
+		rocIt->second->runSelfFrontEndMacro(
+		    rocFEMacroName, argsIn, argsOut, [this](unsigned int percent) {
+			    __SET_PCT_DONE__(std::min(99u, percent));
+		    });
 	}
 
-    __SET_PCT_DONE__(100);
+	__SET_PCT_DONE__(100);
 }  // end RunROCFEMacro()
 
 //========================================================================
