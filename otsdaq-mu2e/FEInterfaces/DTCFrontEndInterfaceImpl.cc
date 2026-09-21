@@ -2233,8 +2233,9 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 								          << (hasRealROCs ? "3b" : "3a") << " ["
 								          << real_roc_flow_reason_ << "]"
 								          << " edge fix FAILED:"
-								          << " No CFO Clock Markers arriving."
-								          << " Waiting for 1000 clock markers, "
+								          << " Fewer than the required CFO Clock Markers "
+								             "arrived."
+								          << " Waiting for more than 1000 clock markers, "
 								          << markers << " clock markers received"
 								          << " after 3s wait.";
 								__FE_SS_THROW__;
