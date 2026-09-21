@@ -265,6 +265,7 @@ void CFOFrontEndInterface::registerFEMacros(void)
 											"Number of Event Window Markers to generate (0 := infinite)",
 											"Starting Event Window Tag (Default or -1 := start from 0 and continue)",
 											"Event Window Mode (Default := 1)",
+											"On-spill Flag (Default := false)",
 											"Enable Clock Markers (Default := true)",
 											"Use Detached Buffer Test (Default := false)",
 											"For Detached Buffer Test, Save Binary Data to File (Default: false)",
@@ -2103,7 +2104,8 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 		thisCFO_->EnableEmbeddedClockMarker();
 		__FE_COUT__ << "Enabled all CFO links and embedded clock markers." << __E__;
 
-		if(operatingMode_ == CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING_AND_SYNC)
+		if(operatingMode_ == CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING ||
+		   operatingMode_ == CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING_AND_SYNC)
 		{
 			CompileSetAndLaunchTemplateFixedWidthRunPlan(
 			    true,     // enable
@@ -2117,7 +2119,7 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 			    false,    // saveSubeventHeadersToDataFile
 			    false);   // doNotResetCounters
 			__FE_COUT__ << "Started fixed-width event run plan for aggressive 8b10 "
-			               "traffic during sync phases."
+			               "traffic during edge fix phases."
 			            << __E__;
 		}
 
@@ -2298,13 +2300,14 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 	}
 	else if(step == CFOandDTCCoreVInterface::CONFIG_PHASE_CFO_EDGE_FIX)
 	{
-		bool doSync = (operatingMode_ ==
-		               CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING_AND_SYNC);
+		bool doEdgeFix =
+		    (operatingMode_ == CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING ||
+		     operatingMode_ ==
+		         CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING_AND_SYNC);
 
-		if(!doSync)
+		if(!doEdgeFix)
 		{
-			__FE_COUT__ << "CFO edge fix phase idle (no sync in EventBuildingMode)."
-			            << __E__;
+			__FE_COUT__ << "CFO edge fix phase idle." << __E__;
 			indicateIterationWork();
 		}
 		else
@@ -2520,23 +2523,29 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 	}
 	else if(step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_E)
 	{
-		bool doSync = (operatingMode_ ==
-		               CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING_AND_SYNC);
-		if(!doSync)
+		bool doEdgeFix =
+		    (operatingMode_ == CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING ||
+		     operatingMode_ ==
+		         CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING_AND_SYNC);
+		if(!doEdgeFix)
 		{
-			__FE_COUT__ << "Sync phase idle (no sync in EventBuildingMode)." << __E__;
+			__FE_COUT__ << "Stop-events phase idle." << __E__;
 		}
 		else
 		{
 			thisCFO_->DisableBeamOnMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
 			thisCFO_->DisableBeamOffMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
-			__FE_COUT__ << "Stopped CFO event generation after sync phases." << __E__;
+			__FE_COUT__ << "Stopped CFO event generation after edge fix phases." << __E__;
 		}
 		indicateIterationWork();
 	}
 	else if(step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_A ||
-	        step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_B ||
-	        step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_C ||
+	        step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_B)
+	{
+		__FE_COUT__ << "Idle while DTCs perform edge fix..." << __E__;
+		indicateIterationWork();
+	}
+	else if(step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_C ||
 	        step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_D)
 	{
 		bool doSync = (operatingMode_ ==
@@ -2544,11 +2553,11 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 
 		if(!doSync)
 		{
-			__FE_COUT__ << "Sync phase idle (no sync in EventBuildingMode)." << __E__;
+			__FE_COUT__ << "RTF offset phase idle (no 40 MHz sync)." << __E__;
 		}
 		else
 		{
-			__FE_COUT__ << "Sync phase — idle while DTCs work..." << __E__;
+			__FE_COUT__ << "Idle while DTCs apply RTF marker offset..." << __E__;
 		}
 		indicateIterationWork();
 	}
@@ -2809,6 +2818,13 @@ void CFOFrontEndInterface::start(std::string runNumber)  // runNumber)
 		}
 
 		const unsigned int startIteration = getIterationIndex();
+
+		//if(startIteration == 0)
+		//{
+		//	__FE_COUT__ << "Issuing CFO SoftReset before launching run plan..." << __E__;
+		//	thisCFO_->SoftReset();
+		//}
+
 		if(startIteration < systemMinReady)
 		{
 			__FE_COUT_INFO__ << "Delaying CFO run plan launch until start iteration >= "
@@ -3845,6 +3861,18 @@ void CFOFrontEndInterface::CompileSetAndLaunchTemplateFixedWidthRunPlan(__ARGS__
 	std::string modeStr =
 	    __GET_ARG_IN__("Event Window Mode (Default := 1)", std::string, "1");
 
+	uint64_t eventWindowMode =
+	    modeStr == "0"
+	        ? 0
+	        : __GET_ARG_IN__(
+	              "Event Window Mode (Default := 1)",
+	              uint64_t,
+	              1);  //allow mode 0 if user inputs it, but default to 1 since mode 0 is a null heartbeat and not a very useful default for a fixed width run plan
+
+	bool onSpill = __GET_ARG_IN__("On-spill Flag (Default := false)", bool, false);
+	if(onSpill)
+		eventWindowMode |= 0x100000000;
+
 	__SET_ARG_OUT__(
 	    "response",
 	    CompileSetAndLaunchTemplateFixedWidthRunPlan(
@@ -3856,12 +3884,7 @@ void CFOFrontEndInterface::CompileSetAndLaunchTemplateFixedWidthRunPlan(__ARGS__
 	                       std::string),
 	        numberOfEvents,
 	        startTag,
-	        modeStr == "0"
-	            ? 0
-	            : __GET_ARG_IN__(
-	                  "Event Window Mode (Default := 1)",
-	                  uint64_t,
-	                  1),  //allow mode 0 if user inputs it, but default to 1 since mode 0 is a null heartbeat and not a very useful default for a fixed width run plan
+	        eventWindowMode,
 	        __GET_ARG_IN__("Enable Clock Markers (Default := true)", bool, true),
 	        __GET_ARG_IN__(
 	            "For Detached Buffer Test, Save Binary Data to File (Default: false)",

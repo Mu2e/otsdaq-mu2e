@@ -2149,12 +2149,24 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 	        step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_C ||
 	        step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_D)
 	{
+		bool doEdgeFix =
+		    (operatingMode_ == CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING ||
+		     operatingMode_ ==
+		         CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING_AND_SYNC);
 		bool doSync = (operatingMode_ ==
 		               CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING_AND_SYNC);
 
-		if(!doSync)
+		if((step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_A ||
+		    step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_B) &&
+		   !doEdgeFix)
 		{
-			__FE_COUT__ << "Sync phase idle (no sync in EventBuildingMode)." << __E__;
+			__FE_COUT__ << "Edge fix phase idle." << __E__;
+		}
+		else if((step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_C ||
+		         step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_D) &&
+		        !doSync)
+		{
+			__FE_COUT__ << "RTF offset phase idle (no 40 MHz sync)." << __E__;
 		}
 		else if(step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_A ||
 		        step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_SYNC_B)
@@ -2731,7 +2743,34 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 		// Phase 5: ROC Data Path Setup — only DTCs with real ROCs act
 		if(!hasRealROCs)
 		{
-			__FE_COUT__ << "Idle — no ROC data path to set up." << __E__;
+			if(roc_mask_)
+			{
+				bool enableSoftwareDRP = false;
+				try
+				{
+					enableSoftwareDRP = getSelfNode()
+					                        .getNode("EnableSoftwareDataRequestMode")
+					                        .getValue<bool>();
+				}
+				catch(...)
+				{
+				}
+				if(enableSoftwareDRP)
+				{
+					__FE_COUT__ << "Enabling Software Data Request Mode (no-ROC path)."
+					            << __E__;
+					getDTC()->EnableSoftwareDRP();
+				}
+				else
+				{
+					__FE_COUT__
+					    << "Enabling Auto-generation of Data Requests (no-ROC path)."
+					    << __E__;
+					getDTC()->DisableSoftwareDRP();
+				}
+			}
+			else
+				__FE_COUT__ << "Idle — no ROC data path to set up." << __E__;
 		}
 		else
 		{
@@ -3345,7 +3384,7 @@ void DTCFrontEndInterface::start(std::string runNumber)
 		    getSystemMinReadyForEventGenerationStartIteration();
 		const unsigned int startIteration = getIterationIndex();
 
-		if(startIteration == 0)
+		if(startIteration == 0 && has_real_roc_flow_)
 		{
 			__FE_COUT__ << "Issuing DTC SoftReset before starting ROCs..." << __E__;
 			getDTC()->SoftReset();
@@ -3363,7 +3402,7 @@ void DTCFrontEndInterface::start(std::string runNumber)
 			return;
 		}
 
-		if(startIteration == systemMinReady - 1 && getSubIterationIndex() == 0)
+		if(startIteration == systemMinReady - 1 && getSubIterationIndex() == 0 && has_real_roc_flow_)
 			getDTC()->SoftReset();
 		usleep(500000);  // wait 100 ms for DTC to reset counters
 	}
@@ -3580,7 +3619,10 @@ void DTCFrontEndInterface::start(std::string runNumber)
 // return true to keep running
 unsigned int DTCFrontEndInterface::getMinReadyForEventGenerationStartIteration(void) const
 {
-	unsigned int maxIteration = 0;
+	// DTC needs iteration 0 (SoftReset + start ROCs), iteration 1 (wait for
+	// artdaq to finish starting), and iteration 2 (post-artdaq SoftReset).
+	// So the system is not ready for event generation until iteration 3.
+	unsigned int maxIteration = 3;
 	for(const auto& rocPair : rocs_)
 	{
 		unsigned int val = rocPair.second->getMinReadyForEventGenerationStartIteration();
@@ -3593,7 +3635,6 @@ unsigned int DTCFrontEndInterface::getMinReadyForEventGenerationStartIteration(v
 //==============================================================================
 bool DTCFrontEndInterface::running(void)
 {
-	__FE_COUTV__(skipInit_);
 	if(skipInit_)
 		return false;
 
@@ -3605,22 +3646,28 @@ bool DTCFrontEndInterface::running(void)
 		testRTFClockInEventBuildingMode("Running");
 	}
 
-	__FE_COUTV__(operatingMode_);
-	__FE_COUTV__(emulatorMode_);
+	if(runningCallCount_ == 1)
+	{
+		__FE_COUTV__(operatingMode_);
+		__FE_COUTV__(emulatorMode_);
+	}
 
 	if(operatingMode_ == CFOandDTCCoreVInterface::CONFIG_MODE_HARDWARE_DEV)
 	{
-		__FE_COUT_INFO__ << "Running for hardware development mode!" << __E__;
+		if(runningCallCount_ == 1)
+			__FE_COUT_INFO__ << "Running for hardware development mode!" << __E__;
 	}
 	else if(operatingMode_ == CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING ||
 	        operatingMode_ ==
 	            CFOandDTCCoreVInterface::CONFIG_MODE_EVENT_BUILDING_AND_SYNC)
 	{
-		__FE_COUT_INFO__ << "Running for Event Building mode!" << __E__;
+		if(runningCallCount_ == 1)
+			__FE_COUT_INFO__ << "Running for Event Building mode!" << __E__;
 	}
 	else if(operatingMode_ == CFOandDTCCoreVInterface::CONFIG_MODE_LOOPBACK)
 	{
-		__FE_COUT_INFO__ << "Running for Loopback mode!" << __E__;
+		if(runningCallCount_ == 1)
+			__FE_COUT_INFO__ << "Running for Loopback mode!" << __E__;
 	}
 	else
 	{
