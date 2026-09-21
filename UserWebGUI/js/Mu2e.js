@@ -216,4 +216,58 @@ var Mu2e = Mu2e || {};
 		return match ? match[1] : "---";
 	};
 
+	// =========================================================================
+	// errorSecondsAgo — seconds since the most recent ots-style timestamp found
+	// in an error string (e.g. "Fri Mar  6 10:46:02 2026 CST:"), or -1 if none.
+	// Mirrors SubsystemLaunch.extractErrorSecondsAgo so both pages age errors
+	// the same way.
+	// =========================================================================
+
+	Mu2e.errorSecondsAgo = function (message) {
+		if (!message) return -1;
+		var m = message.match(
+			/([A-Z][a-z]{2} [A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})(?:\s+([A-Za-z_+\/-]+|[+-]\d{4}))?:/);
+		if (!m) return -1;
+		var core = m[1].replace(/\s+/g, " ").trim();
+		var tz = m[2] ? m[2].trim() : "";
+		var parsed = Date.parse(tz ? (core + " " + tz) : core);
+		if (Number.isNaN(parsed)) return -1;
+		return Math.floor((Date.now() - parsed) / 1000);
+	};
+
+	// =========================================================================
+	// timestampSecondsAgo — seconds since an ots timestamp string such as
+	// "Tue Sep 15 14:05:59 2026 CDT" (subsystem_lastStatusChangeTime), or -1.
+	// =========================================================================
+
+	Mu2e.timestampSecondsAgo = function (timestamp) {
+		if (!timestamp || timestamp === "0") return -1;
+		var parsed = Date.parse(timestamp);
+		if (Number.isNaN(parsed) || parsed <= 0) return -1;
+		return Math.floor((Date.now() - parsed) / 1000);
+	};
+
+	// =========================================================================
+	// formatAgo — "(1h 2m 3s ago)" for a seconds count, or "" for -1
+	// =========================================================================
+
+	Mu2e.formatAgo = function (secondsAgo) {
+		if (secondsAgo === -1) return "";
+		var h = Math.floor(secondsAgo / 3600);
+		var m = Math.floor((secondsAgo % 3600) / 60);
+		var s = secondsAgo % 60;
+		return "(" + h + "h " + m + "m " + s + "s ago)";
+	};
+
+	// =========================================================================
+	// isErrorStatus — true for Failed / Error / Soft-Error style statuses
+	// =========================================================================
+
+	Mu2e.isErrorStatus = function (status) {
+		if (!status) return false;
+		return status.indexOf("Fail") === 0 ||
+			status.indexOf("Error") === 0 ||
+			status.indexOf("Soft") === 0;
+	};
+
 })();
