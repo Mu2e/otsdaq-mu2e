@@ -154,7 +154,7 @@ if [[ "x$build_system_script" == "x" ]];then
   build_system_script=$Base/setup_spack_build_system_v1.1.sh
 fi
 
-echo "ce1d0c139329e507b81af324aff6682880c184d5 *$build_system_script" | sha1sum -c -
+echo "63f733cce08e454534e24a9cfd95a64bd6e88ae9 *$build_system_script" | sha1sum -c -
 if [ $? -ne 0 ]; then
   echo "ERROR: setup_spack_build_system_v1.1.sh does not have the expected checksum! Please check Github for updates to this script!"
   exit 1
@@ -321,12 +321,13 @@ if [[ ${opt_develop:-0} -eq 1 ]];then
         done
         if ! [ -d offline ];then
             if [ $opt_w -eq 0 ];then
-                git clone https://github.com/Mu2e/Offline.git offline
+                git clone https://github.com/Mu2e/tdaq-offline.git offline
             else
-                git clone git@github.com:Mu2e/Offline.git offline
+                git clone git@github.com:Mu2e/tdaq-offline.git offline
             fi
         else
             cd offline
+            git remote set-url origin https://github.com/Mu2e/tdaq-offline.git
             git pull
             cd ..
         fi

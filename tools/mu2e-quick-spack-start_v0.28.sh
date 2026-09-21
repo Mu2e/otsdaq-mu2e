@@ -158,7 +158,7 @@ if [[ "x$build_system_script" == "x" ]];then
   build_system_script=$Base/setup_spack_build_system_v0.28.sh
 fi
 
-echo "5bfade30fa8b3da95d2f904a17e602f033c326b5 *$build_system_script" | sha1sum -c -
+echo "5827e2df97f9fbf30c435aaced7fbd381dd68d79 *$build_system_script" | sha1sum -c -
 if [ $? -ne 0 ]; then
   echo "ERROR: setup_spack_build_system_v0.28.sh does not have the expected checksum! Please check Github for updates to this script!"
   exit 1
@@ -332,9 +332,21 @@ if [[ ${opt_develop:-0} -eq 1 ]];then
         checkout_package $pkg
     done
     if [[ ${opt_all_packages:-0} -eq 1 ]]; then
-        for pkg in Offline mu2e-trig-config otsdaq-mu2e-calorimeter otsdaq-mu2e-crv otsdaq-mu2e-dqm otsdaq-mu2e-extmon otsdaq-mu2e-stm otsdaq-mu2e-tracker otsdaq-mu2e-trigger mu2e-tdaq-suite;do
+        for pkg in mu2e-trig-config otsdaq-mu2e-calorimeter otsdaq-mu2e-crv otsdaq-mu2e-dqm otsdaq-mu2e-extmon otsdaq-mu2e-stm otsdaq-mu2e-tracker otsdaq-mu2e-trigger mu2e-tdaq-suite;do
             checkout_package $pkg
         done
+        if ! [ -d Offline ];then
+            if [ $opt_w -eq 0 ];then
+                git clone https://github.com/Mu2e/tdaq-offline.git Offline
+            else
+                git clone git@github.com:Mu2e/tdaq-offline.git Offline
+            fi
+        else
+            cd Offline
+            git remote set-url origin https://github.com/Mu2e/tdaq-offline.git
+            git pull
+            cd ..
+        fi
     fi
     if [[ ${opt_otsdaq:-0} -eq 1 ]] ; then
         for pkg in otsdaq otsdaq-utilities otsdaq-components otsdaq-epics otsdaq-suite;do
