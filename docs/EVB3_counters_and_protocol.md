@@ -12,7 +12,7 @@ manager**, which owns the m_axis DMA stream, frames every chunk with a FAFA
 protocol header, and bundles chunks into DMA transfers. The software-facing
 framing spec is in [EVB3_DMA_FAFA_protocol.md](EVB3_DMA_FAFA_protocol.md).
 
-Seven 16-bit saturating word counters track data flow through the pipeline. They
+Seven 16-bit wrap-around word counters (saturating until 2026-09-10; every zero-sum identity below holds modulo 2^16) track data flow through the pipeline. They
 count **data words only** (excluding FAFA protocol headers and DMA-close filler
 words), making them zero-sum across the split and merge points.
 
@@ -371,7 +371,20 @@ per source) can take. Since 2026-09-08 the protocol is credit-based:
   keeps `tx_sent_words[dest]`, the declared payload words it has sent to each
   destination (credited once per data packet at the header, exactly what the
   RX stores: pads and idle packets are not stored).
-- At window open ('h17): `outstanding = sent_units - drained_units` (mod 32),
+- **2026-09-17 correction (fix B):** the free-space computation is now done in
+  WORDS: `outstanding_upper = sent_words - drained_units x 32` (mod 1024, an
+  upper bound because the receiver's drained report is truncated to units),
+  `free_words = 992 - outstanding_upper`, saturating at 0. The earlier
+  unit-only difference below could read one unit LOW (floor(O/32) vs
+  floor(O/32)+1 depending on residues) and the cap then only bounded O at
+  1023 words, so for O in 993..1023 the 5-bit difference aliased 32 to 0,
+  free read 992, and the sender overfilled the peer's FIFO (HW 0x9370 bit 0,
+  three times at gap 0xff under DMA back-pressure, 197 words of a record
+  overwritten). With word precision O <= 992 holds inductively and no
+  aliasing is possible. Usable buffer stays 992 words. The sim now runs the
+  HW credit (31 units; it was 4) and a 40 us DMA block reaches the
+  aliasing state as a regression.
+- At window open ('h17), historical description: `outstanding = sent_units - drained_units` (mod 32),
   `free = (31 - outstanding) x 32` words. 'h00 sends only while free is
   non-zero, clamps the packet to it, and decrements per word sent.
 
