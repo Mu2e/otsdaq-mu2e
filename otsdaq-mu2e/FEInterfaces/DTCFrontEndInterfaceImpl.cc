@@ -49,27 +49,43 @@ uint32_t readEVBBufferTestStatus(DTCLib::DTC* dtc)
 	return value;
 }
 
+// Sticky 0x9370 bits that are known checker/build defects on specific bitfiles and must
+// NOT count against run validity or block the start gate.  The bits stay visible in EVB
+// Status and every run report; only the pass/fail decision ignores them.
+//
+// Bit 13 (RX_FCS_BAD): sets on the receiver as soon as the peer's idle frames arrive, on
+// every build since 2026-09-17.  hw agent 2026-09-21: the CHECKER is wrong, not the sender
+// -- the 09-18 ILA capture recomputed the failing idle frame's FCS two ways and it matched
+// the wire; checker RTL unchanged across builds, so the fault is in how it is built (probe
+// rxCRCword/rxCRCen in evb_rx_ila).  Per-build list is the agreed holding pattern for the
+// builds below.  hw agent 2026-09-22: Sep-22 (0xd6092291) still has the checker fault and
+// stays listed; THE BUILD AFTER IT is the first where bit 13 means a real FCS mismatch --
+// do not add anything newer than 0xd6092291 without the hw agent saying so.
+// This is the single source of truth -- the start gate and the buffer-test run-validity
+// check both call it, so the two can no longer drift apart (they did on 2026-09-22).
+uint32_t evbKnownDefectMask(DTCLib::DTC* dtc)
+{
+	if(!dtc)
+		return 0;
+	uint32_t designDate = 0;
+	dtc->GetDevice()->read_register(0x9004, 100, &designDate);
+	switch(designDate)
+	{
+	case 0xd6091797:  // Sep-17
+	case 0xd60919a0:  // Sep-19
+	case 0xd6092192:  // Sep-21
+	case 0xd6092291:  // Sep-22 (last build with the checker fault, per hw agent)
+		return (1u << 13);
+	default:
+		return 0;
+	}
+}
+
 std::string requireEVBBufferTestReady(DTCLib::DTC* dtc)
 {
 	// SoftReset drops bit 25 (DDR calibration done) for ~1 s through the reset chain;
 	// wait it out, but refuse immediately on any sticky error
-
-	// Bit 13 (RX_FCS_BAD) sets on the receiver as soon as the peer's idle frames arrive,
-	// on every build since 2026-09-17.  hw agent 2026-09-21: the CHECKER is wrong, not the
-	// sender -- the 09-18 ILA capture recomputed the failing idle frame's FCS two ways and
-	// it matched the wire; checker RTL unchanged across builds, so the fault is in how it
-	// is built (probe rxCRCword/rxCRCen in evb_rx_ila).  A per-build exclusion list is the
-	// agreed holding pattern.  Only the start gate ignores it; EVB Status and run reports
-	// still show it.  Remove entries here once a build is confirmed fixed.
-	uint32_t ignoreMask = 0;
-	{
-		uint32_t designDate = 0;
-		dtc->GetDevice()->read_register(0x9004, 100, &designDate);
-		if(designDate == 0xd6091797 ||  // Sep-17
-		   designDate == 0xd60919a0 ||  // Sep-19
-		   designDate == 0xd6092192)    // Sep-21
-			ignoreMask = (1u << 13);
-	}
+	const uint32_t ignoreMask = evbKnownDefectMask(dtc);
 
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 	uint32_t   value    = readEVBBufferTestStatus(dtc);
@@ -8583,14 +8599,9 @@ try
 	bool     lastStatusReadFailed          = false;
 	threadStruct->evbErrAtStallOnsetValid_ = false;
 
-	// Bitfile 0xd6091797: bit 13 re-fires on every SoftReset (checker defect, wire FCS
-	// correct per ILA).  Exclude from run-validity on this build only.
-	{
-		uint32_t designDate = 0;
-		if(threadStruct->thisDTC_)
-			threadStruct->thisDTC_->GetDevice()->read_register(0x9004, 100, &designDate);
-		threadStruct->evbStickyIgnoreMask_ = (designDate == 0xd6091797) ? (1u << 13) : 0;
-	}
+	// Known checker-defect bits for this bitfile (see evbKnownDefectMask); excluded from
+	// run validity only, still shown in every report.
+	threadStruct->evbStickyIgnoreMask_ = evbKnownDefectMask(threadStruct->thisDTC_);
 
 	//------------------------
 	while(threadStruct->thisDTC_ && !threadStruct->exitThread_)
