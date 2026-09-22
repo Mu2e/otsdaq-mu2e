@@ -39,12 +39,13 @@ uint32_t readEVBBufferTestStatus(DTCLib::DTC* dtc)
 {
 	if(!dtc)
 		throw std::runtime_error("Cannot check EVB 0x9370: DTC is not initialized");
-	uint32_t value = 0;
+	uint32_t  value = 0;
 	const int error = dtc->GetDevice()->read_register(
 	    DTCLib::DTC_Register_EventBuilderErrorFlags, 100, &value);
 	if(error != 0)
 		throw std::runtime_error("DTC " + dtc->getDeviceUID() +
-		                         ": cannot check EVB 0x9370; read error " + std::to_string(error));
+		                         ": cannot check EVB 0x9370; read error " +
+		                         std::to_string(error));
 	return value;
 }
 
@@ -84,15 +85,20 @@ std::string requireEVBBufferTestReady(DTCLib::DTC* dtc)
 		masked = value & ~ignoreMask;
 		check  = DTCLib::CheckEVBStatus(masked);
 	}
-	std::string report = DTCLib::FormatEVBStatusCheck(value, dtc->getDeviceUID(),
-	    false, true, true, ignoreMask);
+	std::string report = DTCLib::FormatEVBStatusCheck(
+	    value, dtc->getDeviceUID(), false, true, true, ignoreMask);
 	if(ignoreMask)
-		report += "NOTE: bit 13 (RX_FCS_BAD) excluded from start gate on this bitfile (checker defect, not data loss); still reported in EVB Status.\n";
+		report +=
+		    "NOTE: bit 13 (RX_FCS_BAD) excluded from start gate on this bitfile (checker "
+		    "defect, not data loss); still reported in EVB Status.\n";
 	if(waitedMs)
-		report += "Waited " + std::to_string(waitedMs) + " ms for DDR calibration (bit 25) after reset.\n";
+		report += "Waited " + std::to_string(waitedMs) +
+		          " ms for DDR calibration (bit 25) after reset.\n";
 	if(!check.readyToStart())
 		throw std::runtime_error("Hardware EVB buffer test cannot start.\n" + report);
-	return report + "Before the first event, SoftReset all participating DTCs together with traffic stopped. This check does not reset hardware.\n";
+	return report +
+	       "Before the first event, SoftReset all participating DTCs together with "
+	       "traffic stopped. This check does not reset hardware.\n";
 }
 }  // namespace
 
@@ -881,15 +887,16 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    "EVB Init",
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::EVBInit),  // feMacroFunction
-	    std::vector<std::string>{"EVB Number of DTCs in Cluster (Default := 1)",
-	                             "EVB Cluster Base DTC Address as hostname (e.g. "
-	                             "calo-01, trk-04) (Default := "
-	                             "auto)",
-	                             "EVB Interpacket Gap in GbE TX clocks (Default := no "
-	                             "change)",
-	                             "EVB Partition ID (Default := 0x99)",
-	                             "EVB Idle Packet Words (8-byte words, Default := no change)",
-	                             "EVB Idle Burst per Dest Window (Default := no change)"},  // namesOfInputArgs
+	    std::vector<std::string>{
+	        "EVB Number of DTCs in Cluster (Default := 1)",
+	        "EVB Cluster Base DTC Address as hostname (e.g. "
+	        "calo-01, trk-04) (Default := "
+	        "auto)",
+	        "EVB Interpacket Gap in GbE TX clocks (Default := no "
+	        "change)",
+	        "EVB Partition ID (Default := 0x99)",
+	        "EVB Idle Packet Words (8-byte words, Default := no change)",
+	        "EVB Idle Burst per Dest Window (Default := no change)"},  // namesOfInputArgs
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
@@ -898,7 +905,8 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    "Set the EVB partition ID (0-255, default 0x99; register 0x9154 bits [15:8]). "
 	    "Optionally set the EVB interpacket gap (0x915C [15:8]), "
 	    "idle-packet payload size in 8-byte words (0x915C [31:16], reset 0x0c), "
-	    "and idle-burst count per destination window (0x9170 [15:0], 0 or 1 = one per window).");
+	    "and idle-burst count per destination window (0x9170 [15:0], 0 or 1 = one per "
+	    "window).");
 
 	registerFEMacroFunction(
 	    "EVB Status",
@@ -6521,11 +6529,10 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 	if(ipgInput >= 0 || idleWordsInput >= 0)
 	{
 		uint16_t idleWordCount  = (idleWordsInput >= 0)
-		    ? static_cast<uint16_t>(idleWordsInput)
-		    : dtc->ReadEVBIdlePacketWordCount();
-		uint8_t  ipg            = (ipgInput >= 0)
-		    ? static_cast<uint8_t>(ipgInput)
-		    : dtc->ReadEVBInterpacketGap();
+		                              ? static_cast<uint16_t>(idleWordsInput)
+		                              : dtc->ReadEVBIdlePacketWordCount();
+		uint8_t  ipg            = (ipgInput >= 0) ? static_cast<uint8_t>(ipgInput)
+		                                          : dtc->ReadEVBInterpacketGap();
 		uint8_t  loopbackOffset = dtc->ReadEVBLoopbackCalibratedOffset();
 		dtc->SetEVBPacketControlInfo(idleWordCount, ipg, loopbackOffset);
 		__FE_COUT__ << "Set EVB Packet Control (0x915C): Idle Words = "
@@ -6533,8 +6540,8 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 		            << " txGbE clks." << __E__;
 	}
 
-	int idleBurstInput = __GET_ARG_IN__(
-	    "EVB Idle Burst per Dest Window (Default := no change)", int, -1);
+	int idleBurstInput =
+	    __GET_ARG_IN__("EVB Idle Burst per Dest Window (Default := no change)", int, -1);
 	if(idleBurstInput >= 0)
 	{
 		dtc->SetEVBIdleBurst(static_cast<uint16_t>(idleBurstInput));
@@ -6651,16 +6658,14 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	  << (ipg * gbeTxClkPeriodNs) << " ns)\n";
 	int idleWords = dtc->ReadEVBIdlePacketWordCount();
 	int idleBurst = dtc->ReadEVBIdleBurst();
-	o << "  Idle Packet Words:  " << idleWords
-	  << " (8-byte words, 0x915C[31:16])\n";
-	o << "  Idle Burst:         " << idleBurst
-	  << " per dest window (0x9170[15:0])\n";
+	o << "  Idle Packet Words:  " << idleWords << " (8-byte words, 0x915C[31:16])\n";
+	o << "  Idle Burst:         " << idleBurst << " per dest window (0x9170[15:0])\n";
 	{
 		// Rate arithmetic: an idle frame = (4 + words) beats + gap beats at 156.25 MHz.
-		const int beatsPerIdle = 4 + idleWords + ipg;
-		const double maxPps    = 156.25e6 / beatsPerIdle;
-		o << "  Idle frame beats:   " << beatsPerIdle
-		  << " (4 header + " << idleWords << " payload + " << ipg << " gap)"
+		const int    beatsPerIdle = 4 + idleWords + ipg;
+		const double maxPps       = 156.25e6 / beatsPerIdle;
+		o << "  Idle frame beats:   " << beatsPerIdle << " (4 header + " << idleWords
+		  << " payload + " << ipg << " gap)"
 		  << " => max " << std::fixed << std::setprecision(2) << (maxPps / 1e6)
 		  << " Mpps at 156.25 MHz\n";
 		o << "  To fill a window back-to-back: burst >= "
@@ -6873,7 +6878,7 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		std::ostringstream rateNotes;
 		for(uint8_t ri = 0; ri < NUM_RATE_TYPES; ++ri)
 		{
-			uint8_t t        = rateTypes[ri];
+			uint8_t t = rateTypes[ri];
 			o << "  " << std::setw(18) << std::left << rateTypeNames[ri];
 
 			for(uint8_t d = 0; d < bramNodes; ++d)
@@ -8068,7 +8073,9 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			hw("wc_output_stream") << output << __E__;
 			// counters are 16-bit and wrap, so the sum must be compared mod 2^16
 			statusSs << "\t Zero-sum check (roc_input == (self + ddr_fifo) mod 65536): "
-			         << (rocIn == static_cast<uint16_t>(selfXfer + ddrFifo) ? "PASS" : "MISMATCH") << __E__;
+			         << (rocIn == static_cast<uint16_t>(selfXfer + ddrFifo) ? "PASS"
+			                                                                : "MISMATCH")
+			         << __E__;
 			statusSs << "\t Zero-sum check (ddr_fifo == ddr_to_tx): "
 			         << (ddrFifo == ddrToTx ? "PASS" : "MISMATCH") << __E__;
 			uint16_t expected = static_cast<uint16_t>(selfXfer + bufmgr);
@@ -8085,13 +8092,17 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 		try
 		{
 			const uint32_t evbErr = readEVBBufferTestStatus(threadStruct->thisDTC_);
-			const auto check = DTCLib::CheckEVBStatus(
-			    evbErr & ~threadStruct->evbStickyIgnoreMask_,
-			    threadStruct->evbTrafficStarted_, threadStruct->evbNumDestNodes_ > 1);
+			const auto     check =
+			    DTCLib::CheckEVBStatus(evbErr & ~threadStruct->evbStickyIgnoreMask_,
+			                           threadStruct->evbTrafficStarted_,
+			                           threadStruct->evbNumDestNodes_ > 1);
 			threadStruct->evbStickyErrorsSeen_.fetch_or(check.stickyErrors);
 			statusSs << "HW EVB Status..." << __E__
-			         << DTCLib::FormatEVBStatusCheck(evbErr, threadStruct->thisDTC_->getDeviceUID(),
-			                threadStruct->evbTrafficStarted_, threadStruct->evbNumDestNodes_ > 1,
+			         << DTCLib::FormatEVBStatusCheck(
+			                evbErr,
+			                threadStruct->thisDTC_->getDeviceUID(),
+			                threadStruct->evbTrafficStarted_,
+			                threadStruct->evbNumDestNodes_ > 1,
 			                false /* keep GUI descriptions plain-language */,
 			                threadStruct->evbStickyIgnoreMask_);
 		}
@@ -8101,14 +8112,20 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			statusSs << "HW EVB Status: read error: " << e.what() << __E__;
 		}
 		if(threadStruct->evbStickyErrorsSeen_)
-			kv("HW EVB run validity") << "INVALID: sticky errors observed during this test: 0x"
-			    << std::hex << threadStruct->evbStickyErrorsSeen_.load() << std::dec << __E__;
+			kv("HW EVB run validity")
+			    << "INVALID: sticky errors observed during this test: 0x" << std::hex
+			    << threadStruct->evbStickyErrorsSeen_.load() << std::dec << __E__;
 		else if(threadStruct->evbStatusReadFailed_)
-			kv("HW EVB run validity") << "UNKNOWN: a hardware status check failed" << __E__;
+			kv("HW EVB run validity")
+			    << "UNKNOWN: a hardware status check failed" << __E__;
 		else
-			kv("HW EVB run validity") << "No defined sticky errors observed; verify end-of-run word parity" << __E__;
-		statusSs << "Parity is authoritative only after traffic stops and DMA drains, with all DTCs "
-		            "SoftReset together before the first event; compare mod 65536." << __E__;
+			kv("HW EVB run validity")
+			    << "No defined sticky errors observed; verify end-of-run word parity"
+			    << __E__;
+		statusSs << "Parity is authoritative only after traffic stops and DMA drains, "
+		            "with all DTCs "
+		            "SoftReset together before the first event; compare mod 65536."
+		         << __E__;
 
 		if(threadStruct->error_ != "" || threadStruct->evbFramingErrors_ > 0 ||
 		   threadStruct->evbStickyErrorsSeen_ || threadStruct->evbStatusReadFailed_)
@@ -8531,9 +8548,9 @@ try
 		threadStruct->mismatchedEventTagsCount_ = 0;
 		threadStruct->mismatchedEventTagJumps_.clear();
 		threadStruct->evbSourcesSeenForTag_.clear();
-		threadStruct->evbTagSynced_ = false;
+		threadStruct->evbTagSynced_        = false;
 		threadStruct->evbStickyErrorsSeen_ = 0;
-		threadStruct->evbTrafficStarted_ = false;
+		threadStruct->evbTrafficStarted_   = false;
 		threadStruct->evbStatusReadFailed_ = false;
 		threadStruct->evbRocFragmentsBySource_.clear();
 		threadStruct->evbRocPayloadBytesBySource_.clear();
@@ -8562,8 +8579,8 @@ try
 	// iteration after data stops is kept for the abort report (see evbErrAtStallOnset_)
 	uint32_t lastEvbErr                    = 0;
 	bool     lastEvbErrValid               = false;
-	bool     lastMissingFrontier          = false;
-	bool     lastStatusReadFailed         = false;
+	bool     lastMissingFrontier           = false;
+	bool     lastStatusReadFailed          = false;
 	threadStruct->evbErrAtStallOnsetValid_ = false;
 
 	// Bitfile 0xd6091797: bit 13 re-fires on every SoftReset (checker defect, wire FCS
@@ -8572,8 +8589,7 @@ try
 		uint32_t designDate = 0;
 		if(threadStruct->thisDTC_)
 			threadStruct->thisDTC_->GetDevice()->read_register(0x9004, 100, &designDate);
-		threadStruct->evbStickyIgnoreMask_ =
-		    (designDate == 0xd6091797) ? (1u << 13) : 0;
+		threadStruct->evbStickyIgnoreMask_ = (designDate == 0xd6091797) ? (1u << 13) : 0;
 	}
 
 	//------------------------
@@ -8669,9 +8685,9 @@ try
 						threadStruct->mismatchedEventTagsCount_ = 0;
 						threadStruct->mismatchedEventTagJumps_.clear();
 						threadStruct->evbSourcesSeenForTag_.clear();
-						threadStruct->evbTagSynced_ = false;
+						threadStruct->evbTagSynced_        = false;
 						threadStruct->evbStickyErrorsSeen_ = 0;
-						threadStruct->evbTrafficStarted_ = false;
+						threadStruct->evbTrafficStarted_   = false;
 						threadStruct->evbStatusReadFailed_ = false;
 						threadStruct->evbRocFragmentsBySource_.clear();
 						threadStruct->evbRocPayloadBytesBySource_.clear();
@@ -8709,9 +8725,9 @@ try
 					threadStruct->resetStartEventTag_ = false;  //clear mailbox
 				}
 
-				lastEvbErrValid = false;
-				lastMissingFrontier = false;
-				lastStatusReadFailed = false;
+				lastEvbErrValid                        = false;
+				lastMissingFrontier                    = false;
+				lastStatusReadFailed                   = false;
 				threadStruct->evbErrAtStallOnsetValid_ = false;
 
 				//release buffers for restart
@@ -8764,30 +8780,40 @@ try
 				// One 0x9370 snapshot drives validity, decoding and stall diagnostics.
 				const uint32_t evbErr = readEVBBufferTestStatus(threadStruct->thisDTC_);
 				threadStruct->evbStickyErrorsSeen_.fetch_or(
-				    evbErr & DTCLib::EVBDefinedErrorMask & ~threadStruct->evbStickyIgnoreMask_);
+				    evbErr & DTCLib::EVBDefinedErrorMask &
+				    ~threadStruct->evbStickyIgnoreMask_);
 				if(!threadStruct->evbTrafficStarted_)
 				{
 					// Do not wait for a complete event: a missing peer may prevent any
 					// event from completing. Word counters are since the coordinated reset.
-					if(!events.empty() || threadStruct->thisDTC_->ReadEVBROCInputWords() != 0 ||
+					if(!events.empty() ||
+					   threadStruct->thisDTC_->ReadEVBROCInputWords() != 0 ||
 					   threadStruct->thisDTC_->ReadEVBGBERXWords() != 0)
 						threadStruct->evbTrafficStarted_ = true;
 				}
-				const auto check = DTCLib::CheckEVBStatus(
-				    evbErr & ~threadStruct->evbStickyIgnoreMask_,
-				    threadStruct->evbTrafficStarted_, threadStruct->evbNumDestNodes_ > 1);
-				const bool newErrors = check.stickyErrors &&
+				const auto check =
+				    DTCLib::CheckEVBStatus(evbErr & ~threadStruct->evbStickyIgnoreMask_,
+				                           threadStruct->evbTrafficStarted_,
+				                           threadStruct->evbNumDestNodes_ > 1);
+				const bool newErrors =
+				    check.stickyErrors &&
 				    (!lastEvbErrValid || (check.stickyErrors & ~lastEvbErr));
 				const bool ddrLost = !check.ddrCalibrated &&
-				    (!lastEvbErrValid || (lastEvbErr & (1u << 25)));
+				                     (!lastEvbErrValid || (lastEvbErr & (1u << 25)));
 				if(newErrors || ddrLost || check.missingFrontier != lastMissingFrontier ||
 				   !lastEvbErrValid || evbErr != lastEvbErr || lastStatusReadFailed)
 				{
-					const auto report = "EVB check at iteration #" + std::to_string(ii) +
-					    ", SubEvents received so far = " + std::to_string(threadStruct->subeventsCount_.load()) + "\n" +
-					    DTCLib::FormatEVBStatusCheck(evbErr, threadStruct->thisDTC_->getDeviceUID(),
-					        threadStruct->evbTrafficStarted_, threadStruct->evbNumDestNodes_ > 1,
-					        true, threadStruct->evbStickyIgnoreMask_);
+					const auto report =
+					    "EVB check at iteration #" + std::to_string(ii) +
+					    ", SubEvents received so far = " +
+					    std::to_string(threadStruct->subeventsCount_.load()) + "\n" +
+					    DTCLib::FormatEVBStatusCheck(
+					        evbErr,
+					        threadStruct->thisDTC_->getDeviceUID(),
+					        threadStruct->evbTrafficStarted_,
+					        threadStruct->evbNumDestNodes_ > 1,
+					        true,
+					        threadStruct->evbStickyIgnoreMask_);
 					// Keep draining DMA after marking the run invalid: stopping this reader
 					// would create back-pressure and obscure the original failure.
 					if(newErrors || ddrLost)
@@ -8800,20 +8826,22 @@ try
 						// available; one line per change at Debug, full report only at Trace
 						std::stringstream was;
 						if(lastEvbErrValid)
-							was << "0x" << std::hex << std::setw(8) << std::setfill('0') << lastEvbErr;
+							was << "0x" << std::hex << std::setw(8) << std::setfill('0')
+							    << lastEvbErr;
 						else
 							was << "first read";
-						__GEN_COUT__ << "EVB 0x9370 changed: 0x" << std::hex << std::setw(8)
-						             << std::setfill('0') << evbErr << std::dec << std::setfill(' ')
-						             << " (was " << was.str() << ") at iteration #" << ii
+						__GEN_COUT__ << "EVB 0x9370 changed: 0x" << std::hex
+						             << std::setw(8) << std::setfill('0') << evbErr
+						             << std::dec << std::setfill(' ') << " (was "
+						             << was.str() << ") at iteration #" << ii
 						             << ", SubEvents received so far = "
 						             << threadStruct->subeventsCount_ << __E__;
 						__GEN_COUTT__ << report;
 					}
 				}
-				lastEvbErr = evbErr;
-				lastEvbErrValid = true;
-				lastMissingFrontier = check.missingFrontier;
+				lastEvbErr           = evbErr;
+				lastEvbErrValid      = true;
+				lastMissingFrontier  = check.missingFrontier;
 				lastStatusReadFailed = false;
 
 				// first idle iteration after data: keep as the stall-onset sample;
@@ -8822,9 +8850,10 @@ try
 				{
 					if(!threadStruct->evbErrAtStallOnsetValid_)
 					{
-						threadStruct->evbErrAtStallOnset_ = evbErr;
+						threadStruct->evbErrAtStallOnset_     = evbErr;
 						threadStruct->evbErrAtStallOnsetIter_ = ii;
-						threadStruct->evbErrAtStallOnsetTime_ = std::chrono::steady_clock::now();
+						threadStruct->evbErrAtStallOnsetTime_ =
+						    std::chrono::steady_clock::now();
 						threadStruct->evbErrAtStallOnsetValid_ = true;
 					}
 				}
@@ -8835,8 +8864,9 @@ try
 			{
 				threadStruct->evbStatusReadFailed_ = true;
 				if(!lastStatusReadFailed)
-					__GEN_COUT_ERR__ << "EVB status check failed; run validity cannot be established: "
-					                 << e.what() << __E__;
+					__GEN_COUT_ERR__
+					    << "EVB status check failed; run validity cannot be established: "
+					    << e.what() << __E__;
 				lastStatusReadFailed = true;
 			}
 
@@ -9162,14 +9192,15 @@ catch(...)
 	if(threadStruct->inEVBMode_ && threadStruct->evbErrAtStallOnsetValid_)
 	{
 		uint32_t   onset = threadStruct->evbErrAtStallOnset_;
-		const auto ageMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-		                       std::chrono::steady_clock::now() -
-		                       threadStruct->evbErrAtStallOnsetTime_)
-		                       .count();
-		errSs << "EVB Error/Status (0x9370) at stall onset: 0x" << std::hex << std::setw(8)
-		      << std::setfill('0') << onset << std::dec << std::setfill(' ')
-		      << " (first idle iteration #" << threadStruct->evbErrAtStallOnsetIter_
-		      << " after last subevent, " << ageMs << " ms before this abort)" << __E__;
+		const auto ageMs =
+		    std::chrono::duration_cast<std::chrono::milliseconds>(
+		        std::chrono::steady_clock::now() - threadStruct->evbErrAtStallOnsetTime_)
+		        .count();
+		errSs << "EVB Error/Status (0x9370) at stall onset: 0x" << std::hex
+		      << std::setw(8) << std::setfill('0') << onset << std::dec
+		      << std::setfill(' ') << " (first idle iteration #"
+		      << threadStruct->evbErrAtStallOnsetIter_ << " after last subevent, "
+		      << ageMs << " ms before this abort)" << __E__;
 		for(const auto& line : DTCLib::DecodeEVBErrorStatus(onset))
 			errSs << "  " << line << __E__;
 	}

@@ -135,9 +135,9 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		std::atomic<uint64_t> evbCloseFillersCount_{0};
 		std::atomic<uint64_t> evbFramingErrors_{0};
 		std::atomic<uint32_t> evbStickyErrorsSeen_{0};
-		uint32_t             evbStickyIgnoreMask_{0};
-		std::atomic<bool> evbTrafficStarted_{false};
-		std::atomic<bool> evbStatusReadFailed_{false};
+		uint32_t              evbStickyIgnoreMask_{0};
+		std::atomic<bool>     evbTrafficStarted_{false};
+		std::atomic<bool>     evbStatusReadFailed_{false};
 		// 0x9370 sampled on the first idle iteration after the last subevent arrived (~1 loop
 		// iteration late, vs ~2 s late for the timeout snapshot); re-armed whenever data resumes
 		std::atomic<bool>                                  evbErrAtStallOnsetValid_{false};
