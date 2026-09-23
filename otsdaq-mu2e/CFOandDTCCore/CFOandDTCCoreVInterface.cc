@@ -123,6 +123,57 @@ CFOandDTCCoreVInterface::~CFOandDTCCoreVInterface(void)
 	__FE_COUT__ << "Destructed." << __E__;
 }  // end destructor()
 
+//==========================================================================================
+std::vector<std::string> CFOandDTCCoreVInterface::getSubsystemFEUIDsOfPlugin(
+    const std::string& pluginName) const
+{
+	std::vector<std::string> uids;
+	auto cfgMgr   = Configurable::getConfigurationManager();
+	auto contexts = cfgMgr->getNode("XDAQContextTable").getChildren();
+	for(const auto& ctx : contexts)
+	{
+		if(!ctx.second.isEnabled())
+			continue;
+		try
+		{
+			auto apps = ctx.second.getNode("LinkToApplicationTable").getChildren();
+			for(const auto& app : apps)
+			{
+				if(!app.second.isEnabled())
+					continue;
+				try
+				{
+					auto feChildren = app.second.getNode("LinkToSupervisorTable")
+					                      .getNode("LinkToFEInterfaceTable")
+					                      .getChildren();
+					for(const auto& fe : feChildren)
+					{
+						if(!fe.second.isEnabled())
+							continue;
+						if(fe.second.getNode("FEInterfacePluginName")
+						       .getValue<std::string>() != pluginName)
+							continue;
+						uids.push_back(fe.first);
+					}
+				}
+				catch(...)
+				{
+				}
+			}
+		}
+		catch(...)
+		{
+		}
+	}
+	return uids;
+}  // end getSubsystemFEUIDsOfPlugin()
+
+//==========================================================================================
+bool CFOandDTCCoreVInterface::subsystemHasCFO(void) const
+{
+	return !getSubsystemFEUIDsOfPlugin("CFOFrontEndInterface").empty();
+}  // end subsystemHasCFO()
+
 //===========================================================================================
 void CFOandDTCCoreVInterface::registerCFOandDTCFEMacros(void)
 {

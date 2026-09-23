@@ -72,6 +72,27 @@ class CFOandDTCCoreVInterface : public FEVInterface
 	void     testAndUpdateTimeAlive(const std::string& transitionName);
 	void     testRTFClockInEventBuildingMode(const std::string& transitionName);
 
+	/// UIDs of enabled FE interfaces of the given plugin type in this subsystem's config tree
+	/// (FE macros can only reach FEs in the same subsystem, so this is also the reach of the CFO).
+	std::vector<std::string> getSubsystemFEUIDsOfPlugin(const std::string& pluginName) const;
+	bool                     subsystemHasCFO(void) const;
+
+	/// Configure subsystem-iteration turn: standalone runs everything at once.
+	bool isMyConfigureSubsystemIteration(unsigned int myTurn) const
+	{
+		return isStandaloneSubsystem() || getSubsystemIterationIndex() == myTurn;
+	}
+	/// Configure phase = plain-iteration offset from the first iteration of this FE's pass.
+	/// (The iteration index never resets, and a DTC that waited for the CFO subsystem
+	///  starts its pass at iteration >= 1.)
+	int configPhase(void)
+	{
+		if(configPhaseBaseIteration_ == (unsigned int)-1)
+			configPhaseBaseIteration_ = getIterationIndex();
+		return (int)(getIterationIndex() - configPhaseBaseIteration_);
+	}
+	void resetConfigPhase(void) { configPhaseBaseIteration_ = (unsigned int)-1; }
+
   protected:
 	int         deviceIndex_           = -1;  //PCIe index
 	bool        configure_clock_       = false;
@@ -81,7 +102,16 @@ class CFOandDTCCoreVInterface : public FEVInterface
 	uint32_t    lastTimeAliveValue_    = 0;
 	time_t      lastTimeAliveReadTime_ = 0;  // only re-read if >= +2 seconds have elapsed
 
-	// Configure iteration layout for EventBuildingMode.
+	unsigned int configPhaseBaseIteration_ = (unsigned int)-1;
+
+	// Configure subsystem-iteration passes for EventBuildingMode. Each subsystem runs its
+	// whole phase list (below) as fast plain iterations inside its own pass; only the pass
+	// boundary is synchronized across subsystems by the top-level Gateway.
+	static const unsigned int CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM      = 0;  // CFO + any DTCs in the CFO's subsystem
+	static const unsigned int CONFIG_SUBSYSTEM_ITERATION_DETECTOR_SUBSYSTEM = 1;  // DTCs in subsystems without a CFO
+
+	// Configure phase layout for EventBuildingMode. Phases are plain-iteration offsets within
+	// one subsystem's pass (see configPhase()), not global iteration numbers.
 	static const int CONFIG_PHASE_ESTABLISH_CLOCKS_A            = 0;   // Phase 1a: Establish Clocks — CFO + DTCs w/o real ROCs
 	static const int CONFIG_PHASE_ESTABLISH_CLOCKS_B            = 1;   // Phase 1b: Establish Clocks — DTCs w/ real ROCs
 	static const int CONFIG_PHASE_ESTABLISH_TIMING_CHAIN_ENABLE = 2;   // Phase 2a: CFO enables links + clock markers

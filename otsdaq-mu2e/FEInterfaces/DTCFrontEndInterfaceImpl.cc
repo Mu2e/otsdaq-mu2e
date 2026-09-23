@@ -1367,11 +1367,17 @@ void DTCFrontEndInterface::createROCs(void)
 void DTCFrontEndInterface::configure(void)
 try
 {
+	__FE_COUTV__(getSubsystemIterationIndexString());
 	__FE_COUTV__(getIterationIndex());
 	__FE_COUTV__(getSubIterationIndex());
 
-	if(getIterationIndex() == 0 && getSubIterationIndex() == 0)
+	if(isFirstIteration())
+	{
 		recordTimeAlive();
+		resetConfigPhase();
+		configSubsystemIterationTurn_ = (unsigned int)-1;
+		timing_chain_first_substep_   = -1;
+	}
 
 	__FE_COUTV__(skipInit_);
 	if(skipInit_)
@@ -2164,16 +2170,46 @@ void DTCFrontEndInterface::configureHardwareDevMode(void)
 //==============================================================================
 void DTCFrontEndInterface::configureEventBuildingMode(int step)
 {
-	if(step == -1)
-		step = getIterationIndex();
-
-	__FE_COUT_INFO__ << "configureEventBuildingMode() iteration=" << step << __E__;
-
 	if(emulate_cfo_)
 	{
 		__FE_SS__ << "There is no CFO! Event Building Mode is invalid." << __E__;
 		__SS_THROW__;
 	}
+
+	if(step == -1)
+	{
+		// Whose turn: DTCs in the CFO's subsystem configure with the CFO (subsystem-iteration
+		// 0); DTCs in a subsystem without a CFO wait one subsystem-iteration for the CFO
+		// subsystem to bring up the timing chain. Standalone runs immediately.
+		if(configSubsystemIterationTurn_ == (unsigned int)-1)
+		{
+			configSubsystemIterationTurn_ =
+			    subsystemHasCFO()
+			        ? CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM
+			        : CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_DETECTOR_SUBSYSTEM;
+			__FE_COUT__ << "DTC configures in subsystem-iteration "
+			            << configSubsystemIterationTurn_
+			            << (configSubsystemIterationTurn_ ==
+			                        CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM
+			                    ? " (CFO in this subsystem)"
+			                    : " (no CFO in this subsystem)")
+			            << __E__;
+		}
+		if(!isMyConfigureSubsystemIteration(configSubsystemIterationTurn_))
+		{
+			__FE_COUT__ << "Waiting for the CFO subsystem to finish its configure pass "
+			               "(subsystem-iteration "
+			            << getSubsystemIterationIndexString() << ", my turn is "
+			            << configSubsystemIterationTurn_ << ")..." << __E__;
+			indicateSubsystemIterationWork();
+			return;
+		}
+		step = configPhase();
+	}
+
+	__FE_COUT_INFO__ << "configureEventBuildingMode() phase=" << step
+	                 << " (subsystem-iteration " << getSubsystemIterationIndexString()
+	                 << ", iteration " << getIterationIndex() << ")" << __E__;
 
 	const bool hasRealROCs = has_real_roc_flow_;
 	__FE_COUT__ << "DTC " << getInterfaceUID() << " classified as '"
@@ -2955,14 +2991,31 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 	else if(step == CFOandDTCCoreVInterface::CONFIG_PHASE_FINAL_SOFT_RESET)
 	{
 		getDTC()->EnableLink(DTCLib::DTC_Link_CFO);
-		__FE_COUT__ << "CFO link enabled, Final SoftReset to clear errors before "
-		               "enabling CFO operation."
+		__FE_COUT__ << "CFO link enabled; clearing detector emulator, releasing DAQ DMA "
+		               "buffers, then Final SoftReset to clear errors before enabling CFO "
+		               "operation."
 		            << __E__;
+		getDTC()->ClearDetectorEmulatorInUse();
+		getDTC()->ReleaseAllBuffers(DTC_DMA_Engine_DAQ);
 		getDTC()->SoftReset();
-		indicateIterationWork();
+
+		// Last DTC phase. With a CFO in this subsystem, idle one more iteration so the
+		// DTC finishes together with the CFO's phase 13 (today's behavior).
+		if(configSubsystemIterationTurn_ ==
+		   CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM)
+			indicateIterationWork();
+		else
+		{
+			resetConfigPhase();
+			configSubsystemIterationTurn_ = (unsigned int)-1;
+		}
 	}
 	else
+	{
 		__FE_COUT__ << "Do nothing while other configurable entities finish..." << __E__;
+		resetConfigPhase();
+		configSubsystemIterationTurn_ = (unsigned int)-1;
+	}
 
 }  // end configureEventBuildingMode()
 
@@ -3101,6 +3154,10 @@ void DTCFrontEndInterface::configureForTimingChain(int step)
 void DTCFrontEndInterface::halt(void)
 {
 	const std::string transitionStr = "Halting";
+
+	resetConfigPhase();
+	configSubsystemIterationTurn_ = (unsigned int)-1;
+	timing_chain_first_substep_   = -1;
 
 	__FE_COUTV__(skipInit_);
 	if(skipInit_)
@@ -3492,7 +3549,10 @@ void DTCFrontEndInterface::start(std::string runNumber)
 
 		const unsigned int systemMinReady =
 		    getSystemMinReadyForEventGenerationStartIteration();
-		const unsigned int startIteration = getIterationIndex();
+		// Start steps are ordered across subsystems (DTC SoftReset -> artdaq -> DTC final
+		// SoftReset -> CFO run plan): subsystem-iterations under a top-level, plain
+		// iterations when standalone.
+		const unsigned int startIteration = getSubsystemSyncStepIndex();
 
 		if(startIteration == 0)
 		{
@@ -3508,7 +3568,7 @@ void DTCFrontEndInterface::start(std::string runNumber)
 
 		if(startIteration < systemMinReady - 1)
 		{
-			indicateIterationWork();
+			indicateSubsystemSyncStepWork();
 			return;
 		}
 

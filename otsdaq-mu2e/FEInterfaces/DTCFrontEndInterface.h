@@ -193,6 +193,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	std::string getEVBWireParity(void);
 
 	int                     timing_chain_first_substep_ = -1;
+	unsigned int            configSubsystemIterationTurn_ = (unsigned int)-1;  // which subsystem-iteration this DTC configures in; -1 = not yet decided
 	bool                    rtfPhaseEdgeRetried_        = false;
 	std::string             rtfPhaseEdgeRetryDetail_;  // populated when edge-flip retry runs, included in error if verify still fails
 	int                     dtc_location_in_chain_ = -1;
