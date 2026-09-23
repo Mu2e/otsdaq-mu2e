@@ -6764,6 +6764,9 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	// actually on right now, not just what the setup macro wrote earlier.
 	o << "=== DTC Control (0x9100) ===\n";
 	o << dtc->FormatDTCControl() << "\n";
+	// the register formatter leaves setfill('0') and hex on the stream; reset both so the
+	// BRAM table below prints decimal, space-padded columns
+	o << std::dec << std::setfill(' ');
 
 	uint8_t startNode = dtc->ReadEVBStartNode();
 	uint8_t numNodes  = dtc->ReadEVBNumberOfDestinationNodes();
