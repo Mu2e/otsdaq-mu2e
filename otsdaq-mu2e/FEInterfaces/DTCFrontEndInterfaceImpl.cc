@@ -2186,11 +2186,13 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 			configSubsystemIterationTurn_ =
 			    subsystemHasCFO()
 			        ? CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM
-			        : CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_DETECTOR_SUBSYSTEM;
+			        : CFOandDTCCoreVInterface::
+			              CONFIG_SUBSYSTEM_ITERATION_DETECTOR_SUBSYSTEM;
 			__FE_COUT__ << "DTC configures in subsystem-iteration "
 			            << configSubsystemIterationTurn_
 			            << (configSubsystemIterationTurn_ ==
-			                        CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM
+			                        CFOandDTCCoreVInterface::
+			                            CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM
 			                    ? " (CFO in this subsystem)"
 			                    : " (no CFO in this subsystem)")
 			            << __E__;
@@ -2991,10 +2993,11 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 	else if(step == CFOandDTCCoreVInterface::CONFIG_PHASE_FINAL_SOFT_RESET)
 	{
 		getDTC()->EnableLink(DTCLib::DTC_Link_CFO);
-		__FE_COUT__ << "CFO link enabled; clearing detector emulator, releasing DAQ DMA "
-		               "buffers, then Final SoftReset to clear errors before enabling CFO "
-		               "operation."
-		            << __E__;
+		__FE_COUT__
+		    << "CFO link enabled; clearing detector emulator, releasing DAQ DMA "
+		       "buffers, then Final SoftReset to clear errors before enabling CFO "
+		       "operation."
+		    << __E__;
 		getDTC()->ClearDetectorEmulatorInUse();
 		getDTC()->ReleaseAllBuffers(DTC_DMA_Engine_DAQ);
 		getDTC()->SoftReset();

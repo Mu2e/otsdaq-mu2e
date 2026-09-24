@@ -128,8 +128,8 @@ std::vector<std::string> CFOandDTCCoreVInterface::getSubsystemFEUIDsOfPlugin(
     const std::string& pluginName) const
 {
 	std::vector<std::string> uids;
-	auto cfgMgr   = Configurable::getConfigurationManager();
-	auto contexts = cfgMgr->getNode("XDAQContextTable").getChildren();
+	auto                     cfgMgr   = Configurable::getConfigurationManager();
+	auto                     contexts = cfgMgr->getNode("XDAQContextTable").getChildren();
 	for(const auto& ctx : contexts)
 	{
 		if(!ctx.second.isEnabled())

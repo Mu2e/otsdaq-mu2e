@@ -2141,10 +2141,11 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 				}
 				catch(const std::exception& e)
 				{
-					__FE_SS__ << "Phase 2a (Timing Chain: Enable): failed to enable the CFO "
-					             "link on DTC "
-					          << dtcUID << " via FE Macro 'Enable/Disable DTC Link': "
-					          << e.what();
+					__FE_SS__
+					    << "Phase 2a (Timing Chain: Enable): failed to enable the CFO "
+					       "link on DTC "
+					    << dtcUID
+					    << " via FE Macro 'Enable/Disable DTC Link': " << e.what();
 					__FE_SS_THROW__;
 				}
 				__FE_COUT__ << "DTC " << dtcUID << " CFO link enabled." << __E__;
@@ -2800,7 +2801,8 @@ void CFOFrontEndInterface::start(std::string runNumber)  // runNumber)
 		if(startIteration < systemMinReady)
 		{
 			__FE_COUT_INFO__ << "Delaying CFO run plan launch until start step >= "
-			                 << systemMinReady << " (now " << startIteration << ")" << __E__;
+			                 << systemMinReady << " (now " << startIteration << ")"
+			                 << __E__;
 			indicateSubsystemSyncStepWork();
 			return;
 		}
