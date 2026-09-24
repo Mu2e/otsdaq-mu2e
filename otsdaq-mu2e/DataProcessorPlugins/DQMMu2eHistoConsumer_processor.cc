@@ -45,6 +45,15 @@ void DQMMu2eHistoConsumer::startProcessingData(std::string runNumber)
 	// std::cout << __PRETTY_FUNCTION__
 	//           << filePath_ + "/" + radixFileName_ + "_Run" + runNumber + ".root"
 	//           << std::endl;
+	{
+		std::lock_guard<std::mutex> lock(statusMutex_);
+		runNumber_       = runNumber;
+		runStartEpochMs_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+		                       std::chrono::system_clock::now().time_since_epoch())
+		                       .count();
+		streams_.clear();
+		lastPacketTime_ = std::chrono::steady_clock::time_point{};
+	}
 	DQMHistosBase::openFile(filePath_ + "/" + radixFileName_ + "_Run" + runNumber +
 	                        ".root");
 	DQMHistosBase::myDirectory_ =
@@ -131,8 +140,48 @@ void DQMMu2eHistoConsumer::fastRead(void)
 		return;
 	}
 	// std::cout << "[DQMMu2eHistoConsumer::fastRead] reading BUFFER..." << std::endl;
-	histReceiver_.readPacket(DQMHistosBase::myDirectory_, dataP_);
+	const uint64_t bytes = dataP_->size();
+	auto           t0    = std::chrono::steady_clock::now();
+	std::vector<std::string> topDirs =
+	    histReceiver_.readPacket(DQMHistosBase::myDirectory_, dataP_);
+	auto t1 = std::chrono::steady_clock::now();
+	countBusyNanos(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+	countPacket(bytes);
+	{
+		std::lock_guard<std::mutex> lock(statusMutex_);
+		lastPacketTime_ = t1;
+		objects_ += histReceiver_.lastObjectCount();
+		for(auto const& top : topDirs)
+		{
+			StreamStat& s = streams_[top];
+			++s.packets;
+			s.last = t1;
+		}
+	}
 	DataConsumer::setReadSubBuffer<std::string, std::map<std::string, std::string>>();
+}
+
+//========================================================================================================================
+std::map<std::string, std::string> DQMMu2eHistoConsumer::getExtraStatus(void) const
+{
+	std::map<std::string, std::string> status;
+	auto                               now = std::chrono::steady_clock::now();
+	auto ageMs = [&now](std::chrono::steady_clock::time_point t) -> std::string {
+		if(t == std::chrono::steady_clock::time_point{})
+			return "-1";  // never
+		return std::to_string(
+		    std::chrono::duration_cast<std::chrono::milliseconds>(now - t).count());
+	};
+
+	std::lock_guard<std::mutex> lock(statusMutex_);
+	status["runNumber"]       = runNumber_;
+	status["runStartEpochMs"] = std::to_string(runStartEpochMs_);
+	status["objects"]         = std::to_string(objects_);
+	status["lastPacketAgeMs"] = ageMs(lastPacketTime_);
+	for(auto const& stream : streams_)
+		status["stream_" + stream.first] =
+		    std::to_string(stream.second.packets) + "," + ageMs(stream.second.last);
+	return status;
 }
 
 DEFINE_OTS_PROCESSOR(DQMMu2eHistoConsumer)
