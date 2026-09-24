@@ -95,6 +95,23 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 
 	DTCLib::DTC* thisDTC_;
 
+	// Buffer Test merge modes: the DTC_0 FE reads DTC_1's DMA through a borrowed
+	// handle and joins each pair of halves into one DTC_Event (final-topology emulation).
+	enum class DetachedMergeMode : uint8_t
+	{
+		Off      = 0,
+		EvenOdd  = 1,  // DTC_1 tag T+1 pairs with DTC_0 tag T (2-node EVB routing)
+		Matching = 2,  // DTC_1 tag T pairs with DTC_0 tag T
+	};
+	static const char* detachedMergeModeName(DetachedMergeMode m);
+
+	struct MergedDetachedEvent
+	{
+		std::shared_ptr<DTCLib::DTC_Event> event;                 // self-contained copy
+		size_t                             numSubeventsFromDTC0;  // subevents [0,n0) came from DTC_0
+		uint64_t                           baseTag;               // == DTC_0 tag
+	};
+
 	struct DetachedBufferTestThreadStruct
 	{
 		std::mutex        lock_;
@@ -108,10 +125,34 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		bool                                                       inSubeventMode_  = false;
 		bool                                                       inEVBMode_       = false;
 		uint8_t                                                    evbNumDestNodes_ = 1;
-		std::set<uint8_t>                                          evbSourcesSeenForTag_;        // EVB mode: source DTC IDs that have delivered the current expected tag
-		bool                                                       evbTagSynced_ = false;        // EVB mode: expected tag has been synced to the first subevent seen after (re)start
-		std::map<uint8_t /*source_dtc_id*/, std::vector<uint64_t>> evbRocFragmentsBySource_;     // EVB mode: ROC fragment counts per source DTC, per link
-		std::map<uint8_t /*source_dtc_id*/, std::vector<uint64_t>> evbRocPayloadBytesBySource_;  // EVB mode: ROC payload bytes per source DTC, per link
+		// source key = (sourceGroup << 8) | source_dtc_id; group 1 = subevent arrived via the
+		// DTC_1 half of a merged event.  Non-merge runs use group 0 only (key == source_dtc_id).
+		std::set<uint16_t>                                          evbSourcesSeenForTag_;        // source keys that have delivered the current expected tag
+		bool                                                        evbTagSynced_ = false;        // EVB mode: expected tag has been synced to the first subevent seen after (re)start
+		std::map<uint16_t /*source key*/, std::vector<uint64_t>>    evbRocFragmentsBySource_;     // ROC fragment counts per source, per link
+		std::map<uint16_t /*source key*/, std::vector<uint64_t>>    evbRocPayloadBytesBySource_;  // ROC payload bytes per source, per link
+
+		// ---- merge modes ----
+		DetachedMergeMode mergeMode_ = DetachedMergeMode::Off;
+		DTCLib::DTC*      otherDTC_  = nullptr;  // DTC_1 FE's thisDTC_, borrowed; never deleted here
+		std::string       otherDTCUID_;
+		uint8_t           evbNumDestNodesOther_ = 1;
+		uint32_t          pairTimeoutMs_        = 2000;  // from thisDTC_->GetEVBEventTimeout() at Start
+		size_t            pairMaxPending_       = 1024;
+		struct PendingHalf
+		{
+			std::shared_ptr<DTCLib::DTC_Event>                 event;
+			std::chrono::time_point<std::chrono::steady_clock> arrival;
+		};
+		std::map<uint64_t /*baseTag*/, PendingHalf> pendingDTC0_, pendingDTC1_;  // thread-private
+		bool                                        haveMergedTag_     = false;
+		uint64_t                                    lastMergedBaseTag_ = 0;
+		// read lock-free by the status functions
+		std::atomic<uint64_t> mergedEventsCount_{0};
+		std::atomic<uint64_t> unmatchedDTC0Count_{0}, unmatchedDTC1Count_{0};
+		std::atomic<uint64_t> mergeTimeTotalNs_{0}, mergeTimeMaxNs_{0}, mergedBytesTotal_{0};
+		std::atomic<size_t>   pendingDTC0Count_{0}, pendingDTC1Count_{0};
+		std::atomic<uint64_t> oldestPendingDTC0Tag_{UINT64_MAX}, oldestPendingDTC1Tag_{UINT64_MAX};
 		bool                                                       activeMatch_      = false;
 		std::atomic<uint64_t>                                      expectedEventTag_ = -1, nextEventWindowTag_ = -1;
 		bool                                                       saveBinaryData_                  = false;
@@ -173,7 +214,30 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	static void handleDetachedSubevent(
 	    const DTCLib::DTC_SubEvent& subevent,
 	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct>
-	        threadStruct);
+	             threadStruct,
+	    uint64_t tagOffset   = 0,   // subtracted from the subevent tag before the expected-tag check
+	    uint8_t  sourceGroup = 0);  // 0 = DTC_0 half / non-merge, 1 = DTC_1 half
+
+	static std::shared_ptr<DTCLib::DTC_Event> buildMergedDetachedEvent(
+	    const DTCLib::DTC_Event& half0, const DTCLib::DTC_Event& half1, uint64_t baseTag);
+	static void stageDetachedHalf(
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct,
+	    std::shared_ptr<DTCLib::DTC_Event>                                    half,
+	    bool                                                                  fromDTC1,
+	    std::vector<MergedDetachedEvent>&                                     mergedOut);
+	static void mergeDetachedEvents(
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct,
+	    std::vector<std::shared_ptr<DTCLib::DTC_Event>>&                      eventsFromDTC0,
+	    std::vector<std::shared_ptr<DTCLib::DTC_Event>>&                      eventsFromDTC1,
+	    std::vector<MergedDetachedEvent>&                                     mergedOut);
+	static std::string getDetachedMergeStatus(
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct,
+	    int                                                                   labelWidth);
+	static void resetDetachedMergeState(
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct);
+	static void handleMergedDetachedEvents(
+	    std::vector<MergedDetachedEvent>&                                     merged,
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct);
 
 	void initDetachedBufferTest(uint64_t           initialEventWindowTag,
 	                            bool               saveBinaryDataToFile,
@@ -191,6 +255,8 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void        createROCs(void);
 	void        registerFEMacros(void);
 	std::string getEVBWireParity(void);
+	DTCFrontEndInterface* findPeerDTCFrontEnd(int deviceIndex, std::string& visibleList);
+	void                  requireNoMergeReaderOnThisDTC(void);
 
 	int                     timing_chain_first_substep_   = -1;
 	unsigned int            configSubsystemIterationTurn_ = (unsigned int)-1;  // which subsystem-iteration this DTC configures in; -1 = not yet decided
