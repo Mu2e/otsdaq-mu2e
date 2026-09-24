@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <string>
 #include "dtcInterfaceLib/DTC.h"
 #include "dtcInterfaceLib/DTCSoftwareCFO.h"
@@ -104,13 +105,19 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 
 		DTCLib::DTC* thisDTC_;
 
-		bool                  inSubeventMode_   = false;
-		bool                  activeMatch_      = false;
-		std::atomic<uint64_t> expectedEventTag_ = -1, nextEventWindowTag_ = -1;
-		bool                  saveBinaryData_                  = false;
-		bool                  saveSubeventHeadersToBinaryData_ = false;
-		bool                  doNotResetCounters_              = false;
-		bool                  skipBy32_                        = false;
+		bool                                                       inSubeventMode_  = false;
+		bool                                                       inEVBMode_       = false;
+		uint8_t                                                    evbNumDestNodes_ = 1;
+		std::set<uint8_t>                                          evbSourcesSeenForTag_;        // EVB mode: source DTC IDs that have delivered the current expected tag
+		bool                                                       evbTagSynced_ = false;        // EVB mode: expected tag has been synced to the first subevent seen after (re)start
+		std::map<uint8_t /*source_dtc_id*/, std::vector<uint64_t>> evbRocFragmentsBySource_;     // EVB mode: ROC fragment counts per source DTC, per link
+		std::map<uint8_t /*source_dtc_id*/, std::vector<uint64_t>> evbRocPayloadBytesBySource_;  // EVB mode: ROC payload bytes per source DTC, per link
+		bool                                                       activeMatch_      = false;
+		std::atomic<uint64_t>                                      expectedEventTag_ = -1, nextEventWindowTag_ = -1;
+		bool                                                       saveBinaryData_                  = false;
+		bool                                                       saveSubeventHeadersToBinaryData_ = false;
+		bool                                                       doNotResetCounters_              = false;
+		bool                                                       skipBy32_                        = false;
 
 		std::atomic<uint64_t>                      eventsCount_;
 		std::atomic<uint64_t>                      subeventsCount_;
@@ -123,6 +130,21 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		std::vector<uint64_t> rocFragmentsCount_, rocFragmentTimeoutsCount_,
 		    rocFragmentErrorsCount_, rocPayloadEmptyCount_, rocHeaderTimeoutsCount_,
 		    rocPayloadByteCount_;
+		std::atomic<uint64_t> evbChunksCount_{0};
+		std::atomic<uint64_t> evbTotalDataWordsRead_{0};
+		std::atomic<uint64_t> evbCloseFillersCount_{0};
+		std::atomic<uint64_t> evbFramingErrors_{0};
+		std::atomic<uint32_t> evbStickyErrorsSeen_{0};
+		uint32_t              evbStickyIgnoreMask_{0};
+		std::atomic<bool>     evbTrafficStarted_{false};
+		std::atomic<bool>     evbStatusReadFailed_{false};
+		// 0x9370 sampled on the first idle iteration after the last subevent arrived (~1 loop
+		// iteration late, vs ~2 s late for the timeout snapshot); re-armed whenever data resumes
+		std::atomic<bool>                                  evbErrAtStallOnsetValid_{false};
+		std::atomic<uint32_t>                              evbErrAtStallOnset_{0};
+		std::atomic<uint64_t>                              evbErrAtStallOnsetIter_{0};
+		std::chrono::time_point<std::chrono::steady_clock> evbErrAtStallOnsetTime_;
+
 		uint64_t                                           totalSubeventBytesTransferred_;
 		std::chrono::time_point<std::chrono::steady_clock> transferStartTime_,
 		    transferEndTime_;
@@ -142,6 +164,9 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	static std::string getDetachedBufferTestStatus(
 	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct>
 	        threadStruct);
+	static std::string getDetachedBufferTestEVBStatus(
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct>
+	        threadStruct);
 	static uint64_t getDetachedBufferTestReceivedCount(
 	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct>
 	        threadStruct);
@@ -156,14 +181,16 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	                            bool               saveSubeventHeadersToDataFile,
 	                            bool               doNotResetCounters,
 	                            bool               skipBy32,
-	                            uint32_t           packetThresholdToSave);
+	                            uint32_t           packetThresholdToSave,
+	                            bool               inEVBMode = false);
 
 	std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct>
 	    bufferTestThreadStruct_;
 
   private:
-	void createROCs(void);
-	void registerFEMacros(void);
+	void        createROCs(void);
+	void        registerFEMacros(void);
+	std::string getEVBWireParity(void);
 
 	int                     timing_chain_first_substep_ = -1;
 	bool                    rtfPhaseEdgeRetried_        = false;
@@ -179,6 +206,13 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	uint64_t                next_starting_cfoem_event_window_tag_ = 0;
 
 	std::ofstream datafile_[8];
+
+	struct EVBBRAMSnapshot
+	{
+		std::chrono::steady_clock::time_point         timestamp;
+		std::map<uint16_t /*type<<8|slot*/, uint32_t> values;
+	};
+	EVBBRAMSnapshot evbBRAMSnapshot_;
 
 	std::map<std::string /*ROC UID*/, std::unique_ptr<ROCCoreVInterface>> rocs_;
 	std::map<DTCLib::DTC_Link_ID, bool>                                   rocRunningStatus_;
@@ -284,7 +318,8 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	                                              bool               saveSubeventHeadersToDataFile,
 	                                              bool               doNotResetCounters,
 	                                              bool               skipBy32,
-	                                              uint32_t           packetThresholdToSave);
+	                                              uint32_t           packetThresholdToSave,
+	                                              bool               inEVBMode = false);
 	void        SetCFOEmulatorFixedWidthEmulation(__ARGS__);
 	std::string SetCFOEmulatorFixedWidthEmulation(bool               enable,
 	                                              bool               useDetachedBufferTest,
@@ -299,7 +334,8 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	                                              bool               saveSubeventHeadersToDataFile,
 	                                              bool               doNotResetCounters,
 	                                              bool               skipBy32,
-	                                              uint32_t           packetThresholdToSave);
+	                                              uint32_t           packetThresholdToSave,
+	                                              bool               inEVBMode = false);
 
 	void BufferTest(__ARGS__);
 	void PatternTest(__ARGS__);
