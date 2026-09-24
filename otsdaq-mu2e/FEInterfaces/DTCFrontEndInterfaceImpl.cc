@@ -7126,7 +7126,8 @@ void DTCFrontEndInterface::requireNoMergeReaderOnThisDTC(void)
 		if(!dtcFE || dtcFE == this || !dtcFE->bufferTestThreadStruct_)
 			continue;
 		const auto& s = dtcFE->bufferTestThreadStruct_;
-		if(s->running_ && s->mergeMode_ != DetachedMergeMode::Off && s->otherDTC_ == thisDTC_)
+		if(s->running_ && s->mergeMode_ != DetachedMergeMode::Off &&
+		   s->otherDTC_ == thisDTC_)
 		{
 			__FE_SS__ << "'" << fe.first
 			          << "' is running a merge Buffer Test that reads this DTC's DMA; "
@@ -7157,18 +7158,18 @@ void DTCFrontEndInterface::resetDetachedMergeState(
 {
 	threadStruct->pendingDTC0_.clear();
 	threadStruct->pendingDTC1_.clear();
-	threadStruct->haveMergedTag_         = false;
-	threadStruct->lastMergedBaseTag_     = 0;
-	threadStruct->mergedEventsCount_     = 0;
-	threadStruct->unmatchedDTC0Count_    = 0;
-	threadStruct->unmatchedDTC1Count_    = 0;
-	threadStruct->mergeTimeTotalNs_      = 0;
-	threadStruct->mergeTimeMaxNs_        = 0;
-	threadStruct->mergedBytesTotal_      = 0;
-	threadStruct->pendingDTC0Count_      = 0;
-	threadStruct->pendingDTC1Count_      = 0;
-	threadStruct->oldestPendingDTC0Tag_  = UINT64_MAX;
-	threadStruct->oldestPendingDTC1Tag_  = UINT64_MAX;
+	threadStruct->haveMergedTag_        = false;
+	threadStruct->lastMergedBaseTag_    = 0;
+	threadStruct->mergedEventsCount_    = 0;
+	threadStruct->unmatchedDTC0Count_   = 0;
+	threadStruct->unmatchedDTC1Count_   = 0;
+	threadStruct->mergeTimeTotalNs_     = 0;
+	threadStruct->mergeTimeMaxNs_       = 0;
+	threadStruct->mergedBytesTotal_     = 0;
+	threadStruct->pendingDTC0Count_     = 0;
+	threadStruct->pendingDTC1Count_     = 0;
+	threadStruct->oldestPendingDTC0Tag_ = UINT64_MAX;
+	threadStruct->oldestPendingDTC1Tag_ = UINT64_MAX;
 }  //end resetDetachedMergeState()
 
 //========================================================================
@@ -7245,8 +7246,9 @@ void DTCFrontEndInterface::stageDetachedHalf(
 			++(threadStruct->unmatchedDTC1Count_);
 		else
 			++(threadStruct->unmatchedDTC0Count_);
-		__SS__ << "Merge (" << detachedMergeModeName(threadStruct->mergeMode_) << "): "
-		       << side << " delivered EWT=" << tag << " that can never pair: " << why
+		__SS__ << "Merge (" << detachedMergeModeName(threadStruct->mergeMode_)
+		       << "): " << side << " delivered EWT=" << tag
+		       << " that can never pair: " << why
 		       << ". Pending unpaired DTC_0=" << threadStruct->pendingDTC0_.size()
 		       << " DTC_1=" << threadStruct->pendingDTC1_.size()
 		       << ", merged so far=" << threadStruct->mergedEventsCount_
@@ -7259,7 +7261,8 @@ void DTCFrontEndInterface::stageDetachedHalf(
 	};
 
 	if(evenOdd && ((tag & 1) != (fromDTC1 ? 1u : 0u)))
-		abortWith(fromDTC1 ? "odd tag expected from DTC_1" : "even tag expected from DTC_0");
+		abortWith(fromDTC1 ? "odd tag expected from DTC_1"
+		                   : "even tag expected from DTC_0");
 
 	const uint64_t key = (fromDTC1 && evenOdd) ? tag - 1 : tag;
 	if(threadStruct->haveMergedTag_ && key <= threadStruct->lastMergedBaseTag_)
@@ -7273,19 +7276,20 @@ void DTCFrontEndInterface::stageDetachedHalf(
 	auto partner = theirs.find(key);
 	if(partner == theirs.end())
 	{
-		mine.emplace(key, DetachedBufferTestThreadStruct::PendingHalf{
-		                      half, std::chrono::steady_clock::now()});
+		mine.emplace(key,
+		             DetachedBufferTestThreadStruct::PendingHalf{
+		                 half, std::chrono::steady_clock::now()});
 		return;
 	}
 
 	const auto& half0 = fromDTC1 ? *partner->second.event : *half;
 	const auto& half1 = fromDTC1 ? *half : *partner->second.event;
 
-	const auto t0 = std::chrono::steady_clock::now();
-	auto       ev = buildMergedDetachedEvent(half0, half1, key);
-	const uint64_t ns =
-	    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0)
-	        .count();
+	const auto     t0 = std::chrono::steady_clock::now();
+	auto           ev = buildMergedDetachedEvent(half0, half1, key);
+	const uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                        std::chrono::steady_clock::now() - t0)
+	                        .count();
 	threadStruct->mergeTimeTotalNs_ += ns;
 	if(ns > threadStruct->mergeTimeMaxNs_)
 		threadStruct->mergeTimeMaxNs_ = ns;
@@ -7313,25 +7317,30 @@ void DTCFrontEndInterface::mergeDetachedEvents(
 
 	// a half that waited too long, or too many halves piling up, ends the run
 	const auto now = std::chrono::steady_clock::now();
-	auto       scan = [&](const std::map<uint64_t, DetachedBufferTestThreadStruct::PendingHalf>& pend,
-	                bool pendIsDTC0, const char* reason) -> void {
+	auto       scan =
+	    [&](const std::map<uint64_t, DetachedBufferTestThreadStruct::PendingHalf>& pend,
+	        bool        pendIsDTC0,
+	        const char* reason) -> void {
 		for(const auto& [key, ph] : pend)
 		{
 			const auto ageMs =
-			    std::chrono::duration_cast<std::chrono::milliseconds>(now - ph.arrival).count();
+			    std::chrono::duration_cast<std::chrono::milliseconds>(now - ph.arrival)
+			        .count();
 			if(reason == nullptr && ageMs <= threadStruct->pairTimeoutMs_)
 				continue;
 			threadStruct->unmatchedDTC0Count_ = threadStruct->pendingDTC0_.size();
 			threadStruct->unmatchedDTC1Count_ = threadStruct->pendingDTC1_.size();
-			const bool     evenOdd = threadStruct->mergeMode_ == DetachedMergeMode::EvenOdd;
-			const uint64_t expectedPartnerTag = pendIsDTC0 ? (evenOdd ? key + 1 : key) : key;
-			__SS__ << "Merge pair " << (reason ? reason : "TIMEOUT") << ": base EWT=" << key
-			       << " has waited " << ageMs << " ms for its "
+			const bool evenOdd = threadStruct->mergeMode_ == DetachedMergeMode::EvenOdd;
+			const uint64_t expectedPartnerTag =
+			    pendIsDTC0 ? (evenOdd ? key + 1 : key) : key;
+			__SS__ << "Merge pair " << (reason ? reason : "TIMEOUT")
+			       << ": base EWT=" << key << " has waited " << ageMs << " ms for its "
 			       << (pendIsDTC0 ? "DTC_1" : "DTC_0") << " half (expected "
 			       << (pendIsDTC0 ? "DTC_1" : "DTC_0") << " EWT=" << expectedPartnerTag
 			       << "; limit " << threadStruct->pairTimeoutMs_ << " ms, max pending "
-			       << threadStruct->pairMaxPending_ << "). Pending unpaired DTC_0="
-			       << threadStruct->pendingDTC0_.size() << " (oldest "
+			       << threadStruct->pairMaxPending_
+			       << "). Pending unpaired DTC_0=" << threadStruct->pendingDTC0_.size()
+			       << " (oldest "
 			       << (threadStruct->pendingDTC0_.empty()
 			               ? std::string("-")
 			               : std::to_string(threadStruct->pendingDTC0_.begin()->first))
@@ -7356,16 +7365,16 @@ void DTCFrontEndInterface::mergeDetachedEvents(
 						const uint32_t err = readEVBBufferTestStatus(d);
 						ss << "  " << d->getDeviceUID() << " 0x9370=0x" << std::hex
 						   << std::setw(8) << std::setfill('0') << err << std::dec
-						   << std::setfill(' ') << ", EVB events released="
-						   << d->GetEVBEventsReleased()
+						   << std::setfill(' ')
+						   << ", EVB events released=" << d->GetEVBEventsReleased()
 						   << ", open tags=" << d->GetEVBOpenTagCount() << "\n";
 						for(const auto& line : DTCLib::DecodeEVBErrorStatus(err))
 							ss << "    " << line << "\n";
 					}
 					catch(const std::exception& e)
 					{
-						ss << "  " << d->getDeviceUID() << " status read failed: " << e.what()
-						   << "\n";
+						ss << "  " << d->getDeviceUID()
+						   << " status read failed: " << e.what() << "\n";
 					}
 				}
 			}
@@ -7380,12 +7389,14 @@ void DTCFrontEndInterface::mergeDetachedEvents(
 	if(threadStruct->pendingDTC1_.size() > threadStruct->pairMaxPending_)
 		scan(threadStruct->pendingDTC1_, false, "OVERFLOW");
 
-	threadStruct->pendingDTC0Count_ = threadStruct->pendingDTC0_.size();
-	threadStruct->pendingDTC1Count_ = threadStruct->pendingDTC1_.size();
-	threadStruct->oldestPendingDTC0Tag_ =
-	    threadStruct->pendingDTC0_.empty() ? UINT64_MAX : threadStruct->pendingDTC0_.begin()->first;
-	threadStruct->oldestPendingDTC1Tag_ =
-	    threadStruct->pendingDTC1_.empty() ? UINT64_MAX : threadStruct->pendingDTC1_.begin()->first;
+	threadStruct->pendingDTC0Count_     = threadStruct->pendingDTC0_.size();
+	threadStruct->pendingDTC1Count_     = threadStruct->pendingDTC1_.size();
+	threadStruct->oldestPendingDTC0Tag_ = threadStruct->pendingDTC0_.empty()
+	                                          ? UINT64_MAX
+	                                          : threadStruct->pendingDTC0_.begin()->first;
+	threadStruct->oldestPendingDTC1Tag_ = threadStruct->pendingDTC1_.empty()
+	                                          ? UINT64_MAX
+	                                          : threadStruct->pendingDTC1_.begin()->first;
 }  //end mergeDetachedEvents()
 
 //========================================================================
@@ -7427,12 +7438,12 @@ std::string DTCFrontEndInterface::getDetachedMergeStatus(
     int                                                                   labelWidth)
 {
 	std::stringstream o;
-	auto              kv = [&o, labelWidth](const std::string& label) -> std::stringstream& {
-        if(labelWidth > 0)
-            o << std::left << std::setw(labelWidth) << (label + ":") << std::right;
-        else
-            o << label << ":";
-        return o;
+	auto kv = [&o, labelWidth](const std::string& label) -> std::stringstream& {
+		if(labelWidth > 0)
+			o << std::left << std::setw(labelWidth) << (label + ":") << std::right;
+		else
+			o << label << ":";
+		return o;
 	};
 
 	kv("Merge Mode") << detachedMergeModeName(threadStruct->mergeMode_);
@@ -7474,9 +7485,8 @@ std::string DTCFrontEndInterface::getDetachedMergeStatus(
 	    << "  (oldest tag " << tagOrDash(threadStruct->oldestPendingDTC0Tag_) << " / "
 	    << tagOrDash(threadStruct->oldestPendingDTC1Tag_) << "; pair timeout "
 	    << threadStruct->pairTimeoutMs_ << " ms)" << __E__;
-	kv("Unmatched halves (DTC_0 / DTC_1)")
-	    << threadStruct->unmatchedDTC0Count_ << " / " << threadStruct->unmatchedDTC1Count_
-	    << __E__;
+	kv("Unmatched halves (DTC_0 / DTC_1)") << threadStruct->unmatchedDTC0Count_ << " / "
+	                                       << threadStruct->unmatchedDTC1Count_ << __E__;
 	return o.str();
 }  //end getDetachedMergeStatus()
 
@@ -8703,14 +8713,14 @@ void DTCFrontEndInterface::handleDetachedSubevent(
 	        : threadStruct->evbNumDestNodesOther_;
 	// subevents expected per (merged) event before the expected tag advances, and the
 	// stride between DTC_0's consecutive base tags
-	const size_t expectedSources =
-	    threadStruct->inEVBMode_ ? size_t(evbN) + (merging ? size_t(evbNOther) : 0)
-	                             : (merging ? 2 : 1);
+	const size_t   expectedSources = threadStruct->inEVBMode_
+	                                     ? size_t(evbN) + (merging ? size_t(evbNOther) : 0)
+	                                     : (merging ? 2 : 1);
 	const uint64_t stride =
 	    threadStruct->inEVBMode_ ? evbN : (threadStruct->skipBy32_ ? 32 : 1);
 	const bool     useSourceSet = threadStruct->inEVBMode_ || merging;
-	const uint16_t srcKey       = (uint16_t(sourceGroup) << 8) |
-	                        uint16_t(subevent->GetHeader()->source_dtc_id);
+	const uint16_t srcKey =
+	    (uint16_t(sourceGroup) << 8) | uint16_t(subevent->GetHeader()->source_dtc_id);
 	if(threadStruct->inEVBMode_ && !threadStruct->evbTagSynced_)
 	{
 		// The first subevent after (re)start defines this DTC's starting tag; its tags are
@@ -9676,10 +9686,11 @@ try
 						break;
 					}
 
-					__GEN_COUTT__ << "Read iteration #" << ii
-					              << ": EWT=" << eventPtr->GetEventWindowTag()
-					              << ", w/Subevent count = "
-					              << eventPtr->GetSubEvents().size() << std::endl;
+					__GEN_COUTT__
+					    << "Read iteration #" << ii
+					    << ": EWT=" << eventPtr->GetEventWindowTag()
+					    << ", w/Subevent count = " << eventPtr->GetSubEvents().size()
+					    << std::endl;
 
 					if(eventPtr->GetSubEvents().empty())
 					{
@@ -9718,17 +9729,18 @@ try
 		threadStruct->fp_ = nullptr;
 	}
 
-	__GEN_COUT_INFO__ << "Buffer test thread exited. "
-	                  << " Events received = " << threadStruct->eventsCount_
-	                  << ", SubEvents received = " << threadStruct->subeventsCount_
-	                  << (threadStruct->mergeMode_ != DetachedMergeMode::Off
-	                          ? ", Merged events = " +
-	                                std::to_string(threadStruct->mergedEventsCount_.load()) +
-	                                ", pending unpaired DTC_0/DTC_1 = " +
-	                                std::to_string(threadStruct->pendingDTC0Count_.load()) + "/" +
-	                                std::to_string(threadStruct->pendingDTC1Count_.load())
-	                          : std::string())
-	                  << __E__;
+	__GEN_COUT_INFO__
+	    << "Buffer test thread exited. "
+	    << " Events received = " << threadStruct->eventsCount_
+	    << ", SubEvents received = " << threadStruct->subeventsCount_
+	    << (threadStruct->mergeMode_ != DetachedMergeMode::Off
+	            ? ", Merged events = " +
+	                  std::to_string(threadStruct->mergedEventsCount_.load()) +
+	                  ", pending unpaired DTC_0/DTC_1 = " +
+	                  std::to_string(threadStruct->pendingDTC0Count_.load()) + "/" +
+	                  std::to_string(threadStruct->pendingDTC1Count_.load())
+	            : std::string())
+	    << __E__;
 	threadStruct->running_ = false;
 
 }  //end detachedBufferTestThread()
@@ -9786,7 +9798,8 @@ catch(...)
 	}
 	if(threadStruct->mergeMode_ != DetachedMergeMode::Off)
 	{
-		errSs << "Merge state at abort: merged events = " << threadStruct->mergedEventsCount_
+		errSs << "Merge state at abort: merged events = "
+		      << threadStruct->mergedEventsCount_
 		      << ", pending unpaired DTC_0/DTC_1 = " << threadStruct->pendingDTC0Count_
 		      << "/" << threadStruct->pendingDTC1Count_
 		      << ", unmatched DTC_0/DTC_1 = " << threadStruct->unmatchedDTC0Count_ << "/"
@@ -9846,7 +9859,7 @@ void DTCFrontEndInterface::BufferTest_detached(__ARGS__)
 	// bool displayPayloadAtGUI = __GET_ARG_IN__("Display Payload at GUI (Default: true)", bool, true);
 	unsigned int packetThresholdToSave = __GET_ARG_IN__(
 	    "Payload Packet Threshold for Saving Event (Default: 0)", unsigned int);
-	bool inEVBMode = __GET_ARG_IN__("EVB Mode (Default: false)", bool);
+	bool         inEVBMode   = __GET_ARG_IN__("EVB Mode (Default: false)", bool);
 	unsigned int mergeModeIn = __GET_ARG_IN__(
 	    "Merge Mode (Default: 0 := Off, 1 := Merge DTC1 into DTC0 even/odd Events, "
 	    "2 := Merge DTC1 into DTC0 matching Events)",
@@ -9900,25 +9913,28 @@ void DTCFrontEndInterface::BufferTest_detached(__ARGS__)
 			{
 				if(deviceIndex_ != 0)
 				{
-					__FE_SS__ << "Merge Mode runs only on the DTC_0 FE instance (device index "
-					             "0); this FE is device index "
-					          << deviceIndex_ << "." << __E__;
+					__FE_SS__
+					    << "Merge Mode runs only on the DTC_0 FE instance (device index "
+					       "0); this FE is device index "
+					    << deviceIndex_ << "." << __E__;
 					__FE_SS_THROW__;
 				}
 				if(!dataAreSubEvents)
 				{
-					__FE_SS__ << "Merge Mode requires 'Data are SubEvents' = true: the Event "
-					             "read path returns views into DMA memory that are released "
-					             "on the next read, so a DTC_0 half could not wait for its "
-					             "DTC_1 partner."
-					          << __E__;
+					__FE_SS__
+					    << "Merge Mode requires 'Data are SubEvents' = true: the Event "
+					       "read path returns views into DMA memory that are released "
+					       "on the next read, so a DTC_0 half could not wait for its "
+					       "DTC_1 partner."
+					    << __E__;
 					__FE_SS_THROW__;
 				}
 				if(mergeMode == DetachedMergeMode::EvenOdd && !inEVBMode)
 				{
-					__FE_SS__ << "Merge Mode even/odd requires EVB Mode: only the 2-node EVB "
-					             "routing gives DTC_0 the even tags and DTC_1 the odd tags."
-					          << __E__;
+					__FE_SS__
+					    << "Merge Mode even/odd requires EVB Mode: only the 2-node EVB "
+					       "routing gives DTC_0 the even tags and DTC_1 the odd tags."
+					    << __E__;
 					__FE_SS_THROW__;
 				}
 				std::string visible;
@@ -9936,7 +9952,8 @@ void DTCFrontEndInterface::BufferTest_detached(__ARGS__)
 					          << "' has no DTC handle." << __E__;
 					__FE_SS_THROW__;
 				}
-				if(peer->bufferTestThreadStruct_ && peer->bufferTestThreadStruct_->running_)
+				if(peer->bufferTestThreadStruct_ &&
+				   peer->bufferTestThreadStruct_->running_)
 				{
 					__FE_SS__ << "Merge Mode: the Buffer Test thread of '"
 					          << peer->getInterfaceUID()
@@ -9957,28 +9974,31 @@ void DTCFrontEndInterface::BufferTest_detached(__ARGS__)
 					__FE_COUT_INFO__ << peerReadiness;
 
 					const int numDest0 = getDTC()->ReadEVBNumberOfDestinationNodes();
-					const int numDest1 = peer->getDTC()->ReadEVBNumberOfDestinationNodes();
-					const int slot0    = getDTC()->ReadEVBLocalMACAddress() -
-					                  getDTC()->ReadEVBStartNode();
+					const int numDest1 =
+					    peer->getDTC()->ReadEVBNumberOfDestinationNodes();
+					const int slot0 =
+					    getDTC()->ReadEVBLocalMACAddress() - getDTC()->ReadEVBStartNode();
 					const int slot1 = peer->getDTC()->ReadEVBLocalMACAddress() -
 					                  peer->getDTC()->ReadEVBStartNode();
 					if(mergeMode == DetachedMergeMode::EvenOdd &&
 					   (numDest0 != 2 || numDest1 != 2 || slot0 != 0 || slot1 != 1))
 					{
-						__FE_SS__ << "Merge Mode even/odd expects 2 destination nodes with "
-						             "DTC_0 in slot 0 and DTC_1 in slot 1; found DTC_0: "
-						          << numDest0 << " nodes, slot " << slot0
-						          << "; DTC_1: " << numDest1 << " nodes, slot " << slot1
-						          << "." << __E__;
+						__FE_SS__
+						    << "Merge Mode even/odd expects 2 destination nodes with "
+						       "DTC_0 in slot 0 and DTC_1 in slot 1; found DTC_0: "
+						    << numDest0 << " nodes, slot " << slot0
+						    << "; DTC_1: " << numDest1 << " nodes, slot " << slot1 << "."
+						    << __E__;
 						__FE_SS_THROW__;
 					}
 					if(mergeMode == DetachedMergeMode::Matching &&
 					   (numDest0 != 1 || numDest1 != 1))
 					{
-						__FE_SS__ << "Merge Mode matching in EVB Mode expects 1 destination "
-						             "node on both DTCs (with 2 nodes the two DTCs receive "
-						             "disjoint tags); found DTC_0: "
-						          << numDest0 << ", DTC_1: " << numDest1 << "." << __E__;
+						__FE_SS__
+						    << "Merge Mode matching in EVB Mode expects 1 destination "
+						       "node on both DTCs (with 2 nodes the two DTCs receive "
+						       "disjoint tags); found DTC_0: "
+						    << numDest0 << ", DTC_1: " << numDest1 << "." << __E__;
 						__FE_SS_THROW__;
 					}
 				}
@@ -10005,12 +10025,14 @@ void DTCFrontEndInterface::BufferTest_detached(__ARGS__)
 				bufferTestThreadStruct_->resetStartEventTag_ = false;
 				bufferTestThreadStruct_->thisDTC_            = thisDTC_;
 				// merge fields are always assigned: the struct is reused across Starts
-				bufferTestThreadStruct_->mergeMode_   = mergeMode;
-				bufferTestThreadStruct_->otherDTC_    = merging ? peer->thisDTC_ : nullptr;
-				bufferTestThreadStruct_->otherDTCUID_ = merging ? peer->getInterfaceUID() : "";
+				bufferTestThreadStruct_->mergeMode_ = mergeMode;
+				bufferTestThreadStruct_->otherDTC_  = merging ? peer->thisDTC_ : nullptr;
+				bufferTestThreadStruct_->otherDTCUID_ =
+				    merging ? peer->getInterfaceUID() : "";
 				bufferTestThreadStruct_->evbNumDestNodesOther_ =
-				    (merging && inEVBMode) ? peer->getDTC()->ReadEVBNumberOfDestinationNodes()
-				                           : 1;
+				    (merging && inEVBMode)
+				        ? peer->getDTC()->ReadEVBNumberOfDestinationNodes()
+				        : 1;
 				bufferTestThreadStruct_->pairTimeoutMs_ =
 				    static_cast<uint32_t>(getDTC()->GetEVBEventTimeout().count());
 				bufferTestThreadStruct_->running_ = true;

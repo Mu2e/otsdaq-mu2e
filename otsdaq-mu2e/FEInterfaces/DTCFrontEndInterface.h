@@ -122,15 +122,15 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 
 		DTCLib::DTC* thisDTC_;
 
-		bool                                                       inSubeventMode_  = false;
-		bool                                                       inEVBMode_       = false;
-		uint8_t                                                    evbNumDestNodes_ = 1;
+		bool    inSubeventMode_  = false;
+		bool    inEVBMode_       = false;
+		uint8_t evbNumDestNodes_ = 1;
 		// source key = (sourceGroup << 8) | source_dtc_id; group 1 = subevent arrived via the
 		// DTC_1 half of a merged event.  Non-merge runs use group 0 only (key == source_dtc_id).
-		std::set<uint16_t>                                          evbSourcesSeenForTag_;        // source keys that have delivered the current expected tag
-		bool                                                        evbTagSynced_ = false;        // EVB mode: expected tag has been synced to the first subevent seen after (re)start
-		std::map<uint16_t /*source key*/, std::vector<uint64_t>>    evbRocFragmentsBySource_;     // ROC fragment counts per source, per link
-		std::map<uint16_t /*source key*/, std::vector<uint64_t>>    evbRocPayloadBytesBySource_;  // ROC payload bytes per source, per link
+		std::set<uint16_t>                                       evbSourcesSeenForTag_;        // source keys that have delivered the current expected tag
+		bool                                                     evbTagSynced_ = false;        // EVB mode: expected tag has been synced to the first subevent seen after (re)start
+		std::map<uint16_t /*source key*/, std::vector<uint64_t>> evbRocFragmentsBySource_;     // ROC fragment counts per source, per link
+		std::map<uint16_t /*source key*/, std::vector<uint64_t>> evbRocPayloadBytesBySource_;  // ROC payload bytes per source, per link
 
 		// ---- merge modes ----
 		DetachedMergeMode mergeMode_ = DetachedMergeMode::Off;
@@ -153,12 +153,12 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		std::atomic<uint64_t> mergeTimeTotalNs_{0}, mergeTimeMaxNs_{0}, mergedBytesTotal_{0};
 		std::atomic<size_t>   pendingDTC0Count_{0}, pendingDTC1Count_{0};
 		std::atomic<uint64_t> oldestPendingDTC0Tag_{UINT64_MAX}, oldestPendingDTC1Tag_{UINT64_MAX};
-		bool                                                       activeMatch_      = false;
-		std::atomic<uint64_t>                                      expectedEventTag_ = -1, nextEventWindowTag_ = -1;
-		bool                                                       saveBinaryData_                  = false;
-		bool                                                       saveSubeventHeadersToBinaryData_ = false;
-		bool                                                       doNotResetCounters_              = false;
-		bool                                                       skipBy32_                        = false;
+		bool                  activeMatch_      = false;
+		std::atomic<uint64_t> expectedEventTag_ = -1, nextEventWindowTag_ = -1;
+		bool                  saveBinaryData_                  = false;
+		bool                  saveSubeventHeadersToBinaryData_ = false;
+		bool                  doNotResetCounters_              = false;
+		bool                  skipBy32_                        = false;
 
 		std::atomic<uint64_t>                      eventsCount_;
 		std::atomic<uint64_t>                      subeventsCount_;
@@ -215,7 +215,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	    const DTCLib::DTC_SubEvent& subevent,
 	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct>
 	             threadStruct,
-	    uint64_t tagOffset   = 0,   // subtracted from the subevent tag before the expected-tag check
+	    uint64_t tagOffset   = 0,  // subtracted from the subevent tag before the expected-tag check
 	    uint8_t  sourceGroup = 0);  // 0 = DTC_0 half / non-merge, 1 = DTC_1 half
 
 	static std::shared_ptr<DTCLib::DTC_Event> buildMergedDetachedEvent(
@@ -252,9 +252,9 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	    bufferTestThreadStruct_;
 
   private:
-	void        createROCs(void);
-	void        registerFEMacros(void);
-	std::string getEVBWireParity(void);
+	void                  createROCs(void);
+	void                  registerFEMacros(void);
+	std::string           getEVBWireParity(void);
 	DTCFrontEndInterface* findPeerDTCFrontEnd(int deviceIndex, std::string& visibleList);
 	void                  requireNoMergeReaderOnThisDTC(void);
 
