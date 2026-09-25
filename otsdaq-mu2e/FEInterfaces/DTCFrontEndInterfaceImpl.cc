@@ -3410,7 +3410,8 @@ void DTCFrontEndInterface::start(std::string runNumber)
 			return;
 		}
 
-		if(startIteration == systemMinReady - 1 && getSubIterationIndex() == 0 && has_real_roc_flow_)
+		if(startIteration == systemMinReady - 1 && getSubIterationIndex() == 0 &&
+		   has_real_roc_flow_)
 			getDTC()->SoftReset();
 		usleep(500000);  // wait 100 ms for DTC to reset counters
 	}

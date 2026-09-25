@@ -66,7 +66,7 @@ class DQMMu2eHistoConsumer : public DQMHistosConsumerBase, public Configurable
 	mutable std::mutex                    statusMutex_;
 	std::string                           runNumber_;
 	int64_t                               runStartEpochMs_ = 0;  ///< wall clock at Start
-	uint64_t                              objects_ = 0;  ///< cumulative, not reset per run
+	uint64_t                              objects_         = 0;  ///< cumulative, not reset per run
 	std::chrono::steady_clock::time_point lastPacketTime_{};
 	std::map<std::string, StreamStat>     streams_;
 	//TH1F *hGauss_; // TODO need to add our own class here
