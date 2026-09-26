@@ -2818,6 +2818,13 @@ void CFOFrontEndInterface::start(std::string runNumber)  // runNumber)
 		}
 
 		const unsigned int startIteration = getIterationIndex();
+
+		//if(startIteration == 0)
+		//{
+		//	__FE_COUT__ << "Issuing CFO SoftReset before launching run plan..." << __E__;
+		//	thisCFO_->SoftReset();
+		//}
+
 		if(startIteration < systemMinReady)
 		{
 			__FE_COUT_INFO__ << "Delaying CFO run plan launch until start iteration >= "
