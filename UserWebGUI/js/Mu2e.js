@@ -225,14 +225,20 @@ var Mu2e = Mu2e || {};
 
 	Mu2e.errorSecondsAgo = function (message) {
 		if (!message) return -1;
-		var m = message.match(
-			/([A-Z][a-z]{2} [A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})(?:\s+([A-Za-z_+\/-]+|[+-]\d{4}))?:/);
-		if (!m) return -1;
-		var core = m[1].replace(/\s+/g, " ").trim();
-		var tz = m[2] ? m[2].trim() : "";
-		var parsed = Date.parse(tz ? (core + " " + tz) : core);
-		if (Number.isNaN(parsed)) return -1;
-		return Math.floor((Date.now() - parsed) / 1000);
+		// an error string can carry several timestamps (appended oldest first);
+		// take the newest so a fresh error is not aged by an old one
+		var re = /([A-Z][a-z]{2} [A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})(?:\s+([A-Za-z_+\/-]+|[+-]\d{4}))?:/g;
+		var newest = NaN;
+		var m;
+		while ((m = re.exec(message)) !== null) {
+			var core = m[1].replace(/\s+/g, " ").trim();
+			var tz = m[2] ? m[2].trim() : "";
+			var parsed = Date.parse(tz ? (core + " " + tz) : core);
+			if (!Number.isNaN(parsed) && (Number.isNaN(newest) || parsed > newest))
+				newest = parsed;
+		}
+		if (Number.isNaN(newest)) return -1;
+		return Math.floor((Date.now() - newest) / 1000);
 	};
 
 	// =========================================================================

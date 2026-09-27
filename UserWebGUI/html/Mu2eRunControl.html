@@ -86,11 +86,12 @@
 		// =============================================================
 		function loadSubsystems() {
 			if (_pollTimer) clearTimeout(_pollTimer);
-			++_pollNonce; // invalidate any in-flight status poll
+			var nonce = ++_pollNonce; // invalidate any in-flight status poll
 			_reloading = true;
 			DesktopContent.XMLHttpRequest(
 				"Request?RequestType=getRemoteSubsystems&fsmName=" + _fsmName, "",
 				function (req, reqParam, errStr) {
+					if (nonce !== _pollNonce) return; // a newer reload superseded this one
 					_reloading = false;
 					if (errStr || !req || !req.responseXML) {
 						Debug.err("Failed to load subsystem records: " +
