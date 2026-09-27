@@ -140,8 +140,8 @@ void DQMMu2eHistoConsumer::fastRead(void)
 		return;
 	}
 	// std::cout << "[DQMMu2eHistoConsumer::fastRead] reading BUFFER..." << std::endl;
-	const uint64_t bytes = dataP_->size();
-	auto           t0    = std::chrono::steady_clock::now();
+	const uint64_t           bytes = dataP_->size();
+	auto                     t0    = std::chrono::steady_clock::now();
 	std::vector<std::string> topDirs =
 	    histReceiver_.readPacket(DQMHistosBase::myDirectory_, dataP_);
 	auto t1 = std::chrono::steady_clock::now();
