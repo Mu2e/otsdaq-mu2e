@@ -3,6 +3,8 @@
 #include "TH1.h"
 #include "otsdaq/Macros/CoutMacros.h"
 
+#include <algorithm>
+
 namespace ots
 {
 namespace
@@ -53,11 +55,13 @@ void HistoReceiver::addObject(TObject* readObject, TDirectory* subdir, int mode)
 	if(readObject->InheritsFrom(TH1::Class()))
 	{
 		addHistogram((TH1*)readObject, subdir, mode);
+		++lastObjectCount_;
 		return;
 	}
 	if(readObject->InheritsFrom(TGraph::Class()))
 	{
 		addGraph((TGraph*)readObject, subdir, mode);
+		++lastObjectCount_;
 		return;
 	}
 	__COUT__ << "[HistoReceiver::" << __func__ << "] Unknown object type with name "
@@ -65,8 +69,11 @@ void HistoReceiver::addObject(TObject* readObject, TDirectory* subdir, int mode)
 	delete readObject;
 }
 
-void HistoReceiver::readPacket(TDirectory* dir, std::string* buf)
+std::vector<std::string> HistoReceiver::readPacket(TDirectory* dir, std::string* buf)
 {
+	std::vector<std::string> topDirs;
+	lastObjectCount_ = 0;
+
 	TBufferFile message(TBuffer::kWrite);        // prepare message
 	message.WriteBuf(buf->data(), buf->size());  // copy buffer
 	message.SetReadMode();
@@ -86,6 +93,13 @@ void HistoReceiver::readPacket(TDirectory* dir, std::string* buf)
 			    directoryNameStdString.substr(directoryNameStdString.find(":") + 1));
 			directoryNameStdString =
 			    directoryNameStdString.substr(0, directoryNameStdString.find(":"));
+		}
+		{
+			std::string top = directoryNameStdString.substr(
+			    0, directoryNameStdString.find('/'));  // npos -> whole string
+			if(!top.empty() &&
+			   std::find(topDirs.begin(), topDirs.end(), top) == topDirs.end())
+				topDirs.push_back(top);
 		}
 		TString directoryName(directoryNameStdString);
 
@@ -158,6 +172,7 @@ void HistoReceiver::readPacket(TDirectory* dir, std::string* buf)
 		dir->cd();
 	}
 	buf = nullptr;
+	return topDirs;
 }
 
 int HistoReceiver::parseMode(std::string mode)
