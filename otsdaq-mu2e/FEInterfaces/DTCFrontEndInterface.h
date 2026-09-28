@@ -176,9 +176,15 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		std::atomic<uint64_t> evbCloseFillersCount_{0};
 		std::atomic<uint64_t> evbFramingErrors_{0};
 		std::atomic<uint32_t> evbStickyErrorsSeen_{0};
-		uint32_t              evbStickyIgnoreMask_{0};
+		uint32_t              evbStickyIgnoreMask_{0};    // per-build known defects (set by thread)
+		uint32_t              evbOperatorIgnoreMask_{0};  // copied from the FE at Start; session-only
 		std::atomic<bool>     evbTrafficStarted_{false};
 		std::atomic<bool>     evbStatusReadFailed_{false};
+		// Per-run count of 0x9370 polls with bit 17 (self-throttle: this DTC is >1024 tags
+		// ahead of its slowest peer) set.  hw agent 2026-09-24: this is the register that
+		// tells a run that stalled on the throttle from one that completed.
+		std::atomic<uint64_t> evbSelfThrottlePolls_{0};
+		std::atomic<uint64_t> evbStatusPolls_{0};
 		// 0x9370 sampled on the first idle iteration after the last subevent arrived (~1 loop
 		// iteration late, vs ~2 s late for the timeout snapshot); re-armed whenever data resumes
 		std::atomic<bool>                                  evbErrAtStallOnsetValid_{false};
@@ -255,6 +261,11 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void                  createROCs(void);
 	void                  registerFEMacros(void);
 	std::string           getEVBWireParity(void);
+
+	// Operator-set 0x9370 bits to ignore in the EVB start gate and run-validity check for
+	// this session only (FE Macro "EVB Start-Gate Ignore Mask").  OR-ed with the per-build
+	// known-defect list; cleared on otsdaq restart.  The bits stay visible in every report.
+	uint32_t evbOperatorIgnoreMask_ = 0;
 	DTCFrontEndInterface* findPeerDTCFrontEnd(int deviceIndex, std::string& visibleList);
 	void                  requireNoMergeReaderOnThisDTC(void);
 
@@ -359,6 +370,8 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void SetDTCIdAndEVBInfo(__ARGS__);
 	void EVBInit(__ARGS__);
 	void EVBStatus(__ARGS__);
+	void ExerciseLink7Reset(__ARGS__);
+	void SetEVBStartGateIgnoreMask(__ARGS__);
 
 	// void 								ResetEVBLinkRx						(__ARGS__);
 	// void 								ResetEVBLinkTx						(__ARGS__);
