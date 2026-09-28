@@ -35,7 +35,7 @@ jobs:
     - name: Get workflow run IDs
       id: run_ids
       run: |
-        doxy_id=$(gh run list --repo Mu2e/otsdaq-mu2e -b develop \
+        doxy_id=$(gh run list --repo Mu2e/otsdaq-mu2e -e schedule \
                               --workflow "mu2e-develop-cpp-ci.yml" \
                               --limit 1 --status success \
                               --json databaseId --jq '.[0].databaseId')
