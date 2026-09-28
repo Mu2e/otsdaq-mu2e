@@ -224,11 +224,16 @@ var Mu2eHardware = Mu2eHardware || {};
 			return;
 		}
 
+		// An input the page did not fill is sent as "Default": that is the only
+		// value the FE side accepts as "use the macro's default" (see
+		// getFEMacroConstArgumentValue in FEVInterface.icc); an empty string
+		// fails with "is not a number". Same convention as FEMacroTest.html.
 		var postData = "inputArgs=";
 		var inputArr = macroObj.inputs;
 		for (var i = 0; i < inputArr.length; ++i) {
 			if (i) postData += ";";
-			var val = (inputs && inputs[inputArr[i]] !== undefined) ? inputs[inputArr[i]] : "";
+			var val = (inputs && inputs[inputArr[i]] !== undefined &&
+				String(inputs[inputArr[i]]).trim() !== "") ? inputs[inputArr[i]] : "Default";
 			postData += encodeURIComponent(inputArr[i]) + "," + encodeURIComponent(val);
 		}
 
@@ -299,8 +304,9 @@ var Mu2eHardware = Mu2eHardware || {};
 				var outNames = feExecs[f].getElementsByTagName("outputArgs_name");
 				var outValues = feExecs[f].getElementsByTagName("outputArgs_value");
 				for (var i = 0; i < outNames.length; ++i) {
-					target.outputs[outNames[i].getAttribute("value")] =
-						decodeURIComponent(outValues[i].getAttribute("value"));
+					// names arrive URI-encoded too ("Active%20Ports")
+					target.outputs[_decodeURIComponentSafe(outNames[i].getAttribute("value"))] =
+						_decodeURIComponentSafe(outValues[i].getAttribute("value"));
 				}
 				result.targets.push(target);
 			}
@@ -312,8 +318,8 @@ var Mu2eHardware = Mu2eHardware || {};
 				if (runArgNames.length) {
 					var target = { uid: uid, outputs: {} };
 					for (var i = 0; i < runArgNames.length; ++i) {
-						target.outputs[runArgNames[i].getAttribute("value")] =
-							decodeURIComponent(runArgValues[i].getAttribute("value"));
+						target.outputs[_decodeURIComponentSafe(runArgNames[i].getAttribute("value"))] =
+							_decodeURIComponentSafe(runArgValues[i].getAttribute("value"));
 					}
 					result.targets.push(target);
 				}
@@ -385,6 +391,135 @@ var Mu2eHardware = Mu2eHardware || {};
 		}
 
 		runNext();
+	};
+
+	// =========================================================================
+	// runMacroOnUIDs — parallel batch execution for an explicit device list
+	//
+	//   uids:      ["DTC0", "DTC1", ...]
+	//   macroName: e.g. "DTC Read"
+	//   inputs:    shared { argName: value } object, or function(uid) returning
+	//              one per device (return null to skip that device with an error)
+	//   callback:  function(results) — results = [{uid, result}, ...], in
+	//              completion order
+	//   onEach:    optional function(uid, result, doneCount, totalCount)
+	//
+	//   All requests are dispatched at once; each device gets its own result.
+	// =========================================================================
+
+	Mu2eHardware.runMacroOnUIDs = function (uids, macroName, inputs, callback, onEach) {
+		var targets = (uids || []).slice();
+		if (!targets.length) {
+			if (callback) callback([]);
+			return;
+		}
+
+		var results = [];
+		var remaining = targets.length;
+
+		function finish(uid, result) {
+			results.push({ uid: uid, result: result });
+			if (onEach) onEach(uid, result, results.length, targets.length);
+			if (--remaining === 0 && callback) callback(results);
+		}
+
+		function runOne(uid) {
+			var uidInputs = (typeof inputs === "function") ? inputs(uid) : inputs;
+			if (uidInputs === null) {
+				finish(uid, { error: "Required batch target input was not found" });
+				return;
+			}
+			Mu2eHardware.runMacro(uid, macroName, uidInputs, function (result) {
+				finish(uid, result);
+			});
+		}
+
+		for (var i = 0; i < targets.length; ++i) runOne(targets[i]);
+	};
+
+	// =========================================================================
+	// buildROCMacroInputs — fill the implicit arguments of a DTC-wrapped ROC macro
+	//
+	//   The DTC exposes each child ROC macro as "ROC FEMacro - X" with a leading
+	//   "Target ROC or Mask (...)" input. Many ROC macros also take a leading
+	//   "port (...)" input. This fills both by name pattern and lets the caller
+	//   supply the rest by prefix.
+	//
+	//   macroObj: entry from getMacrosForDevice(dtcUID)[macroName]
+	//   link:     ROC link ID (0-5), or -1 for every ROC on the DTC
+	//   port:     port number, -1 for all; undefined leaves any port input unset
+	//   extra:    { "name prefix": value } — case-insensitive prefix match on the
+	//             remaining input names, longest prefix wins
+	//
+	//   Returns { argName: value } ready for runMacro(). Inputs that are not
+	//   covered are left out so the FE uses its defaults.
+	// =========================================================================
+
+	Mu2eHardware.TARGET_ROC_ARG_RE = /target\s+roc|roc.*(?:target|mask)/i;
+	Mu2eHardware.PORT_ARG_RE = /^port\b/i;
+
+	Mu2eHardware.buildROCMacroInputs = function (macroObj, link, port, extra) {
+		var inputs = {};
+		if (!macroObj) return inputs;
+		extra = extra || {};
+		var prefixes = Object.keys(extra).sort(function (a, b) {
+			return b.length - a.length;
+		});
+		for (var i = 0; i < macroObj.inputs.length; ++i) {
+			var name = macroObj.inputs[i];
+			if (Mu2eHardware.TARGET_ROC_ARG_RE.test(name)) {
+				inputs[name] = String(link);
+				continue;
+			}
+			if (Mu2eHardware.PORT_ARG_RE.test(name) && port !== undefined) {
+				inputs[name] = String(port);
+				continue;
+			}
+			var lower = name.toLowerCase();
+			for (var p = 0; p < prefixes.length; ++p) {
+				if (lower.indexOf(prefixes[p].toLowerCase()) === 0) {
+					inputs[name] = String(extra[prefixes[p]]);
+					break;
+				}
+			}
+		}
+		return inputs;
+	};
+
+	// =========================================================================
+	// findOutput — case- and whitespace-insensitive output lookup on a result
+	//   from runMacro(). Returns the raw value string, or null.
+	// =========================================================================
+
+	Mu2eHardware.findOutput = function (result, name) {
+		if (!result || result.error || !result.targets) return null;
+		var want = String(name).replace(/\s+/g, " ").trim().toLowerCase();
+		for (var t = 0; t < result.targets.length; ++t) {
+			var outputs = result.targets[t].outputs || {};
+			var keys = Object.keys(outputs);
+			for (var i = 0; i < keys.length; ++i) {
+				var key = keys[i];
+				try { key = decodeURIComponent(key); } catch (e) { /* keep raw */ }
+				if (key.replace(/\s+/g, " ").trim().toLowerCase() === want)
+					return outputs[keys[i]];
+			}
+		}
+		return null;
+	};
+
+	// =========================================================================
+	// parseNumber — first number in a macro output value
+	//   Handles "123", "123 (0x7b)", "0x7b", "-1". Hex wins if present.
+	//   Returns null when no number is found.
+	// =========================================================================
+
+	Mu2eHardware.parseNumber = function (value) {
+		if (value === null || value === undefined) return null;
+		var s = String(value);
+		var hex = s.match(/0x([0-9a-f]+)/i);
+		if (hex) return parseInt(hex[1], 16);
+		var dec = s.match(/-?\d+/);
+		return dec ? parseInt(dec[0], 10) : null;
 	};
 
 	// =========================================================================
@@ -542,8 +677,10 @@ var Mu2eHardware = Mu2eHardware || {};
 		var devType = Mu2eHardware.getDeviceType(uid);
 		var tableName;
 
+		// DTC UIDs are records of FEInterfaceTable; DTCInterfaceTable holds the
+		// linked type record (LinkToFETypeTable), reached by following links.
 		if (devType === "dtc")
-			tableName = "DTCInterfaceTable";
+			tableName = "FEInterfaceTable";
 		else if (devType === "roc")
 			tableName = "ROCInterfaceTable";
 		else {
@@ -640,11 +777,52 @@ var Mu2eHardware = Mu2eHardware || {};
 			groupCol: "GroupID",
 		},
 		{
+			// CRV: one record per FEB port (Port, Status, Bias, Trim, Threshold, ...)
+			groupField: "ROCTypeLinkTable/FEBsGroupID",
+			tableName: "SubsystemCRVFebTable",
+			groupCol: "ROC",
+		},
+		{
 			groupField: "LinkToSlowControlsChannelGroupID",
 			tableName: "FESlowControlsTable",
 			groupCol: "FEGroupID",
 		},
 	];
+
+	// =========================================================================
+	// fetchROCLinkIDs — read the configured linkID of each ROC
+	//
+	//   getROCLinkIndex() returns the ROC's position in the DTC's list, which
+	//   is only the link number when links are filled 0,1,2,... in order.
+	//   Use this when the real hardware link matters (e.g. CRV on links 0 and 3).
+	//
+	//   callback(linkMap) where linkMap = { rocUID: linkNumber, ... }
+	// =========================================================================
+
+	Mu2eHardware.fetchROCLinkIDs = function (rocUIDs, callback) {
+		if (!rocUIDs || !rocUIDs.length) {
+			if (callback) callback({});
+			return;
+		}
+		var doFetch = function () {
+			_setConfigGuiLid();
+			ConfigurationAPI.getFieldValuesForRecords(
+				"ROCInterfaceTable", rocUIDs, ["linkID"],
+				function (fieldValues, errMsg) {
+					if (errMsg)
+						Debug.log("Mu2eHardware.fetchROCLinkIDs: " + errMsg, Debug.HIGH_PRIORITY);
+					var linkMap = {};
+					for (var i = 0; fieldValues && i < fieldValues.length; ++i) {
+						var n = parseInt(fieldValues[i].fieldValue, 10);
+						if (!isNaN(n)) linkMap[fieldValues[i].fieldUID] = n;
+					}
+					if (callback) callback(linkMap);
+				},
+				undefined, true);
+		};
+		if (_configGuiLid) doFetch();
+		else _discoverConfigGuiLid(doFetch);
+	};
 
 	Mu2eHardware.fetchChannels = function (uid, callback) {
 		if (Mu2eHardware.getDeviceType(uid) !== "roc") {
@@ -708,8 +886,11 @@ var Mu2eHardware = Mu2eHardware || {};
 
 						_setConfigGuiLid();
 						ConfigurationAPI.getFieldsOfRecords(
-							pathInfo.tableName, records[0], "", 1,
+							pathInfo.tableName, records[0], "", 2 /* follow one child link, e.g. FEB SettingsLink */,
 							function (fieldObjs) {
+								// Keep the field objects (not just column names) so
+								// fields reached through a child link keep their
+								// relative path, e.g. "SettingsLink/OnSpillStart".
 								var dataFields = [];
 								for (var i = 0; fieldObjs && i < fieldObjs.length; ++i) {
 									var ct = fieldObjs[i].fieldColumnType || "";
@@ -717,7 +898,8 @@ var Mu2eHardware = Mu2eHardware || {};
 									if (cn === "CommentDescription" || cn === "Author" ||
 										cn === "RecordInsertionTime") continue;
 									if (ct.indexOf("GroupID") >= 0) continue;
-									dataFields.push(fieldObjs[i].fieldColumnName);
+									if (ct.indexOf("ChildLink") === 0) continue;
+									dataFields.push(fieldObjs[i]);
 								}
 
 								_setConfigGuiLid();
@@ -1438,6 +1620,15 @@ var Mu2eHardware = Mu2eHardware || {};
 				"title='Click to toggle on/off'></span> ";
 		}
 		return "<span class='status-dot " + statusCls + "'></span> ";
+	}
+
+	// decodeURIComponent that returns the input unchanged on malformed sequences
+	function _decodeURIComponentSafe(value) {
+		try {
+			return decodeURIComponent(value || "");
+		} catch (e) {
+			return value || "";
+		}
 	}
 
 	// Extract short hostname from parentApp string
