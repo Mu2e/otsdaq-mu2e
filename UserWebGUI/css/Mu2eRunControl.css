@@ -422,6 +422,14 @@ body {
 	color: #aaa;
 }
 
+.ss-runtype {
+	font-size: 8px;
+	color: #999;
+	margin-left: 4px;
+	font-style: italic;
+}
+.ss-runtype:empty { display: none; }
+
 /* ================================================================
    SYSTEM OVERVIEW — hosts × process types grid
    ================================================================ */
@@ -549,6 +557,117 @@ body {
 
 .sysoverview-empty {
 	color: #ccc;
+}
+
+/* ================================================================
+   TRIGGER MENU sub-row (under the Trigger subsystem row)
+   ================================================================ */
+.subsystem-grid tbody tr.ss-trigmenu-row td {
+	background: #f4f7fb;
+	border-top: none;
+	padding: 4px 10px 6px 10px;
+}
+
+.subsystem-grid tbody tr.ss-trigmenu-row:hover td {
+	background: #eef2f8;
+}
+
+.subsystem-grid tbody tr.ss-trigmenu-frozen .tm-row {
+	opacity: 0.6;
+}
+
+.tm-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px 8px;
+	font-size: 10px;
+	color: #555;
+}
+
+.tm-title {
+	font-weight: 600;
+	font-size: 9px;
+	text-transform: uppercase;
+	letter-spacing: 0.6px;
+	color: #8898a8;
+	margin-right: 4px;
+}
+
+.tm-label {
+	color: #777;
+}
+
+.tm-select, .tm-input {
+	font-size: 10px;
+	padding: 2px 4px;
+	color: #333;
+	border: 1px solid #ccd3dc;
+	border-radius: 2px;
+	background: #fff;
+	max-width: 220px;
+}
+
+.tm-input {
+	min-width: 180px;
+}
+
+.tm-select:disabled, .tm-input:disabled {
+	background: #f0f0f0;
+	color: #999;
+}
+
+.tm-select.tm-dirty, .tm-input.tm-dirty {
+	border-color: #d4a04a;
+	background: #fff8e8;
+}
+
+.tm-btn {
+	font-size: 10px;
+	padding: 2px 10px;
+	border: none;
+	border-radius: 3px;
+	background: #4a5568;
+	color: #fff;
+	cursor: pointer;
+}
+
+.tm-btn:hover { background: #2d3748; }
+
+.tm-btn:disabled {
+	background: #c5cad2;
+	cursor: default;
+}
+
+.tm-link {
+	cursor: pointer;
+	color: #2c5282;
+	text-decoration: none;
+	white-space: nowrap;
+}
+
+.tm-link:hover {
+	text-decoration: underline;
+}
+
+.tm-status {
+	margin-left: 6px;
+	color: #888;
+	font-style: italic;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 420px;
+}
+
+.tm-status.tm-status-err {
+	color: #c0392b;
+	font-style: normal;
+}
+
+.tm-status.tm-status-ok {
+	color: #1b8a2e;
+	font-style: normal;
 }
 
 /* ================================================================
