@@ -32,38 +32,11 @@ jobs:
         echo "lcov_html_report_path=lcov_report" >> "$GITHUB_OUTPUT"
         echo "doxy_html_path=doxygen" >> "$GITHUB_OUTPUT"
 
-    - name: Get workflow run IDs
-      id: run_ids
+    - name: Download artifacts
+      id: download
       run: |
-        doxy_id=$(gh run list --repo Mu2e/otsdaq-mu2e -e schedule \
-                              --workflow "mu2e-develop-cpp-ci.yml" \
-                              --limit 1 --status success \
-                              --json databaseId --jq '.[0].databaseId')
-        lcov_id=$(gh run list --repo Mu2e/.github \
-                              --workflow "Create Mu2e LCOV coverage report" \
-                              --limit 1 --status success \
-                              --json databaseId --jq '.[0].databaseId')
-        echo "doxy_id=$doxy_id" | tee -a "$GITHUB_OUTPUT"
-        echo "lcov_id=$lcov_id" | tee -a "$GITHUB_OUTPUT"
-
-    - name: Fetch Doxygen docs
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-      with:
-        name: doxygen
-        github-token: ${{ secrets.BOT_CI_ISSUES }}
-        repository: Mu2e/otsdaq-mu2e
-        path: ${{ steps.set_paths.outputs.doxy_html_path }}
-        run-id: ${{ steps.run_ids.outputs.doxy_id }}
-
-    - name: Download lcov html report
-      id: download_lcov
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-      with:
-        name: code_coverage
-        github-token: ${{ secrets.BOT_CI_ISSUES }}
-        path: ${{ steps.set_paths.outputs.lcov_html_report_path }}
-        run-id: ${{ steps.run_ids.outputs.lcov_id }}
-        repository: "Mu2e/.github"
+        gh run download --repo Mu2e/otsdaq-mu2e -n doxygen -D ${{ steps.set_paths.outputs.doxy_html_path }}
+        gh run download --repo Mu2e/.github -n code_coverage -D ${{ steps.set_paths.outputs.lcov_html_report_path }}
 
     - name: Checkout repo
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
