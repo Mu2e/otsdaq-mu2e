@@ -1218,7 +1218,8 @@ std::vector<std::vector<std::string>> DBRunInfo::getRunRecords(
 		    << "  SELECT r.run_number, r.comment, rt.name AS run_type_name,"
 		    << "    st.transition_time AS start_time,"
 		    << "    (SELECT min(sp.transition_time) FROM " << S << ".run_transition sp"
-		    << "       WHERE sp.run_number = r.run_number AND sp.type_id = 1) AS stop_time,"
+		    << "       WHERE sp.run_number = r.run_number AND sp.type_id = 1) AS "
+		       "stop_time,"
 		    << "    (SELECT lt.type_id FROM " << S << ".run_transition lt"
 		    << "       WHERE lt.run_number = r.run_number"
 		    << "       ORDER BY lt.transition_time DESC LIMIT 1) AS latest_type,"
@@ -1232,23 +1233,23 @@ std::vector<std::vector<std::string>> DBRunInfo::getRunRecords(
 		    << boost::numeric_cast<int>(startTime) << ") AND TO_TIMESTAMP("
 		    << boost::numeric_cast<int>(endTime) << ")"
 		    << ")"
-		    << " SELECT runs.run_number"                           // [0]
-		    << ", runs.start_time AS run_time"                      // [1]
-		    << ", runs.run_type_name AS run_type"                   // [2]
+		    << " SELECT runs.run_number"                                  // [0]
+		    << ", runs.start_time AS run_time"                            // [1]
+		    << ", runs.run_type_name AS run_type"                         // [2]
 		    << ", COALESCE(gw.artdaq_partition, '') AS artdaq_partition"  // [3]
-		    << ", COALESCE(gw.host_name, '') AS host_name"          // [4]
-		    << ", COALESCE(gw.config_alias, '') AS config_id"       // [5]
-		    << ", COALESCE(runs.comment, '') AS shifter_comment"    // [6]
-		    << ", runs.start_time"                                  // [7]
-		    << ", runs.stop_time"                                   // [8]
+		    << ", COALESCE(gw.host_name, '') AS host_name"                // [4]
+		    << ", COALESCE(gw.config_alias, '') AS config_id"             // [5]
+		    << ", COALESCE(runs.comment, '') AS shifter_comment"          // [6]
+		    << ", runs.start_time"                                        // [7]
+		    << ", runs.stop_time"                                         // [8]
 		    << ", CASE runs.latest_type WHEN 0 THEN 'halt' WHEN 1 THEN 'completed'"
 		    << "   WHEN 2 THEN 'error' WHEN 3 THEN 'pause' WHEN 4 THEN 'resume'"
 		    << "   WHEN 5 THEN 'start' WHEN 6 THEN 'completed' WHEN 7 THEN 'halt'"
-		    << "   ELSE 'unknown' END AS run_status"                // [9]
+		    << "   ELSE 'unknown' END AS run_status"  // [9]
 		    // [10] all subsystems in one string, no per-run follow-up query needed:
 		    //      sub|alias|cfgName|cfgKey|ctxName|ctxKey|bbName|bbKey;sub|...
 		    << ", COALESCE(sg.subsystem_groups, '') AS subsystem_groups"
-		    << ", COALESCE(runs.end_comment, '') AS end_comment"    // [11]
+		    << ", COALESCE(runs.end_comment, '') AS end_comment"  // [11]
 		    << " FROM runs"
 		    // Each 'settings' jsonb is 30-640 KB in TOAST; every reference detoasts
 		    // the whole value. The 'OFFSET 0' fences below stop the planner from
