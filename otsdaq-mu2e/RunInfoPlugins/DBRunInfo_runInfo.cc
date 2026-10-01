@@ -1206,21 +1206,79 @@ std::vector<std::vector<std::string>> DBRunInfo::getRunRecords(
 			PQfreemem(escapedRunType);
 		}
 
-		queryStream << "SELECT run_number"
-		            << ", start_time as run_time"
-		            << ", run_type_name as run_type"
-		            << ", artdaq_partition"
-		            << ", host_name"
-		            << ", config_alias as config_id"
-		            << ", comment as shifter_comment"
-		            << ", start_time"
-		            << ", stop_time"
-		            << " FROM " << dbSchema_ << ".view_run_summary"
-		            << " WHERE run_status = 'completed'"
-		            << " AND start_time BETWEEN TO_TIMESTAMP("
-		            << boost::numeric_cast<int>(startTime) << ") AND TO_TIMESTAMP("
-		            << boost::numeric_cast<int>(endTime) << ")" << runTypeClause
-		            << filterClause << " ORDER BY run_number DESC;";
+		// Deliberately not using view_run_summary: it aggregates over the whole
+		// config table (every run, every 30-640 KB settings jsonb) before the time
+		// filter applies, which cost ~9 s. Here the time window is applied first on
+		// the small run/run_transition tables and only the selected runs' config
+		// rows are read. Transition type ids: 0 halt, 1 stop, 2 error, 3 pause,
+		// 4 resume, 5 start, 6 stop_complete, 7 halt_complete.
+		const std::string& S = dbSchema_;
+		queryStream
+		    << "WITH runs AS ("
+		    << "  SELECT r.run_number, r.comment, rt.name AS run_type_name,"
+		    << "    st.transition_time AS start_time,"
+		    << "    (SELECT min(sp.transition_time) FROM " << S << ".run_transition sp"
+		    << "       WHERE sp.run_number = r.run_number AND sp.type_id = 1) AS stop_time,"
+		    << "    (SELECT lt.type_id FROM " << S << ".run_transition lt"
+		    << "       WHERE lt.run_number = r.run_number"
+		    << "       ORDER BY lt.transition_time DESC LIMIT 1) AS latest_type,"
+		    << "    rei.comment AS end_comment"
+		    << "  FROM " << S << ".run r"
+		    << "  JOIN " << S << ".run_transition st"
+		    << "    ON st.run_number = r.run_number AND st.type_id = 5"
+		    << "  LEFT JOIN " << S << ".run_type rt ON rt.id = r.run_type_id"
+		    << "  LEFT JOIN " << S << ".run_end_info rei ON rei.run_number = r.run_number"
+		    << "  WHERE st.transition_time BETWEEN TO_TIMESTAMP("
+		    << boost::numeric_cast<int>(startTime) << ") AND TO_TIMESTAMP("
+		    << boost::numeric_cast<int>(endTime) << ")"
+		    << ")"
+		    << " SELECT runs.run_number"                           // [0]
+		    << ", runs.start_time AS run_time"                      // [1]
+		    << ", runs.run_type_name AS run_type"                   // [2]
+		    << ", COALESCE(gw.artdaq_partition, '') AS artdaq_partition"  // [3]
+		    << ", COALESCE(gw.host_name, '') AS host_name"          // [4]
+		    << ", COALESCE(gw.config_alias, '') AS config_id"       // [5]
+		    << ", COALESCE(runs.comment, '') AS shifter_comment"    // [6]
+		    << ", runs.start_time"                                  // [7]
+		    << ", runs.stop_time"                                   // [8]
+		    << ", CASE runs.latest_type WHEN 0 THEN 'halt' WHEN 1 THEN 'completed'"
+		    << "   WHEN 2 THEN 'error' WHEN 3 THEN 'pause' WHEN 4 THEN 'resume'"
+		    << "   WHEN 5 THEN 'start' WHEN 6 THEN 'completed' WHEN 7 THEN 'halt'"
+		    << "   ELSE 'unknown' END AS run_status"                // [9]
+		    // [10] all subsystems in one string, no per-run follow-up query needed:
+		    //      sub|alias|cfgName|cfgKey|ctxName|ctxKey|bbName|bbKey;sub|...
+		    << ", COALESCE(sg.subsystem_groups, '') AS subsystem_groups"
+		    << ", COALESCE(runs.end_comment, '') AS end_comment"    // [11]
+		    << " FROM runs"
+		    // Each 'settings' jsonb is 30-640 KB in TOAST; every reference detoasts
+		    // the whole value. The 'OFFSET 0' fences below stop the planner from
+		    // inlining the sub-selects, so the big column is read exactly once per
+		    // config row and the eight '->>' lookups run on the tiny extracted
+		    // object. Without the fence this took ~7 s for 118 runs; with it ~0.7 s.
+		    << " LEFT JOIN LATERAL ("
+		    << "   SELECT y.e->>'HOSTNAME' AS host_name,"
+		    << "          y.e->>'ARTDAQ_PARTITION' AS artdaq_partition,"
+		    << "          y.alias AS config_alias"
+		    << "   FROM (SELECT c.settings->'env' AS e,"
+		    << "                c.settings->>'config_alias' AS alias"
+		    << "         FROM " << S << ".config c"
+		    << "         WHERE c.run_number = runs.run_number AND c.subsystem = 'Gateway'"
+		    << "         ORDER BY c.create_time DESC LIMIT 1 OFFSET 0) y) gw ON true"
+		    << " LEFT JOIN LATERAL ("
+		    << "   SELECT string_agg(x.subsystem"
+		    << "     || '|' || COALESCE(x.g->>'Configuration_alias','')"
+		    << "     || '|' || COALESCE(x.g->>'Configuration_group_name','')"
+		    << "     || '|' || COALESCE(x.g->>'Configuration_group_key','')"
+		    << "     || '|' || COALESCE(x.g->>'Context_group_name','')"
+		    << "     || '|' || COALESCE(x.g->>'Context_group_key','')"
+		    << "     || '|' || COALESCE(x.g->>'Backbone_group_name','')"
+		    << "     || '|' || COALESCE(x.g->>'Backbone_group_key','')"
+		    << "     , ';' ORDER BY x.subsystem) AS subsystem_groups"
+		    << "   FROM (SELECT c.subsystem, c.settings #> '{config,groups}' AS g"
+		    << "         FROM " << S << ".config c"
+		    << "         WHERE c.run_number = runs.run_number OFFSET 0) x) sg ON true"
+		    << " WHERE true" << runTypeClause << filterClause
+		    << " ORDER BY runs.run_number DESC;";
 
 		std::string query = queryStream.str();
 		res               = PQexec(runInfoDbConn_, query.c_str());
@@ -1256,110 +1314,93 @@ std::vector<std::vector<std::string>> DBRunInfo::getRunRecords(
 }  //end getRunRecords()
 
 //==============================================================================
-/*
 std::vector<std::vector<std::string>> DBRunInfo::getRunConfigSubsystemInfo(
-    uint64_t configID)
+    uint64_t runNumber)
 {
 	std::vector<std::vector<std::string>> configRecords;
-	PGresult*                             res;
-	char                                  buffer[2048];
 
-	__COUT__ << "configID " << configID << __E__;
+	int runInfoDbConnStatus_ = checkAndReconnectDb("to select subsystem config info");
 
-	snprintf(buffer,
-	         sizeof(buffer),
-	         "SELECT cs.config_id, cs.subsystem, csd.data as subsystem_config_data, "
-	         "cs.config_alias, cs.context_name, cs.context_key, cs.config_group_name, "
-	         "cs.config_group_key, cs.backbone_name, cs.backbone_key, cs.config_db_uri, "
-	         "cs.sw_version_id, cs.create_time "
-	         "FROM %s.config_subsystem cs "
-	         "LEFT JOIN %s.config_subsystem_data csd "
-	         "  ON cs.config_id = csd.config_id AND cs.subsystem = csd.subsystem "
-	         "WHERE cs.config_id = %ld "
-	         "ORDER BY cs.subsystem;",
-	         dbSchema_,
-	         dbSchema_,
-	         configID);
-
-	res = PQexec(runInfoDbConn_, buffer);
-
-	if(PQresultStatus(res) != PGRES_TUPLES_OK)
-	{
-		__SS__ << "getRunConfigSubsystemInfo() SELECT FROM 'subsystem_config' DATABASE "
-		          "TABLE "
-		          "FAILED!!! PQ ERROR: "
-		       << PQresultErrorMessage(res) << __E__;
-		PQclear(res);
-		__SS_THROW__;
-	}
-
-	__COUT__ << "PQntuples(res) " << PQntuples(res) << "Query: " << buffer << __E__;
-
-	configRecords = convertResultToVector(res);
-	if(!configRecords.empty())
-	{
-		__COUT__ << "Subsystem config retrieved" << __E__;
-	}
-
-	PQclear(res);
-	return configRecords;
-}  //end getRunConfigSubsystemInfo()
-*/
-
-//==============================================================================
-// TODO: change function name to config ID
-/*
-std::vector<std::vector<std::string>> DBRunInfo::getRunConditionByID(uint64_t conditionID)
-{
-	__COUT__ << "getRunConditionByID() reached" << __E__;
-	std::vector<std::vector<std::string>> conditionRecords;
-
-	int runInfoDbConnStatus_ = checkAndReconnectDb("to select run condition record");
-
-	// select run info from db
 	if(runInfoDbConn_ && runInfoDbConnStatus_ == 1)
 	{
-		PGresult* res;
-		char      buffer[1024];
+		std::ostringstream queryStream;
+		queryStream
+		    << "SELECT subsystem"
+		    << ", COALESCE(settings #>> '{config,groups,Configuration_alias}', '')"
+		    << ", COALESCE(settings #>> '{config,groups,Configuration_group_name}', '')"
+		    << ", COALESCE(settings #>> '{config,groups,Configuration_group_key}', '')"
+		    << ", COALESCE(settings #>> '{config,groups,Context_group_name}', '')"
+		    << ", COALESCE(settings #>> '{config,groups,Context_group_key}', '')"
+		    << ", COALESCE(settings #>> '{config,groups,Backbone_group_name}', '')"
+		    << ", COALESCE(settings #>> '{config,groups,Backbone_group_key}', '')"
+		    << ", COALESCE(settings #>> '{config,groups,Iterate_group_name}', '')"
+		    << ", COALESCE(settings #>> '{config,groups,Iterate_group_key}', '')"
+		    << ", create_time"
+		    << " FROM " << dbSchema_ << ".config"
+		    << " WHERE run_number = " << boost::numeric_cast<long int>(runNumber)
+		    << " ORDER BY subsystem;";
 
-		snprintf(buffer,
-		         sizeof(buffer),
-		         "SELECT config_data"
-		         ", create_time"
-		         " FROM %s.config"
-		         " WHERE id = %ld;",
-		         dbSchema_,
-		         conditionID);
-
-		res = PQexec(runInfoDbConn_, buffer);
+		std::string query = queryStream.str();
+		PGresult*   res   = PQexec(runInfoDbConn_, query.c_str());
 
 		if(PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
-			__SS__ << "getRunRecords() SELECT FROM 'run_condition' DATABASE TABLE "
+			__SS__ << "getRunConfigSubsystemInfo() SELECT FROM 'config' DATABASE TABLE "
 			          "FAILED!!! PQ ERROR: "
 			       << PQresultErrorMessage(res) << __E__;
 			PQclear(res);
 			__SS_THROW__;
 		}
 
-		__COUT__ << "PQntuples(res) " << PQntuples(res) << __E__;
-		conditionRecords = convertResultToVector(res);
-		if(conditionRecords.empty())
+		__COUT__ << "run " << runNumber << " subsystem config rows: " << PQntuples(res)
+		         << __E__;
+		configRecords = convertResultToVector(res);
+		PQclear(res);
+	}
+
+	return configRecords;
+}  //end getRunConfigSubsystemInfo()
+
+//==============================================================================
+std::vector<std::vector<std::string>> DBRunInfo::getRunConditionByID(uint64_t runNumber)
+{
+	std::vector<std::vector<std::string>> conditionRecords;
+
+	int runInfoDbConnStatus_ = checkAndReconnectDb("to select run condition records");
+
+	if(runInfoDbConn_ && runInfoDbConnStatus_ == 1)
+	{
+		std::ostringstream queryStream;
+		// compact JSON text; the report page renders it as a collapsible tree
+		queryStream << "SELECT subsystem, create_time, settings::text"
+		            << " FROM " << dbSchema_ << ".config"
+		            << " WHERE run_number = " << boost::numeric_cast<long int>(runNumber)
+		            << " ORDER BY subsystem;";
+
+		std::string query = queryStream.str();
+		PGresult*   res   = PQexec(runInfoDbConn_, query.c_str());
+
+		if(PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
-			__SS__ << "getRunConditionByID() RETRIEVE RUN CONDITION RECORD FROM "
-			          "'run_condition' DATABASE TABLE "
-			          "FAILED!!! No records found."
-		       << __E__;
+			__SS__ << "getRunConditionByID() SELECT FROM 'config' DATABASE TABLE "
+			          "FAILED!!! PQ ERROR: "
+			       << PQresultErrorMessage(res) << __E__;
 			PQclear(res);
 			__SS_THROW__;
 		}
-		__COUT__ << "Run condition record retrieved" << __E__;
 
+		__COUT__ << "run " << runNumber << " condition rows: " << PQntuples(res) << __E__;
+		conditionRecords = convertResultToVector(res);
 		PQclear(res);
+
+		if(conditionRecords.empty())
+		{
+			__SS__ << "No run condition records found for run " << runNumber << __E__;
+			__SS_THROW__;
+		}
 	}
 
 	return conditionRecords;
 }  //end getRunConditionByID()
-*/
 
 DEFINE_OTS_PROCESSOR(DBRunInfo)
