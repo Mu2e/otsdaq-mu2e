@@ -3181,21 +3181,15 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 
 		// Last DTC phase. With a CFO in this subsystem, idle one more iteration so the
 		// DTC finishes together with the CFO's phase 13 (today's behavior).
+		// Do not reset the phase base here: other FEs in this subsystem may still be
+		// iterating, so configure() will be called again and must keep returning a
+		// phase past the last one. The base is reset only in configure() entry and halt().
 		if(configSubsystemIterationTurn_ ==
 		   CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM)
 			indicateIterationWork();
-		else
-		{
-			resetConfigPhase();
-			configSubsystemIterationTurn_ = (unsigned int)-1;
-		}
 	}
 	else
-	{
 		__FE_COUT__ << "Do nothing while other configurable entities finish..." << __E__;
-		resetConfigPhase();
-		configSubsystemIterationTurn_ = (unsigned int)-1;
-	}
 
 }  // end configureEventBuildingMode()
 

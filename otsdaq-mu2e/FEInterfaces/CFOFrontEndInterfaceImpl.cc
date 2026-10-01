@@ -2552,11 +2552,13 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 	}
 	else if(step == CFOandDTCCoreVInterface::CONFIG_CFO_EVENT_SENDING_START_ITERATION)
 	{
-		// Phase 6: Enable CFO Operation — last phase of the CFO pass
+		// Phase 6: Enable CFO Operation — last phase of the CFO pass.
+		// Do not reset the phase base here: other FEs in this subsystem may still be
+		// iterating, so configure() will be called again and must keep returning a
+		// phase past the last one. The base is reset only in configure() entry and halt().
 		__FE_COUT__ << "Enable CFO operation (RF0, punch)." << __E__;
 		thisCFO_->EnableAcceleratorRF0();
 		thisCFO_->SetPunchEnable();
-		resetConfigPhase();
 	}
 	else
 		__FE_COUT__ << "Do nothing while other configurable entities finish..." << __E__;
@@ -2627,8 +2629,10 @@ void CFOFrontEndInterface::configureForTimingChain(int step)
 	switch(step)
 	{
 	case 0:
+		// Do not call halt() here: it resets the configure phase base and the timing-chain
+		// sub-step base, which makes this sub-step repeat forever. Its register writes
+		// (disable beam on/off modes) are done directly below.
 		next_starting_event_window_tag_ = 0;
-		halt();
 		thisCFO_->DisableBeamOnMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
 		thisCFO_->DisableBeamOffMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
 		thisCFO_->ClearControlRegister();
