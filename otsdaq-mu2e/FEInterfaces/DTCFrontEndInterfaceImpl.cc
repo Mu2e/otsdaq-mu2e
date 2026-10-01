@@ -80,8 +80,8 @@ uint32_t evbKnownDefectMask(DTCLib::DTC* dtc)
 	case 0xd6092291:  // Sep-22 11:00 (last build with the known checker fault, per hw agent)
 	case 0xd6092496:  // Sep-24 16:00 (bit 13 still sets at first poll; user decision 2026-09-24)
 	case 0xd60924a0:  // Sep-24 20:00 (first checker fix + bits 31:27 counter; counter saturates
-	                  //  at 31 during clean data -> checker still firing; hw agent 2026-09-25:
-	                  //  "known-false, exclude"; THE BUILD AFTER THIS must read bit 13 = 0)
+	    //  at 31 during clean data -> checker still firing; hw agent 2026-09-25:
+	    //  "known-false, exclude"; THE BUILD AFTER THIS must read bit 13 = 0)
 		return (1u << 13);
 	default:
 		return 0;
@@ -92,8 +92,9 @@ std::string requireEVBBufferTestReady(DTCLib::DTC* dtc, uint32_t operatorIgnoreM
 {
 	// SoftReset drops bit 25 (DDR calibration done) for ~1 s through the reset chain;
 	// wait it out, but refuse immediately on any sticky error
-	const uint32_t buildMask  = evbKnownDefectMask(dtc);
-	const uint32_t ignoreMask = buildMask | (operatorIgnoreMask & DTCLib::EVBDefinedErrorMask);
+	const uint32_t buildMask = evbKnownDefectMask(dtc);
+	const uint32_t ignoreMask =
+	    buildMask | (operatorIgnoreMask & DTCLib::EVBDefinedErrorMask);
 
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 	uint32_t   value    = readEVBBufferTestStatus(dtc);
@@ -120,7 +121,8 @@ std::string requireEVBBufferTestReady(DTCLib::DTC* dtc, uint32_t operatorIgnoreM
 		std::ostringstream m;
 		m << "NOTE: operator override: 0x9370 bits 0x" << std::hex
 		  << (operatorIgnoreMask & DTCLib::EVBDefinedErrorMask) << std::dec
-		  << " excluded from the start gate this session (FE Macro 'EVB Start-Gate Ignore "
+		  << " excluded from the start gate this session (FE Macro 'EVB Start-Gate "
+		     "Ignore "
 		     "Mask'); still reported in EVB Status.\n";
 		report += m.str();
 	}
@@ -171,8 +173,8 @@ void writeReg(DTCLib::DTC* dtc, uint16_t addr, uint32_t v)
 	if(err)
 	{
 		std::stringstream ss;
-		ss << "write_register(0x" << std::hex << addr << ", 0x" << v
-		   << ") failed, error " << std::dec << err;
+		ss << "write_register(0x" << std::hex << addr << ", 0x" << v << ") failed, error "
+		   << std::dec << err;
 		throw std::runtime_error(ss.str());
 	}
 }
@@ -1090,27 +1092,36 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    1,  // requiredUserPermissions
 	    "*",
 	    "Bench check of the link-7 (10GbE EVB) reset, 0x9118 bit 7 (restarts the TX/RX "
-	    "start-up sequencers; GT and PLL stay up), per the EVB3_link7_reset_software_handoff "
+	    "start-up sequencers; GT and PLL stay up), per the "
+	    "EVB3_link7_reset_software_handoff "
 	    "verification table steps 1-6. Run on ONE DTC "
-	    "with the run stopped and both DTCs CDR LOCKED; the peer DTC is found automatically "
-	    "and read for step 2/4. Every step reports PASS/FAIL against the expected value and "
-	    "the register dump for both DTCs. Bit 7 is always released before returning, even "
+	    "with the run stopped and both DTCs CDR LOCKED; the peer DTC is found "
+	    "automatically "
+	    "and read for step 2/4. Every step reports PASS/FAIL against the expected value "
+	    "and "
+	    "the register dump for both DTCs. Bit 7 is always released before returning, "
+	    "even "
 	    "on error. Does not run EVB Init (step 7); run that separately afterwards.");
 
 	registerFEMacroFunction(
 	    "EVB Start-Gate Ignore Mask",
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::SetEVBStartGateIgnoreMask),  // feMacroFunction
-	    std::vector<std::string>{"0x9370 error bits to ignore (hex, Default := 0 = none)"},
+	    std::vector<std::string>{
+	        "0x9370 error bits to ignore (hex, Default := 0 = none)"},
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
 	    "Operator override for this otsdaq session only: 0x9370 sticky-error bits [15:0] "
-	    "that the EVB buffer-test start gate and run-validity check will ignore on THIS DTC, "
-	    "in addition to the per-bitfile known-defect list. Use e.g. 0x2000 to ignore bit 13 "
-	    "(RX_FCS_BAD) on a new bitfile while the hardware agent rules on it. The bits are "
+	    "that the EVB buffer-test start gate and run-validity check will ignore on THIS "
+	    "DTC, "
+	    "in addition to the per-bitfile known-defect list. Use e.g. 0x2000 to ignore bit "
+	    "13 "
+	    "(RX_FCS_BAD) on a new bitfile while the hardware agent rules on it. The bits "
+	    "are "
 	    "still read and printed in every EVB Status and run report; only the pass/fail "
-	    "decision changes. 0 clears the override. Run on each DTC you want it to apply to. "
+	    "decision changes. 0 clears the override. Run on each DTC you want it to apply "
+	    "to. "
 	    "Cleared on otsdaq restart; not saved anywhere.");
 
 	//------------------
@@ -6812,8 +6823,9 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 	// (a level: set, verify it reached the transceiver, clear, wait for the transceiver,
 	// then wait for lock).  ROC links (bits 6:0) and the CFO link are never touched.
 	std::string           peerVisible;
-	DTCFrontEndInterface* peerFE  = findPeerDTCFrontEnd(deviceIndex_ == 0 ? 1 : 0, peerVisible);
-	DTCLib::DTC*          peerDTC = (peerFE && peerFE->thisDTC_) ? peerFE->thisDTC_ : nullptr;
+	DTCFrontEndInterface* peerFE =
+	    findPeerDTCFrontEnd(deviceIndex_ == 0 ? 1 : 0, peerVisible);
+	DTCLib::DTC* peerDTC = (peerFE && peerFE->thisDTC_) ? peerFE->thisDTC_ : nullptr;
 
 	std::ostringstream linkSs;
 	auto               dumpAll = [&](const std::string& label) {
@@ -6821,7 +6833,9 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
         if(peerDTC)
             linkSs << dumpEVBLink7Registers(peerDTC, label + ", peer");
 	};
-	auto link7Locked = [&](DTCLib::DTC* d) { return (readReg(d, kRegSERDESRXCDRLock) & kLink7Bit) != 0; };
+	auto link7Locked = [&](DTCLib::DTC* d) {
+		return (readReg(d, kRegSERDESRXCDRLock) & kLink7Bit) != 0;
+	};
 
 	int              evbLinkResetAttempts        = 0;
 	static const int MAX_EVB_LINK_RESET_ATTEMPTS = 3;
@@ -6847,11 +6861,12 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 			const uint32_t peerPll  = readReg(peerDTC, kRegSERDESPLLLocked);
 			if(!evbLink7TransceiverReady(peerDone, peerPll))
 			{
-				linkSs << "  " << tag << ": peer " << peerDTC->getDeviceUID()
-				       << " link-7 transceiver is not up (0x9138=0x" << std::hex << peerDone
-				       << ", 0x9128=0x" << peerPll << std::dec
-				       << "), so it sends no idles; this DTC cannot lock until the peer's "
-				          "link 7 is up. Not resetting.\n";
+				linkSs
+				    << "  " << tag << ": peer " << peerDTC->getDeviceUID()
+				    << " link-7 transceiver is not up (0x9138=0x" << std::hex << peerDone
+				    << ", 0x9128=0x" << peerPll << std::dec
+				    << "), so it sends no idles; this DTC cannot lock until the peer's "
+				       "link 7 is up. Not resetting.\n";
 				stopReason = true;
 				break;
 			}
@@ -6869,16 +6884,17 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 		setEVBLink7Reset(dtc, true);
 		const uint32_t heldDone = readReg(dtc, kRegSERDESResetDone);
 		const uint32_t heldPll  = readReg(dtc, kRegSERDESPLLLocked);
-		const bool     reached  = (heldDone & kLink7ResetDoneMask) != kLink7ResetDoneMask ||
+		const bool reached = (heldDone & kLink7ResetDoneMask) != kLink7ResetDoneMask ||
 		                     !(heldPll & kLink7Bit);
 		linkSs << "  " << tag << ": with 0x9118 bit 7 held: 0x9138=0x" << std::hex
-		       << std::setw(8) << std::setfill('0') << heldDone << " 0x9128=0x" << std::setw(8)
-		       << heldPll << std::dec << std::setfill(' ') << " -> "
+		       << std::setw(8) << std::setfill('0') << heldDone << " 0x9128=0x"
+		       << std::setw(8) << heldPll << std::dec << std::setfill(' ') << " -> "
 		       << (reached ? "reset reached the transceiver"
 		                   : "link-7 bits did not drop: this build's bit 7 does nothing "
 		                     "(expected up to 0xd6092493)")
 		       << "\n";
-		setEVBLink7Reset(dtc, false);  // release the level (SoftReset would also clear it)
+		setEVBLink7Reset(dtc,
+		                 false);  // release the level (SoftReset would also clear it)
 
 		const bool xcvrReady = pollUntil(
 		    [&] {
@@ -6888,7 +6904,8 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 		    20);
 		if(!xcvrReady)
 		{
-			linkSs << "  " << tag << ": link-7 transceiver did not come back within 20 ms "
+			linkSs << "  " << tag
+			       << ": link-7 transceiver did not come back within 20 ms "
 			          "(0x9138 bits 7/15/23/31 and 0x9128 bit 7): clocking fault, not a "
 			          "lock fault. Stopping.\n";
 			dtc->EnableLink(DTCLib::DTC_Link_EVB);
@@ -6907,7 +6924,8 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 			// our reset stopped our TX, so the peer's lock dropped; it must return on its own
 			const bool peerLocked = pollUntil([&] { return link7Locked(peerDTC); }, 200);
 			linkSs << "  " << tag << ": peer " << peerDTC->getDeviceUID()
-			       << (peerLocked ? " re-locked" : " did NOT re-lock") << " within 200 ms.\n";
+			       << (peerLocked ? " re-locked" : " did NOT re-lock")
+			       << " within 200 ms.\n";
 		}
 		dumpAll(tag + " after");
 	}
@@ -6957,9 +6975,11 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 		const uint32_t done = readReg(dtc, kRegSERDESResetDone);
 		const uint32_t pll  = readReg(dtc, kRegSERDESPLLLocked);
 		if(evbLink7TransceiverReady(done, pll))
-			macSs << "Transceiver is healthy (0x9138 link-7 bits and 0x9128 bit 7 all 1) but "
-			         "the 64b/66b link never locked: keep this bitfile loaded and hand the "
-			         "register dump below to firmware.\n";
+			macSs
+			    << "Transceiver is healthy (0x9138 link-7 bits and 0x9128 bit 7 all 1) "
+			       "but "
+			       "the 64b/66b link never locked: keep this bitfile loaded and hand the "
+			       "register dump below to firmware.\n";
 		else
 			macSs << "Link-7 transceiver not ready (0x9138=0x" << std::hex << done
 			      << ", 0x9128=0x" << pll << std::dec << "): clocking fault.\n";
@@ -7309,20 +7329,21 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 	auto dtc = getDTC();
 
 	std::string           peerVisible;
-	DTCFrontEndInterface* peerFE = findPeerDTCFrontEnd(deviceIndex_ == 0 ? 1 : 0, peerVisible);
-	DTCLib::DTC*          peer   = (peerFE && peerFE->thisDTC_) ? peerFE->thisDTC_ : nullptr;
+	DTCFrontEndInterface* peerFE =
+	    findPeerDTCFrontEnd(deviceIndex_ == 0 ? 1 : 0, peerVisible);
+	DTCLib::DTC* peer = (peerFE && peerFE->thisDTC_) ? peerFE->thisDTC_ : nullptr;
 
 	std::ostringstream o;
 	int                failures = 0;
-	auto               verdict  = [&](int step, const std::string& what, bool pass,
-                           const std::string& detail) {
-        o << "  Step " << step << " " << (pass ? "PASS" : "FAIL") << ": " << what;
-        if(!detail.empty())
-            o << " -- " << detail;
-        o << "\n";
-        if(!pass)
-            ++failures;
-	};
+	auto               verdict =
+	    [&](int step, const std::string& what, bool pass, const std::string& detail) {
+		    o << "  Step " << step << " " << (pass ? "PASS" : "FAIL") << ": " << what;
+		    if(!detail.empty())
+			    o << " -- " << detail;
+		    o << "\n";
+		    if(!pass)
+			    ++failures;
+	    };
 	auto hex8 = [](uint32_t v) {
 		std::ostringstream h;
 		h << "0x" << std::hex << std::setw(8) << std::setfill('0') << v;
@@ -7337,7 +7358,8 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 			o << dumpEVBLink7Registers(peer, label + ", peer");
 	};
 
-	o << "=== Exercise Link 7 Reset on " << dtc->getDeviceUID() << " (0x9118 bit 7) ===\n";
+	o << "=== Exercise Link 7 Reset on " << dtc->getDeviceUID()
+	  << " (0x9118 bit 7) ===\n";
 	o << "  Design version 0x9004: " << hex8(readReg(dtc, kRegDesignVersion)) << "\n";
 	if(peer)
 		o << "  Peer: " << peer->getDeviceUID() << "\n";
@@ -7355,7 +7377,8 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 	const bool lockedB0 = peer ? link7Locked(peer) : false;
 	if(!lockedA0 || (peer && !lockedB0))
 	{
-		o << "  ABORT: precondition failed -- both DTCs must be CDR LOCKED before this test. "
+		o << "  ABORT: precondition failed -- both DTCs must be CDR LOCKED before this "
+		     "test. "
 		  << dtc->getDeviceUID() << (lockedA0 ? " locked" : " NOT locked");
 		if(peer)
 			o << ", " << peer->getDeviceUID() << (lockedB0 ? " locked" : " NOT locked");
@@ -7373,7 +7396,8 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 	o << "  Baseline: 0x9118=" << hex8(base9118) << " 0x9138=" << hex8(base9138)
 	  << " 0x9128=" << hex8(base9128) << " 0x9140=" << hex8(base9140) << "\n";
 	if(base9118 & kLink7Bit)
-		o << "  NOTE: 0x9118 bit 7 was already set at baseline (left over from a previous "
+		o << "  NOTE: 0x9118 bit 7 was already set at baseline (left over from a "
+		     "previous "
 		     "attempt); it will be cleared by this test.\n";
 	dumpBoth("baseline");
 
@@ -7402,23 +7426,25 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 		// locked PLL is never re-reset, so 0x9138 bits 7/23 and 0x9128 bit 7 staying 1 is
 		// the correct scope.  The old-build symptom is bits 15/31 NOT dropping.
 		setEVBLink7Reset(dtc, true);
-		const uint32_t held9118       = readReg(dtc, kRegSERDESReset);
-		const uint32_t held9138       = readReg(dtc, kRegSERDESResetDone);
-		const uint32_t held9128       = readReg(dtc, kRegSERDESPLLLocked);
-		const uint32_t kLink7FsmBits  = (1u << 15) | (1u << 31);
-		const uint32_t kLink7GtBits   = (1u << 7) | (1u << 23);
-		const bool     fsmReset       = (held9138 & kLink7FsmBits) == 0;
-		const bool     gtHeld         = (held9138 & kLink7GtBits) == kLink7GtBits;
-		const bool     pllHeld        = (held9128 & kLink7Bit) != 0;
-		verdict(1,
-		        "assert bit 7: TX/RX start-up sequencers reset (0x9138 bits 15/31 -> 0), GT "
-		        "reset-done (bits 7/23) and PLL (0x9128 bit 7) held at 1",
-		        fsmReset && gtHeld && pllHeld,
-		        "0x9118=" + hex8(held9118) + " 0x9138=" + hex8(held9138) +
-		            " 0x9128=" + hex8(held9128) + " -> sequencers " +
-		            (fsmReset ? "reset" : "NOT reset (old-build behaviour: bit 7 does nothing)") +
-		            ", GT " + (gtHeld ? "held" : "dropped (unexpected)") + ", PLL " +
-		            (pllHeld ? "held" : "dropped (unexpected)"));
+		const uint32_t held9118      = readReg(dtc, kRegSERDESReset);
+		const uint32_t held9138      = readReg(dtc, kRegSERDESResetDone);
+		const uint32_t held9128      = readReg(dtc, kRegSERDESPLLLocked);
+		const uint32_t kLink7FsmBits = (1u << 15) | (1u << 31);
+		const uint32_t kLink7GtBits  = (1u << 7) | (1u << 23);
+		const bool     fsmReset      = (held9138 & kLink7FsmBits) == 0;
+		const bool     gtHeld        = (held9138 & kLink7GtBits) == kLink7GtBits;
+		const bool     pllHeld       = (held9128 & kLink7Bit) != 0;
+		verdict(
+		    1,
+		    "assert bit 7: TX/RX start-up sequencers reset (0x9138 bits 15/31 -> 0), GT "
+		    "reset-done (bits 7/23) and PLL (0x9128 bit 7) held at 1",
+		    fsmReset && gtHeld && pllHeld,
+		    "0x9118=" + hex8(held9118) + " 0x9138=" + hex8(held9138) +
+		        " 0x9128=" + hex8(held9128) + " -> sequencers " +
+		        (fsmReset ? "reset"
+		                  : "NOT reset (old-build behaviour: bit 7 does nothing)") +
+		        ", GT " + (gtHeld ? "held" : "dropped (unexpected)") + ", PLL " +
+		        (pllHeld ? "held" : "dropped (unexpected)"));
 
 		// ---- step 2: peer loses lock ----
 		if(peer)
@@ -7435,7 +7461,7 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 
 		// ---- step 3: ROC links (bits 6:0) untouched ----
 		const uint32_t held9140 = readReg(dtc, kRegSERDESRXCDRLock);
-		const bool     rocOk    = ((held9138 & 0x7F7F7F7Fu) == (base9138 & 0x7F7F7F7Fu)) &&
+		const bool     rocOk = ((held9138 & 0x7F7F7F7Fu) == (base9138 & 0x7F7F7F7Fu)) &&
 		                   ((held9140 & 0x7Fu) == (base9140 & 0x7Fu));
 		verdict(3,
 		        "ROC-link bits 6:0 of 0x9138 and 0x9140 unchanged while bit 7 held",
@@ -7446,21 +7472,21 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 
 		// ---- step 4: release and recover ----
 		setEVBLink7Reset(dtc, false);
-		const auto t0        = std::chrono::steady_clock::now();
-		const bool xcvrBack  = pollUntil(
-            [&] {
-                return evbLink7TransceiverReady(readReg(dtc, kRegSERDESResetDone),
-                                                readReg(dtc, kRegSERDESPLLLocked));
-            },
-            20);
+		const auto t0       = std::chrono::steady_clock::now();
+		const bool xcvrBack = pollUntil(
+		    [&] {
+			    return evbLink7TransceiverReady(readReg(dtc, kRegSERDESResetDone),
+			                                    readReg(dtc, kRegSERDESPLLLocked));
+		    },
+		    20);
 		const auto xcvrMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 		                        std::chrono::steady_clock::now() - t0)
 		                        .count();
 		verdict(4,
 		        "release: 0x9138 link-7 bits and 0x9128 bit 7 back to 1 within 20 ms",
 		        xcvrBack,
-		        std::to_string(xcvrMs) + " ms, 0x9138=" +
-		            hex8(readReg(dtc, kRegSERDESResetDone)) +
+		        std::to_string(xcvrMs) +
+		            " ms, 0x9138=" + hex8(readReg(dtc, kRegSERDESResetDone)) +
 		            " 0x9128=" + hex8(readReg(dtc, kRegSERDESPLLLocked)));
 
 		const auto t1      = std::chrono::steady_clock::now();
@@ -7502,11 +7528,14 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 			const bool     cleared   = (after9118 & kLink7Bit) == 0;
 			const bool     lockedNow = link7Locked(dtc);
 			verdict(5,
-			        "SoftReset with bit 7 held: 0x9118 bit 7 cleared by SoftReset and link back",
+			        "SoftReset with bit 7 held: 0x9118 bit 7 cleared by SoftReset and "
+			        "link back",
 			        cleared && lockedNow,
-			        "0x9118=" + hex8(after9118) + ", 0x9140=" +
-			            hex8(readReg(dtc, kRegSERDESRXCDRLock)) +
-			            (cleared ? "" : " (bit 7 STILL SET after SoftReset -- unexpected on this build)"));
+			        "0x9118=" + hex8(after9118) +
+			            ", 0x9140=" + hex8(readReg(dtc, kRegSERDESRXCDRLock)) +
+			            (cleared ? ""
+			                     : " (bit 7 STILL SET after SoftReset -- unexpected on "
+			                       "this build)"));
 			dumpBoth("step 5, after SoftReset, bit 7 still held");
 
 			// ---- step 6: release, recover as in 4 ----
@@ -7541,11 +7570,14 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 	// guard releases bit 7 here as well; confirm and report final state
 	const uint32_t final9118 = readReg(dtc, kRegSERDESReset);
 	o << "  Final 0x9118=" << hex8(final9118)
-	  << (final9118 & kLink7Bit ? "  *** bit 7 STILL SET -- clear it by hand ***" : "  (bit 7 clear)")
+	  << (final9118 & kLink7Bit ? "  *** bit 7 STILL SET -- clear it by hand ***"
+	                            : "  (bit 7 clear)")
 	  << "\n";
-	o << "\n=== " << (failures ? std::to_string(failures) + " step(s) FAILED" : "ALL steps PASSED")
+	o << "\n=== "
+	  << (failures ? std::to_string(failures) + " step(s) FAILED" : "ALL steps PASSED")
 	  << " on " << dtc->getDeviceUID() << " ===\n";
-	o << "Step 7 (EVB Init on both DTCs) and step 8 are manual; run EVB Init on both now.\n";
+	o << "Step 7 (EVB Init on both DTCs) and step 8 are manual; run EVB Init on both "
+	     "now.\n";
 
 	__FE_COUT__ << o.str();
 	__SET_ARG_OUT__("Result", o.str());
@@ -7558,13 +7590,13 @@ void DTCFrontEndInterface::ExerciseLink7Reset(__ARGS__)
 // hardware agent has not yet ruled.  Nothing is written to hardware or to disk.
 void DTCFrontEndInterface::SetEVBStartGateIgnoreMask(__ARGS__)
 {
-	const uint32_t requested =
-	    __GET_ARG_IN__("0x9370 error bits to ignore (hex, Default := 0 = none)", uint32_t, 0);
+	const uint32_t requested = __GET_ARG_IN__(
+	    "0x9370 error bits to ignore (hex, Default := 0 = none)", uint32_t, 0);
 	const uint32_t applied = requested & DTCLib::EVBDefinedErrorMask;
 
 	std::ostringstream o;
-	o << "EVB start-gate ignore mask on " << getDTC()->getDeviceUID() << ": was 0x" << std::hex
-	  << evbOperatorIgnoreMask_ << ", now 0x" << applied << std::dec << "\n";
+	o << "EVB start-gate ignore mask on " << getDTC()->getDeviceUID() << ": was 0x"
+	  << std::hex << evbOperatorIgnoreMask_ << ", now 0x" << applied << std::dec << "\n";
 	if(requested != applied)
 		o << "  NOTE: only sticky-error bits [15:0] can be ignored; 0x" << std::hex
 		  << (requested & ~DTCLib::EVBDefinedErrorMask) << std::dec
@@ -7575,15 +7607,28 @@ void DTCFrontEndInterface::SetEVBStartGateIgnoreMask(__ARGS__)
 	{
 		o << "  Ignored this session:";
 		static const char* const names[] = {
-		    "RX_BUF_WRITE_FULL", "RX_SEQ_GAP",       "RX_PKT_REJECTED",     "DDR_WR_UNDERFLOW",
-		    "TX_FSM_FAULT",      "CREDIT_VIOLATION", "LOCAL_BAD_HEADER",    "RX_STATS_COLLISION",
-		    "DDR_RD_BAD_COUNT",  "STAGING_WRITE_FULL", "TX_PAYLOAD_UNDERFLOW", "TX_FRAME_MALFORMED",
-		    "RX_FRAME_SIZE",     "RX_FCS_BAD",       "ROC_TAG_SLIP",        "ROC_RECORD_SHAPE",
+		    "RX_BUF_WRITE_FULL",
+		    "RX_SEQ_GAP",
+		    "RX_PKT_REJECTED",
+		    "DDR_WR_UNDERFLOW",
+		    "TX_FSM_FAULT",
+		    "CREDIT_VIOLATION",
+		    "LOCAL_BAD_HEADER",
+		    "RX_STATS_COLLISION",
+		    "DDR_RD_BAD_COUNT",
+		    "STAGING_WRITE_FULL",
+		    "TX_PAYLOAD_UNDERFLOW",
+		    "TX_FRAME_MALFORMED",
+		    "RX_FRAME_SIZE",
+		    "RX_FCS_BAD",
+		    "ROC_TAG_SLIP",
+		    "ROC_RECORD_SHAPE",
 		};
 		for(unsigned b = 0; b < 16; ++b)
 			if(applied & (1u << b))
 				o << " bit " << b << " " << names[b] << ";";
-		o << "\n  These bits are still read and printed in every report; only the start gate "
+		o << "\n  These bits are still read and printed in every report; only the start "
+		     "gate "
 		     "and the run-validity line ignore them.\n";
 	}
 	else
@@ -7595,7 +7640,8 @@ void DTCFrontEndInterface::SetEVBStartGateIgnoreMask(__ARGS__)
 	o << "  Effective ignore mask at next Start: 0x" << std::hex << (buildMask | applied)
 	  << std::dec << "\n";
 	if(bufferTestThreadStruct_ && bufferTestThreadStruct_->running_)
-		o << "  A buffer test is running; the new value takes effect at its next Start.\n";
+		o << "  A buffer test is running; the new value takes effect at its next "
+		     "Start.\n";
 
 	__FE_COUT_INFO__ << o.str();
 	__SET_ARG_OUT__("Result", o.str());
@@ -8387,7 +8433,8 @@ std::string DTCFrontEndInterface::SetCFOEmulatorOnOffSpillEmulation(
 	if(inEVBMode || (bufferTestThreadStruct_ && bufferTestThreadStruct_->running_ &&
 	                 bufferTestThreadStruct_->inEVBMode_))
 	{
-		const auto readiness = requireEVBBufferTestReady(getDTC(), evbOperatorIgnoreMask_);
+		const auto readiness =
+		    requireEVBBufferTestReady(getDTC(), evbOperatorIgnoreMask_);
 		__FE_COUT_INFO__ << readiness;
 	}
 
@@ -8692,7 +8739,8 @@ std::string DTCFrontEndInterface::SetCFOEmulatorFixedWidthEmulation(
 	if(inEVBMode || (bufferTestThreadStruct_ && bufferTestThreadStruct_->running_ &&
 	                 bufferTestThreadStruct_->inEVBMode_))
 	{
-		const auto readiness = requireEVBBufferTestReady(getDTC(), evbOperatorIgnoreMask_);
+		const auto readiness =
+		    requireEVBBufferTestReady(getDTC(), evbOperatorIgnoreMask_);
 		__FE_COUT_INFO__ << readiness;
 	}
 
@@ -8733,7 +8781,8 @@ void DTCFrontEndInterface::initDetachedBufferTest(
 
 	if(inEVBMode)
 	{
-		const auto readiness = requireEVBBufferTestReady(getDTC(), evbOperatorIgnoreMask_);
+		const auto readiness =
+		    requireEVBBufferTestReady(getDTC(), evbOperatorIgnoreMask_);
 		__FE_COUT_INFO__ << readiness;
 	}
 
@@ -8751,8 +8800,8 @@ void DTCFrontEndInterface::initDetachedBufferTest(
 		// start mutex scope
 		{
 			std::lock_guard<std::mutex> lock(bufferTestThreadStruct_->lock_);
-			bufferTestThreadStruct_->inSubeventMode_ = true;
-			bufferTestThreadStruct_->inEVBMode_      = inEVBMode;
+			bufferTestThreadStruct_->inSubeventMode_        = true;
+			bufferTestThreadStruct_->inEVBMode_             = inEVBMode;
 			bufferTestThreadStruct_->evbOperatorIgnoreMask_ = evbOperatorIgnoreMask_;
 			bufferTestThreadStruct_->evbNumDestNodes_ =
 			    inEVBMode ? getDTC()->ReadEVBNumberOfDestinationNodes() : 1;
@@ -8787,8 +8836,8 @@ void DTCFrontEndInterface::initDetachedBufferTest(
 		// start mutex scope
 		{
 			std::lock_guard<std::mutex> lock(bufferTestThreadStruct_->lock_);
-			bufferTestThreadStruct_->inSubeventMode_ = true;
-			bufferTestThreadStruct_->inEVBMode_      = inEVBMode;
+			bufferTestThreadStruct_->inSubeventMode_        = true;
+			bufferTestThreadStruct_->inEVBMode_             = inEVBMode;
 			bufferTestThreadStruct_->evbOperatorIgnoreMask_ = evbOperatorIgnoreMask_;
 			bufferTestThreadStruct_->evbNumDestNodes_ =
 			    inEVBMode ? getDTC()->ReadEVBNumberOfDestinationNodes() : 1;
@@ -9709,7 +9758,7 @@ try
 		threadStruct->mismatchedEventTagsCount_ = 0;
 		threadStruct->mismatchedEventTagJumps_.clear();
 		threadStruct->evbSourcesSeenForTag_.clear();
-		threadStruct->evbTagSynced_        = false;
+		threadStruct->evbTagSynced_         = false;
 		threadStruct->evbStickyErrorsSeen_  = 0;
 		threadStruct->evbTrafficStarted_    = false;
 		threadStruct->evbStatusReadFailed_  = false;
@@ -9847,7 +9896,7 @@ try
 						threadStruct->mismatchedEventTagsCount_ = 0;
 						threadStruct->mismatchedEventTagJumps_.clear();
 						threadStruct->evbSourcesSeenForTag_.clear();
-						threadStruct->evbTagSynced_        = false;
+						threadStruct->evbTagSynced_         = false;
 						threadStruct->evbStickyErrorsSeen_  = 0;
 						threadStruct->evbTrafficStarted_    = false;
 						threadStruct->evbStatusReadFailed_  = false;
@@ -10022,8 +10071,9 @@ try
 							was << "first read";
 						std::stringstream line;
 						line << "EVB 0x9370 changed: 0x" << std::hex << std::setw(8)
-						     << std::setfill('0') << evbErr << std::dec << std::setfill(' ')
-						     << " (was " << was.str() << ") at iteration #" << ii
+						     << std::setfill('0') << evbErr << std::dec
+						     << std::setfill(' ') << " (was " << was.str()
+						     << ") at iteration #" << ii
 						     << ", SubEvents received so far = "
 						     << threadStruct->subeventsCount_;
 						if(liveOnly)
@@ -10648,10 +10698,10 @@ void DTCFrontEndInterface::BufferTest_detached(__ARGS__)
 			// start mutex scope
 			{
 				std::lock_guard<std::mutex> lock(bufferTestThreadStruct_->lock_);
-				bufferTestThreadStruct_->inSubeventMode_ = dataAreSubEvents;
-				bufferTestThreadStruct_->inEVBMode_      = inEVBMode;
+				bufferTestThreadStruct_->inSubeventMode_        = dataAreSubEvents;
+				bufferTestThreadStruct_->inEVBMode_             = inEVBMode;
 				bufferTestThreadStruct_->evbOperatorIgnoreMask_ = evbOperatorIgnoreMask_;
-			bufferTestThreadStruct_->evbOperatorIgnoreMask_ = evbOperatorIgnoreMask_;
+				bufferTestThreadStruct_->evbOperatorIgnoreMask_ = evbOperatorIgnoreMask_;
 				bufferTestThreadStruct_->evbNumDestNodes_ =
 				    inEVBMode ? getDTC()->ReadEVBNumberOfDestinationNodes() : 1;
 				bufferTestThreadStruct_->activeMatch_ = activeMatch;

@@ -258,14 +258,14 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	    bufferTestThreadStruct_;
 
   private:
-	void                  createROCs(void);
-	void                  registerFEMacros(void);
-	std::string           getEVBWireParity(void);
+	void        createROCs(void);
+	void        registerFEMacros(void);
+	std::string getEVBWireParity(void);
 
 	// Operator-set 0x9370 bits to ignore in the EVB start gate and run-validity check for
 	// this session only (FE Macro "EVB Start-Gate Ignore Mask").  OR-ed with the per-build
 	// known-defect list; cleared on otsdaq restart.  The bits stay visible in every report.
-	uint32_t evbOperatorIgnoreMask_ = 0;
+	uint32_t              evbOperatorIgnoreMask_ = 0;
 	DTCFrontEndInterface* findPeerDTCFrontEnd(int deviceIndex, std::string& visibleList);
 	void                  requireNoMergeReaderOnThisDTC(void);
 
