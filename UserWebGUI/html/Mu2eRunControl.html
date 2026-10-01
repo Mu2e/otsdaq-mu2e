@@ -21,8 +21,19 @@
 		var _subsystems = [];
 		var _system = {};
 		var _systemAliases = [];
+		var _iterator = {};        // active_plan, activePlanStatus, error from Iterator
 		var _pollTimer = 0;
 		var _pollNonce = 0;
+		var _pollFailures = 0;
+		var _firstStatus = true;   // true until the initial getRemoteSubsystems parse is done
+		var _reloading = false;    // true while loadSubsystems() is re-fetching after a record change
+
+		// Errors older than this (seconds) are not popped as red errors, only
+		// shown once as an informational warning on first load (mirrors SubsystemLaunch).
+		var _ERROR_AGE_LIMIT = 60;
+		var _ITERATOR_ERROR_AGE_LIMIT = 5 * 60;
+		// After a user-requested reboot, do not warn about UNKNOWN status for this long.
+		var _REBOOT_GRACE_SEC = 60;
 
 		// Valid transitions per state
 		var _TRANSITIONS = {
@@ -74,12 +85,25 @@
 		// loadSubsystems
 		// =============================================================
 		function loadSubsystems() {
+			if (_pollTimer) clearTimeout(_pollTimer);
+			++_pollNonce; // invalidate any in-flight status poll
+			_reloading = true;
 			DesktopContent.XMLHttpRequest(
 				"Request?RequestType=getRemoteSubsystems&fsmName=" + _fsmName, "",
-				function (req) {
+				function (req, reqParam, errStr) {
+					_reloading = false;
+					if (errStr || !req || !req.responseXML) {
+						Debug.err("Failed to load subsystem records: " +
+							(errStr || "empty response") +
+							"\n\nRetrying in 5 seconds...");
+						_pollTimer = setTimeout(loadSubsystems, 5000);
+						return;
+					}
 					parseSubsystems(req);
 					parseSystemStatus(req);
+					parseIteratorStatus(req);
 					parseAliases(req);
+					_firstStatus = false;
 					renderAll();
 					startPolling();
 				},
@@ -90,7 +114,7 @@
 		// Parsing
 		// =============================================================
 		var _SS_FIELDS = ["name","url","id","status","progress","detail",
-			"lastStatusTime","configAlias","configAliasChoices",
+			"lastStatusTime","lastStatusChangeTime","configAlias","configAliasChoices",
 			"fsmMode","fsmIncluded","fsmName","landingPage",
 			"consoleErrCount","consoleWarnCount",
 			"activeContextGroupName","activeContextGroupKey",
@@ -114,6 +138,24 @@
 				var parsed = Mu2e.stripStatusError(ss.status);
 				ss.status = parsed.status;
 				ss.error = parsed.error;
+				ss.lastStatusChangeTime = arrs.lastStatusChangeTime && arrs.lastStatusChangeTime[j] ?
+					arrs.lastStatusChangeTime[j].getAttribute("value") : "";
+
+				// Pre-existing subsystem error on first load: show once as a
+				// warning with its age, not as a fresh red error. Excluded
+				// subsystems are not popped at all (the row still shows it).
+				if (ss.fsmIncluded && Mu2e.isErrorStatus(ss.status)) {
+					var rawErr = ss.status + (ss.error ? ":::" + ss.error : "");
+					var ago = Mu2e.errorSecondsAgo(Mu2e.decodeDetail(ss.error));
+					if (ago === -1) ago = Mu2e.timestampSecondsAgo(ss.lastStatusChangeTime);
+					if (ago > _ERROR_AGE_LIMIT)
+						Debug.warn("Here is the last error from Subsystem '" + ss.name +
+							"' " + Mu2e.formatAgo(ago) + " for reference:\n\n" +
+							Mu2e.decodeDetail(rawErr));
+					else
+						Debug.err("From Subsystem '" + ss.name + "'... " +
+							Mu2e.decodeDetail(rawErr));
+				}
 				// Default FSM mode to "Do Not Halt"
 				if (ss.fsmMode !== "Do Not Halt") {
 					ss.fsmMode = "Do Not Halt";
@@ -130,6 +172,28 @@
 		}
 
 		var _lastError = "";
+
+		// system_error is the Gateway's concatenation of per-subsystem errors
+		// ("Error at <ts>:\n..." joined by "\n"), each naming its subsystem as
+		// 'Name' or 'Name.'. Drop the entries that belong to EXCLUDED subsystems.
+		// (Newer Gateways already skip excluded subsystems server-side; this
+		// keeps the page quiet against older ones too.)
+		function filterSystemError(err) {
+			if (!err) return "";
+			var excluded = [];
+			for (var i = 0; i < _subsystems.length; ++i)
+				if (!_subsystems[i].fsmIncluded) excluded.push("'" + _subsystems[i].name);
+			if (!excluded.length) return err;
+			var parts = err.split(/\n(?=Error at )/);
+			var kept = [];
+			for (var p = 0; p < parts.length; ++p) {
+				var drop = false;
+				for (var e = 0; e < excluded.length && !drop; ++e)
+					if (parts[p].indexOf(excluded[e]) >= 0) drop = true;
+				if (!drop) kept.push(parts[p]);
+			}
+			return kept.join("\n");
+		}
 
 		function parseSystemStatus(req) {
 			var rawState = DesktopContent.getXMLValue(req, "current_state") || "unknown";
@@ -150,13 +214,50 @@
 			var logEntry = DesktopContent.getXMLValue(req, "last_run_log_entry");
 			if (logEntry) _system.lastRunLogEntry = Mu2e.decodeDetail(logEntry);
 
-			// Handle errors — show as red pop-up via Debug.err()
-			var err = DesktopContent.getXMLValue(req, "current_error") || "";
-			if (err && err !== "" && err !== _lastError) {
+			// Errors: FSM error (current_error) plus accumulated remote-gateway
+			// errors (system_error), merged the same way SubsystemLaunch does.
+			var err = filterSystemError(DesktopContent.getXMLValue(req, "system_error") || "");
+			var fsmErr = DesktopContent.getXMLValue(req, "current_error") || "";
+			if (fsmErr) err = err ? (err + "\n\n" + fsmErr) : fsmErr;
+
+			if (err && err !== _lastError) {
 				_lastError = err;
-				Debug.err(err);
+				var ago = Mu2e.errorSecondsAgo(err);
+				if (_firstStatus) {
+					// Page just opened: this error pre-dates us, show for reference only.
+					Debug.warn("Here is the <b>last error</b> that occurred " +
+						Mu2e.formatAgo(ago) + " for reference:\n\n" + err);
+				} else if (ago === -1 || ago < _ERROR_AGE_LIMIT) {
+					Debug.err(err);
+				}
 			}
 			_system.error = err;
+		}
+
+		// Iterator status (active_plan / active_plan_status / error_message)
+		// rides along in every status response. Needed to decide how to Stop
+		// (iterateHalt vs plain Stop) and to surface Iterator thread errors.
+		function parseIteratorStatus(req) {
+			_iterator.activePlan = DesktopContent.getXMLValue(req, "active_plan") || "";
+			_iterator.activePlanStatus = DesktopContent.getXMLValue(req, "active_plan_status") || "";
+
+			var err = DesktopContent.getXMLValue(req, "error_message") || "";
+			if (err && err !== _iterator.error) {
+				var ago = Mu2e.errorSecondsAgo(err);
+				if (_firstStatus) {
+					Debug.warn("Here is the <b>last Iterator error</b> that occurred " +
+						Mu2e.formatAgo(ago) + " for reference:\n\n" + err);
+				} else if (ago === -1 || ago < _ITERATOR_ERROR_AGE_LIMIT) {
+					Debug.err("Iterator error: " + err);
+				}
+			}
+			_iterator.error = err;
+		}
+
+		// True when the Iterator owns the FSM (a generated or table plan is active).
+		function iteratorHasControl() {
+			return _iterator.activePlan && _iterator.activePlan !== "" &&
+				_iterator.activePlanStatus !== "Inactive";
 		}
 
 		function parseAliases(req) {
@@ -172,9 +273,11 @@
 				});
 		}
 
+		// Returns false if the subsystem records changed server-side (count or
+		// names), in which case the caller must reload via loadSubsystems().
 		function parseSubsystemStatus(req) {
 			var fields = ["name","url","id","status","progress","detail",
-				"lastStatusTime","configAlias","configAliasChoices",
+				"lastStatusTime","lastStatusChangeTime","configAlias","configAliasChoices",
 				"fsmMode","fsmIncluded","fsmName","consoleErrCount","consoleWarnCount",
 				"activeContextGroupName","activeContextGroupKey",
 				"activeConfigGroupName","activeConfigGroupKey",
@@ -183,41 +286,87 @@
 			for (var i = 0; i < fields.length; ++i)
 				arrs[fields[i]] = req.responseXML.getElementsByTagName("subsystem_" + fields[i]);
 			var count = arrs[fields[0]].length;
-			for (var j = 0; j < count && j < _subsystems.length; ++j) {
-				var oldStatus = _subsystems[j].status;
+
+			// Detect a change in the subsystem set (added/removed/renamed)
+			var changed = (count !== _subsystems.length);
+			for (var j = 0; !changed && j < count; ++j)
+				if (arrs.name[j].getAttribute("value") !== _subsystems[j].name)
+					changed = true;
+			if (changed) {
+				Debug.warn("A change in Subsystem records was identified, reloading Run Control info!");
+				return false;
+			}
+
+			for (var j = 0; j < count; ++j) {
+				var ss = _subsystems[j];
+				var oldStatus = ss.status;
+				var oldIncluded = ss.fsmIncluded ? 1 : 0;
+				var oldAlias = ss.configAlias;
+				var oldChoices = ss.configAliasChoices;
 
 				for (var i = 0; i < fields.length; ++i)
 					if (arrs[fields[i]][j])
-						_subsystems[j][fields[i]] = arrs[fields[i]][j].getAttribute("value");
-				_subsystems[j].fsmIncluded = _subsystems[j].fsmIncluded | 0;
-				_subsystems[j].progress = _subsystems[j].progress | 0;
-				var p = Mu2e.stripStatusError(_subsystems[j].status);
-				_subsystems[j].status = p.status;
-				_subsystems[j].error = p.error;
+						ss[fields[i]] = arrs[fields[i]][j].getAttribute("value");
+				ss.fsmIncluded = ss.fsmIncluded | 0;
+				ss.progress = ss.progress | 0;
+				var p = Mu2e.stripStatusError(ss.status);
+				ss.status = p.status;
+				ss.error = p.error;
 
-				var newStatus = _subsystems[j].status;
+				var newStatus = ss.status;
 
-				if (_subsystems[j].fsmIncluded &&
-						newStatus === "UNKNOWN" && newStatus !== oldStatus) {
-					Debug.warn("From Subsystem '" +
-						_subsystems[j].name + " (" + _subsystems[j].url + ")... " +
-						"Status is UNKNOWN. This may indicate that the Subsystem " +
-						"is offline or unreachable.");
+				// Server-side change of the include set (e.g. from another page/user)
+				if ((ss.fsmIncluded ? 1 : 0) !== oldIncluded && ss._pendingInclude === undefined)
+					Debug.warn("There was a change identified at the server-side in the " +
+						"included Subsystems. Subsystem '" + ss.name + "' is now " +
+						(ss.fsmIncluded ? "INCLUDED" : "EXCLUDED") + "!");
+				if (ss._pendingInclude !== undefined &&
+						(ss.fsmIncluded ? 1 : 0) === (ss._pendingInclude ? 1 : 0))
+					delete ss._pendingInclude;
+
+				// Server-side change of the selected config alias
+				if (ss.configAlias !== oldAlias && ss._pendingConfigAlias === undefined &&
+						oldChoices) {
+					Debug.warn("The selected configAlias for Subsystem '" + ss.name +
+						"' has changed from '" + oldAlias + "' to '" + ss.configAlias + ".'");
+					var aliasEl = document.getElementById("ss-alias-" + j);
+					if (aliasEl) aliasEl.value = ss.configAlias;
+				}
+				if (ss._pendingConfigAlias !== undefined && ss.configAlias === ss._pendingConfigAlias)
+					delete ss._pendingConfigAlias;
+
+				// Alias choice list changed: needs a full re-render of that row
+				if (ss.configAliasChoices !== oldChoices) {
+					var row = document.getElementById("ss-row-" + j);
+					if (row) row.outerHTML = renderSubsystemRow(j);
 				}
 
-				if (newStatus !== oldStatus &&
-						(newStatus.indexOf("Fail") === 0 ||
-						 newStatus.indexOf("Error") === 0 ||
-						 newStatus.indexOf("Soft") === 0)) {
-					var isOldError = oldStatus &&
-						(oldStatus.indexOf("Fail") === 0 ||
-						 oldStatus.indexOf("Error") === 0 ||
-						 oldStatus.indexOf("Soft") === 0);
-					if (!isOldError)
-						Debug.err("From Subsystem '" +
-							_subsystems[j].name + "'... " + newStatus);
+				if (ss.fsmIncluded && newStatus === "UNKNOWN" && newStatus !== oldStatus) {
+					var rebootAge = ss._rebootTime ? (Date.now() - ss._rebootTime) / 1000 : 999;
+					if (rebootAge > _REBOOT_GRACE_SEC)
+						Debug.warn("From Subsystem '" + ss.name + " (" + ss.url + ")... " +
+							"Status is UNKNOWN. This may indicate that the Subsystem " +
+							"is offline or unreachable, or if intermittent, too many " +
+							"TRACE levels may be enabled.");
+				}
+
+				// New error on an INCLUDED subsystem only; excluded subsystems
+				// keep the error visible in their row but never pop it up.
+				if (ss.fsmIncluded && newStatus !== oldStatus &&
+						Mu2e.isErrorStatus(newStatus) && !Mu2e.isErrorStatus(oldStatus)) {
+					var rawErr = newStatus + (ss.error ? ":::" + ss.error : "");
+					var ago = Mu2e.errorSecondsAgo(Mu2e.decodeDetail(ss.error));
+					if (ago === -1) ago = Mu2e.timestampSecondsAgo(ss.lastStatusChangeTime);
+					if (ago === -1 || ago < _ERROR_AGE_LIMIT)
+						Debug.err("From Subsystem '" + ss.name + "'... " +
+							Mu2e.decodeDetail(rawErr));
+					else
+						Debug.warn("Here is the last error from Subsystem '" + ss.name +
+							"' " + Mu2e.formatAgo(ago) + " for reference:\n\n" +
+							Mu2e.decodeDetail(rawErr));
 				}
 			}
+			return true;
 		}
 
 		// Detail parsing, stateCell, formatTimeCell — now in Mu2e.js
@@ -231,15 +380,37 @@
 		}
 
 		function pollStatus() {
+			if (_pollTimer) clearTimeout(_pollTimer);
+			_pollTimer = 0;
+			if (_reloading) return; // loadSubsystems() will restart polling
 			var nonce = ++_pollNonce;
 			DesktopContent.XMLHttpRequest(
 				"Request?RequestType=getRemoteSubsystemStatus" +
 				"&fsmName=" + _fsmName +
 				"&getRunNumber=" + (nonce % 5 === 0 ? "1" : "0"), "",
-				function (req) {
+				function (req, reqParam, errStr) {
 					if (nonce !== _pollNonce) return;
-					parseSubsystemStatus(req);
+
+					// Never let a failed poll kill the loop: back off and retry.
+					if (errStr || !req || !req.responseXML) {
+						++_pollFailures;
+						if (_pollFailures === 3)
+							Debug.err("Status polling is failing: " +
+								(errStr || "empty response") +
+								"\n\nWill keep retrying in the background. " +
+								"(Is the Gateway down or your session expired?)");
+						_pollTimer = setTimeout(pollStatus, Math.min(5000, 1000 * _pollFailures));
+						return;
+					}
+					if (_pollFailures >= 3) Debug.info("Status polling recovered.");
+					_pollFailures = 0;
+
+					if (!parseSubsystemStatus(req)) {
+						loadSubsystems(); // records changed; full reload
+						return;
+					}
 					parseSystemStatus(req);
+					parseIteratorStatus(req);
 					updateStatusBar();
 					updateSubsystemRows();
 					renderSystemOverview();
@@ -247,6 +418,13 @@
 					_pollTimer = setTimeout(pollStatus, 1000);
 				},
 				0, 0, true, true, true);
+		}
+
+		// Resume polling promptly after a user action (like SubsystemLaunch's
+		// window.onclick), so command feedback is not delayed a full poll cycle.
+		function pollSoon(delayMs) {
+			if (_pollTimer) clearTimeout(_pollTimer);
+			_pollTimer = setTimeout(pollStatus, delayMs || 500);
 		}
 
 		// =============================================================
@@ -423,11 +601,17 @@
 			html += "<th>Comment</th>";
 			html += "</tr></thead><tbody>";
 
-			for (var i = 0; i < _subsystems.length; ++i)
+			for (var i = 0; i < _subsystems.length; ++i) {
 				html += renderSubsystemRow(i);
+				// Trigger menu / output path controls live in a sub-row directly
+				// under the Trigger subsystem (see TRIGGER MENU section below).
+				if (i === triggerSubsystemIndex())
+					html += renderTriggerMenuRow();
+			}
 
 			html += "</tbody></table>";
 			el.innerHTML = html;
+			tmLoad();
 		}
 
 		function renderSubsystemRow(idx) {
@@ -443,12 +627,16 @@
 				"' id='ss-incl-" + idx + "' " +
 				"onclick='toggleInclude(" + idx + ")'></button></td>";
 
-			// Name — dim if UNKNOWN
+			// Name — dim if UNKNOWN; show Run Type tag when it differs from selected
 			h += "<td><span class='" +
 				(isUnknown ? "ss-name-unknown" : "ss-name") + "'>" +
 				Mu2e.esc(ss.name) + "</span>" +
 				"<span class='sysoverview-log-link' title='Open log viewer'" +
-				" onclick='openSubsystemLog(" + idx + ")'>&#x1f4cb;</span></td>";
+				" onclick='openSubsystemLog(" + idx + ")'>&#x1f4cb;</span>" +
+				"<span class='ss-runtype' id='ss-runtype-" + idx + "'" +
+				" title='Configured Run Type'>" +
+				(ss.fsmName && ss.fsmName !== _fsmName ? Mu2e.esc(ss.fsmName) : "") +
+				"</span></td>";
 
 			// State
 			h += "<td class='ss-state-cell' id='ss-state-" + idx + "'>";
@@ -465,7 +653,8 @@
 				transitionButtons(idx, ss.status) + "</div>";
 			// Config alias dropdown — frozen when configured/running
 			var choices = ss.configAliasChoices ? ss.configAliasChoices.split(",") : [];
-			var frozen = (ss.status === "Configured" || ss.status === "Running" || ss.status === "Paused");
+			var frozen = (ss.status === "Configured" || ss.status === "Running" || ss.status === "Paused" ||
+				/^(Configuring|Starting|Stopping|Halting|Pausing|Resuming|Aborting|Launching|Shutting|Rebooting)\b/.test(ss.status));
 			if (choices.length > 1) {
 				h += "<select class='ss-alias-select' id='ss-alias-" + idx + "' " +
 					(frozen ? "disabled " : "") +
@@ -519,6 +708,14 @@
 				if (cell) cell.innerHTML = Mu2e.stateCell(
 					_subsystems[i].status, _subsystems[i].progress, _subsystems[i].error);
 
+				// Reflect server-side include state (may be changed from another page)
+				var inclBtn = document.getElementById("ss-incl-" + i);
+				if (inclBtn) inclBtn.className = "ss-include-toggle " +
+					(_subsystems[i].fsmIncluded ? "ss-include-on" : "ss-include-off");
+				var rowEl = document.getElementById("ss-row-" + i);
+				if (rowEl) rowEl.className = _subsystems[i].fsmIncluded ?
+					"ss-row-included" : "ss-row-excluded";
+
 				var timeEl = document.getElementById("ss-time-" + i);
 				if (timeEl) timeEl.innerHTML = Mu2e.formatTimeCell(_subsystems[i].detail, _subsystems[i].progress);
 
@@ -529,8 +726,16 @@
 				if (aliasEl) {
 					var frozen = (_subsystems[i].status === "Configured" ||
 						_subsystems[i].status === "Running" ||
-						_subsystems[i].status === "Paused");
+						_subsystems[i].status === "Paused" ||
+						/^(Configuring|Starting|Stopping|Halting|Pausing|Resuming|Aborting|Launching|Shutting|Rebooting)\b/.test(_subsystems[i].status));
+
 					aliasEl.disabled = frozen;
+				}
+
+				var rtEl = document.getElementById("ss-runtype-" + i);
+				if (rtEl) {
+					var fn = _subsystems[i].fsmName;
+					rtEl.textContent = (fn && fn !== _fsmName) ? fn : "";
 				}
 
 				var cmtEl = document.getElementById("ss-comment-" + i);
@@ -540,54 +745,59 @@
 					cmtEl.title = cmt;
 				}
 			}
+			tmUpdateEnabled();
 		}
 
 		function showError(errText) {
 			Debug.err(errText);
 		}
 
+		// Collect every error a StateMachineXgiHandler / Request response can
+		// carry: transport error, <Error> nodes, state_transition_attempted=0
+		// with its reason, and Iterator error_message. Returns "" if none.
+		function fsmResponseError(req, errStr) {
+			var parts = [];
+			if (errStr) parts.push(errStr);
+			if (!req || !req.responseXML) {
+				if (!errStr) parts.push("Empty or illegal XML response from the Gateway.");
+				return parts.join("\n\n");
+			}
+			var errs = DesktopContent.getXMLRequestErrors(req);
+			for (var e = 0; e < errs.length; ++e) if (errs[e]) parts.push(errs[e]);
+
+			var attempted = DesktopContent.getXMLValue(req, "state_transition_attempted");
+			if (attempted !== undefined && attempted != "1") {
+				var why = DesktopContent.getXMLValue(req, "state_transition_attempted_err");
+				parts.push("Server indicated failure to attempt state transition." +
+					(why ? "\n\n" + why : ""));
+			}
+			var iterErr = DesktopContent.getXMLValue(req, "error_message");
+			if (iterErr) parts.push(iterErr);
+			return parts.join("\n\n");
+		}
+
 		// =============================================================
 		// Actions
 		// =============================================================
-		function startStop() {
-			var isRunning = _system.state === "Running" || _system.state === "Paused";
-			if (isRunning) {
-				systemTransition("Stop");
-			} else {
-				systemTransition("Configure", function () {
-					setTimeout(function () { systemTransition("Start"); }, 500);
-				});
-			}
-		}
-
 		function startFromHalted() {
 			promptLogAndStart(true);
 		}
 
-		// Prompt for log entry then start a run via iteratePlayGenerated
+		// Prompt for log entry then start a run via the Iterator's generated
+		// plan (Configure-if-needed + Start). The Iterator itself performs the
+		// Configure when needed, so we never chain a separate Configure here.
+		//
+		// needsConfigure=false means we are in Configured: the plan is told to
+		// keep the current configuration (SubsystemLaunch's "Stay Configured").
 		function promptLogAndStart(needsConfigure) {
+			var keepConfiguration = !needsConfigure;
 			DesktopContent.popUpVerification(
-				"Please enter a logbook entry for the next run:",
+				"Please enter a logbook entry for the next run:" +
+				(keepConfiguration ?
+					"<br><br><span style='font-size:12px; opacity:0.8;'>System is already Configured; " +
+					"the run will start without re-configuring.</span>" : ""),
 				function (entry) {
-					var doStart = function () {
-						startRun(entry || "");
-					};
-					if (needsConfigure) {
-						systemTransition("Configure", function () {
-							// Wait for Configured state
-							var wait = function () {
-								if (_system.state === "Configured")
-									doStart();
-								else if (_system.state === "Failed" || _system.state === "Error")
-									Debug.err("Configure failed — cannot Start.");
-								else
-									setTimeout(wait, 1000);
-							};
-							setTimeout(wait, 2000);
-						});
-					} else {
-						doStart();
-					}
+					startRun(entry || "", keepConfiguration);
 				},
 				undefined, "#efeaea", undefined, "#770000",
 				true /*getUserInput*/, 500 /*dialogWidth*/,
@@ -599,18 +809,46 @@
 			);
 		}
 
-		function startRun(logEntry) {
+		function startRun(logEntry, keepConfiguration) {
+			// If a previous plan is still registered (e.g. left in Error), the
+			// Iterator refuses to play; halt it first, then play.
+			if (_iterator.activePlan && _iterator.activePlan !== "") {
+				if (_iterator.activePlanStatus === "Error") {
+					iterateHaltThen(function () { startRun(logEntry, keepConfiguration); });
+					return;
+				}
+				DesktopContent.popUpVerification(
+					"There is already an active Iterator plan ('" + Mu2e.esc(_iterator.activePlan) +
+					"', status " + Mu2e.esc(_iterator.activePlanStatus || "?") + "); " +
+					"do you want to Halt it and then launch the new run?",
+					function () {
+						iterateHaltThen(function () { startRun(logEntry, keepConfiguration); });
+					},
+					0, "#efeaea", 0, "#770000");
+				return;
+			}
+
 			var alias = _system.selectedAlias;
 			if (!alias && _systemAliases.length)
 				alias = _systemAliases[0].name;
 
+			// Generated-plan CSV consumed by Iterator::playGeneratedIterationPlan():
+			//   fsmName, configAlias, durationSeconds, numberOfRuns, keepConfiguration, logEntry
+			// durationSeconds must be -1 for an open-ended run: the Iterator then
+			// issues a single Start and RELEASES the FSM. Any other value (incl. 0)
+			// is a finite run, and the Iterator keeps control of the FSM for the
+			// whole run, which makes a later plain Stop be rejected.
 			var parameters = "";
 			parameters += _fsmName;
 			parameters += "," + (alias || "");
-			parameters += ",0";   // durationSeconds (0 = open-ended)
+			parameters += ",-1";  // durationSeconds (-1 = open-ended)
 			parameters += ",1";   // numberOfRuns
-			parameters += ",0";   // keepConfiguration
-			parameters += "," + encodeURIComponent(logEntry);
+			parameters += "," + (keepConfiguration ? "1" : "0");
+			parameters += "," + encodeURIComponent(logEntry); // double-encoded by design
+
+			_system.inTransition = true;
+			_system.transition = "Launching Start";
+			updateStatusBar();
 
 			DesktopContent.XMLHttpRequest(
 				"StateMachineXgiHandler?" +
@@ -618,11 +856,46 @@
 				"&fsmName=" + _fsmName,
 				"&fsmWindowName=" + encodeURIComponent(parameters),
 				function (req, reqParam, errStr) {
-					if (errStr) {
-						Debug.err("Start failed: " + errStr);
+					var err = fsmResponseError(req, errStr);
+					if (err) {
+						Debug.err("Start failed: " + err);
+						pollSoon(500);
 						return;
 					}
-					console.log("Run started.");
+					Debug.log("Run launched via Iterator.");
+					pollSoon(1000);
+				},
+				0, 0, true, false, true);
+		}
+
+		// Send iterateHalt, then wait for the Iterator to report no active plan
+		// before calling onDone. Reports rejection instead of ignoring it.
+		function iterateHaltThen(onDone) {
+			DesktopContent.XMLHttpRequest(
+				"StateMachineXgiHandler?fsmName=" + _fsmName +
+				"&StateMachine=iterateHalt", "",
+				function (req, reqParam, errStr) {
+					var err = fsmResponseError(req, errStr);
+					if (err) {
+						Debug.err("Halting the Iterator failed: " + err);
+						pollSoon(500);
+						return;
+					}
+					pollSoon(500);
+					var tries = 0;
+					var wait = function () {
+						if (!_iterator.activePlan || _iterator.activePlan === "") {
+							if (onDone) onDone();
+							return;
+						}
+						if (++tries > 15) {
+							Debug.err("Something is wrong! Unable to halt the Iterator... " +
+								"please contact admins.");
+							return;
+						}
+						setTimeout(wait, 1000);
+					};
+					setTimeout(wait, 1500);
 				},
 				0, 0, true, false, true);
 		}
@@ -642,28 +915,47 @@
 				function (entry) {
 					var discardRun = _pendingDiscardRun || false;
 					var writeToEcl = _pendingWriteToEcl || false;
-					// First halt the iterator
-					DesktopContent.XMLHttpRequest(
-						"StateMachineXgiHandler?fsmName=" + _fsmName +
-						"&StateMachine=iterateHalt", "",
-						function () {
-							// Then send Stop with log entry
-							DesktopContent.XMLHttpRequest(
-								"StateMachineXgiHandler?fsmName=" + _fsmName +
-								"&StateMachine=Stop",
-								"logEntry=" + encodeURIComponent(entry || "") +
-								"&writeToEcl=" + (writeToEcl ? "1" : "0") +
-								"&discardRun=" + (discardRun ? "1" : "0"),
-								function (req, reqParam, errStr) {
-									if (errStr) {
-										Debug.err("Stop failed: " + errStr);
-										return;
-									}
-									console.log("Run stopped.");
-								},
-								0, 0, true, false, true);
-						},
-						0, 0, true, false, true);
+
+					var sendStop = function () {
+						_system.inTransition = true;
+						_system.transition = "Launching Stop";
+						updateStatusBar();
+						DesktopContent.XMLHttpRequest(
+							"StateMachineXgiHandler?fsmName=" + _fsmName +
+							"&StateMachine=Stop",
+							"logEntry=" + encodeURIComponent(entry || "") +
+							"&writeToEcl=" + (writeToEcl ? "1" : "0") +
+							"&discardRun=" + (discardRun ? "1" : "0"),
+							function (req, reqParam, errStr) {
+								var err = fsmResponseError(req, errStr);
+								if (err) {
+									Debug.err("Stop failed: " + err);
+									pollSoon(500);
+									return;
+								}
+								Debug.log("Run stop launched.");
+								pollSoon(1000);
+							},
+							0, 0, true, false, true);
+					};
+
+					// With an open-ended run the Iterator has already released the
+					// FSM, so a plain Stop is correct and carries the log entry and
+					// ECL/discard flags. Only if the Iterator still owns the FSM
+					// (e.g. a finite plan is in progress) do we halt it first; the
+					// Iterator itself then Aborts the run, so warn the user.
+					if (iteratorHasControl()) {
+						DesktopContent.popUpVerification(
+							"The Iterator is still in control of the run (plan '" +
+							Mu2e.esc(_iterator.activePlan) + "'). Stopping now will halt the " +
+							"Iterator, which <b>aborts</b> the run rather than a clean Stop; " +
+							"the log entry and ECL/discard options will not be applied.<br><br>" +
+							"Continue anyway?",
+							function () { iterateHaltThen(function () { pollSoon(500); }); },
+							0, "#efeaea", 0, "#770000");
+						return;
+					}
+					sendStop();
 				},
 				undefined, "#efeaea", undefined, "#770000",
 				true /*getUserInput*/, 500 /*dialogWidth*/,
@@ -679,72 +971,62 @@
 			console.log("systemTransition:", command, "fsmName:", _fsmName,
 				"state:", _system.state, "fsmWindow:", _system.activeFsmWindow);
 
-			// Halt: send iterateHalt first, wait for system to leave Running, then Halt
-			if (command === "Halt") {
+			var sendCommand = function () {
+				var postData = "";
+				if (command === "Configure") {
+					var alias = _system.selectedAlias;
+					if (!alias && _systemAliases.length)
+						alias = _systemAliases[0].name;
+					if (alias)
+						postData = "ConfigurationAlias=" + encodeURIComponent(alias);
+				}
+
+				_system.inTransition = true;
+				_system.transition = "Launching " + command;
+				updateStatusBar();
+
 				DesktopContent.XMLHttpRequest(
 					"StateMachineXgiHandler?fsmName=" + _fsmName +
-					"&StateMachine=iterateHalt", "",
-					function () { console.log("iterateHalt sent"); },
-					0, 0, true, false, true);
-
-				var waitAndHalt = function (retries) {
-					if (retries <= 0) {
-						Debug.err("Timed out waiting for iterator to release. Try Halt again.");
+					"&StateMachine=" + command,
+					postData,
+					function (req, reqParam, errStr) {
+						var err = fsmResponseError(req, errStr);
+						if (err) {
+							console.log("systemTransition ERROR:", command, err);
+							Debug.err("Transition " + command + " failed: " + err);
+							pollSoon(500);
+							return;
+						}
+						console.log("systemTransition OK:", command);
+						pollSoon(1000);
 						if (onDone) onDone();
-						return;
-					}
-					if (_system.state === "Running" || _system.state === "Paused" ||
-						_system.inTransition) {
-						console.log("Waiting for iterator to release... retries:", retries);
-						setTimeout(function () { waitAndHalt(retries - 1); }, 2000);
-						return;
-					}
-					// Iterator released — now send Halt
-					console.log("Iterator released, sending Halt. State:", _system.state);
-					DesktopContent.XMLHttpRequest(
-						"StateMachineXgiHandler?fsmName=" + _fsmName +
-						"&StateMachine=Halt", "",
-						function (req, reqParam, errStr) {
-							if (errStr) console.log("Halt result:", errStr);
-							else console.log("Halt OK");
+					},
+					0, 0, true, false, true);
+			};
+
+			// Halt while the Iterator owns the FSM: the Gateway would reject a
+			// direct Halt, so halt the Iterator first (it Halts/Aborts the FSM
+			// itself), then follow with a Halt only if the FSM is not yet Halted.
+			if (command === "Halt" && iteratorHasControl()) {
+				iterateHaltThen(function () {
+					var retries = 15;
+					var wait = function () {
+						if (_system.state === "Halted" || _system.state === "Initial") {
 							if (onDone) onDone();
-						},
-						0, 0, true, false, true);
-				};
-				setTimeout(function () { waitAndHalt(30); }, 3000);
+							return;
+						}
+						if (_system.inTransition && retries-- > 0) {
+							setTimeout(wait, 2000);
+							return;
+						}
+						sendCommand();
+					};
+					setTimeout(wait, 2000);
+				});
 				return;
 			}
 
-			var postData = "";
-			if (command === "Configure") {
-				var alias = _system.selectedAlias;
-				if (!alias && _systemAliases.length)
-					alias = _systemAliases[0].name;
-				if (alias)
-					postData = "ConfigurationAlias=" + encodeURIComponent(alias);
-			}
-
-			DesktopContent.XMLHttpRequest(
-				"StateMachineXgiHandler?fsmName=" + _fsmName +
-				"&StateMachine=" + command,
-				postData,
-				function (req, reqParam, errStr) {
-					if (errStr) {
-						console.log("systemTransition ERROR:", errStr);
-						Debug.err("Transition " + command + " failed: " + errStr);
-						return;
-					}
-					var success = DesktopContent.getXMLValue(req, "state_transition_attempted") == "1";
-					if (!success) {
-						var err = DesktopContent.getXMLValue(req, "state_transition_attempted_err");
-						console.log("systemTransition REJECTED:", err);
-						Debug.err("Transition " + command + " rejected: " + (err || "unknown"));
-						return;
-					}
-					console.log("systemTransition OK:", command);
-					if (onDone) onDone();
-				},
-				0, 0, true, false, true);
+			sendCommand();
 		}
 
 		function subsystemAction(idx, command) {
@@ -753,32 +1035,52 @@
 			if (command === "Configure" && ss.configAlias)
 				param = "&parameter=" + encodeURIComponent(ss.configAlias);
 
+			// Immediate feedback; the poll will overwrite with the real status
+			ss.status = "Launching " + command;
+			ss.progress = 0;
+			updateSubsystemRows();
+
 			DesktopContent.XMLHttpRequest(
 				"Request?RequestType=commandRemoteSubsystem" +
 				"&fsmName=" + _fsmName +
 				"&command=" + command +
 				"&targetSubsystem=" + encodeURIComponent(ss.name) + param, "",
-				function () {
-					ss.status = "Launching " + command;
-					ss.progress = 0;
-					updateSubsystemRows();
+				function (req, reqParam, errStr) {
+					var err = fsmResponseError(req, errStr);
+					if (err)
+						Debug.err("Error received launching '" + command + "' on Subsystem '" +
+							ss.name + "': " + err);
+					pollSoon(err ? 500 : 1500);
 				},
 				0, 0, true, true, true);
 		}
 
 		function onSubsystemAliasChange(idx, value) {
-			_subsystems[idx].configAlias = value;
+			var ss = _subsystems[idx];
+			ss.configAlias = value;
+			ss._pendingConfigAlias = value; // suppress "changed server-side" warning
 			DesktopContent.XMLHttpRequest(
 				"Request?RequestType=setRemoteSubsystemFsmControl" +
-				"&targetSubsystem=" + encodeURIComponent(_subsystems[idx].name) +
+				"&targetSubsystem=" + encodeURIComponent(ss.name) +
 				"&controlType=configAlias" +
 				"&setValue=" + encodeURIComponent(value), "",
-				null, 0, 0, true, true, true);
+				function (req, reqParam, errStr) {
+					var err = fsmResponseError(req, errStr);
+					if (err) {
+						delete ss._pendingConfigAlias;
+						Debug.err("Failed to set Configure Alias '" + value +
+							"' for Subsystem '" + ss.name + "': " + err);
+					}
+					pollSoon(500);
+				},
+				0, 0, true, true, true);
 		}
 
 		function toggleInclude(idx) {
-			var newVal = _subsystems[idx].fsmIncluded ? 0 : 1;
-			_subsystems[idx].fsmIncluded = newVal;
+			var ss = _subsystems[idx];
+			var newVal = ss.fsmIncluded ? 0 : 1;
+			ss.fsmIncluded = newVal;
+			ss._pendingInclude = newVal; // suppress "changed server-side" warning
 
 			var btn = document.getElementById("ss-incl-" + idx);
 			if (btn)
@@ -789,27 +1091,564 @@
 			// Update system overview dimming
 			renderSystemOverview();
 
+			// Errors are suppressed while excluded; surface the current one
+			// (as a warning, it is not new) when the user includes it again.
+			if (newVal && Mu2e.isErrorStatus(ss.status)) {
+				var rawErr = ss.status + (ss.error ? ":::" + ss.error : "");
+				Debug.warn("Subsystem '" + ss.name + "' is now INCLUDED and is in state '" +
+					ss.status + "'. Here is its current error for reference:\n\n" +
+					Mu2e.decodeDetail(rawErr));
+			}
+
 			DesktopContent.XMLHttpRequest(
 				"Request?RequestType=setRemoteSubsystemFsmControl" +
-				"&targetSubsystem=" + encodeURIComponent(_subsystems[idx].name) +
+				"&targetSubsystem=" + encodeURIComponent(ss.name) +
 				"&controlType=include&setValue=" + newVal, "",
-				null, 0, 0, true, true, true);
+				function (req, reqParam, errStr) {
+					var err = fsmResponseError(req, errStr);
+					if (err) {
+						delete ss._pendingInclude;
+						Debug.err("Failed to " + (newVal ? "include" : "exclude") +
+							" Subsystem '" + ss.name + "': " + err);
+					}
+					pollSoon(500);
+				},
+				0, 0, true, true, true);
 		}
 
 		function bootSubsystem(idx) {
-			var name = _subsystems[idx].name;
-			if (!confirm("Power cycle " + name + "?\n\nThis will reboot the subsystem."))
-				return;
-			DesktopContent.XMLHttpRequest(
-				"Request?RequestType=gatewayLaunchOTSInstance" +
-				"&targetSubsystem=" + encodeURIComponent(name), "",
+			var ss = _subsystems[idx];
+			var name = ss.name;
+			DesktopContent.popUpVerification(
+				"Are you sure you want to reboot subsystem <b><u>" + Mu2e.esc(name) + "</u></b>?",
 				function () {
-					Debug.log("Reboot sent to " + name);
-					_subsystems[idx].status = "Rebooting";
-					_subsystems[idx].progress = 0;
+					var prevStatus = ss.status;
+					ss.status = "Rebooting";
+					ss.progress = 0;
+					ss._rebootTime = Date.now(); // suppress UNKNOWN warning during reboot
 					updateSubsystemRows();
+					DesktopContent.XMLHttpRequest(
+						"Request?RequestType=gatewayLaunchOTSInstance" +
+						"&targetSubsystem=" + encodeURIComponent(name), "",
+						function (req, reqParam, errStr) {
+							var err = fsmResponseError(req, errStr);
+							if (err) {
+								Debug.err("Reboot failed for '" + name + "': " + err);
+								ss.status = prevStatus;
+								ss._rebootTime = undefined;
+								updateSubsystemRows();
+							} else
+								Debug.info("Reboot launched for '" + name + "'...!");
+							pollSoon(1000);
+						},
+						0, 0, true, true, true);
 				},
-				0, 0, true, true, true);
+				0, "#efeaea", 0, "#770000",
+				false /*getUserInput*/, 350 /*dialogWidth*/);
+		}
+
+		// =============================================================
+		// TRIGGER MENU — compact selector for the Trigger subsystem's
+		// artdaq system variables (triggerMenuName / triggerMenuTag /
+		// outputBaseDir), the same ones the Trigger Menu Editor edits.
+		// -------------------------------------------------------------
+		// The variables live in the Trigger subsystem's USER_DATA and are
+		// served by ITS ConfigurationGUISupervisor (getArtdaqSystemVariables,
+		// setArtdaqSystemVariable, getJsonDocuments), i.e. behind a different
+		// Gateway than this page. We reach it the same way a remote desktop
+		// window does: take the browser-reachable, port-translated URL of a
+		// Trigger-folder icon from the parent desktop's icon map, POST our
+		// desktop cookie code to that origin (subsystem supervisors answer
+		// with Access-Control-Allow-Origin:* and verify the cookie against
+		// the primary Gateway), and target the ConfigurationGUI LID.
+		// =============================================================
+		var _TM_OUTPUT_DIR_DEFAULTS = ["/data/DAQ/dropbox", "/data/mu2e/DAQ/debug"];
+		var _TM_VARIABLE_KEYS = ["triggerMenuName", "triggerMenuTag", "outputBaseDir"];
+		var _TM_REFRESH_MS = 30000;
+
+		var _tm = {
+			endpoint: null,     // {origin, urn, editorUrl}
+			vars: {},           // server values keyed by variable
+			docs: {},           // docName -> [versions]
+			loaded: false,
+			busy: false,
+			nonce: 0,
+			discoverTries: 0,
+			refreshTimer: 0,
+			editingPath: false
+		};
+
+		function triggerSubsystemIndex() {
+			for (var i = 0; i < _subsystems.length; ++i)
+				if (_subsystems[i].name === "Trigger_Gateway") return i;
+			for (var i = 0; i < _subsystems.length; ++i)
+				if (/^Trigger/i.test(_subsystems[i].name)) return i;
+			return -1;
+		}
+
+		function triggerSubsystem() {
+			var i = triggerSubsystemIndex();
+			return i >= 0 ? _subsystems[i] : null;
+		}
+
+		function renderTriggerMenuRow() {
+			var h = "<tr id='ss-trigmenu-row' class='ss-trigmenu-row'>";
+			h += "<td></td>";
+			h += "<td colspan='5'>";
+			h += "<div class='tm-row' id='tm-controls'>";
+			h += "<span class='tm-title'>Trigger Menu</span>";
+			h += "<span class='tm-label'>Menu:</span>";
+			h += "<select class='tm-select' id='tm-menu' disabled onchange='tmOnMenuChange()'>" +
+				"<option>loading...</option></select>";
+			h += "<span class='tm-label'>Tag:</span>";
+			h += "<select class='tm-select' id='tm-tag' disabled onchange='tmOnChange()'></select>";
+			h += "<span class='tm-label'>Output:</span>";
+			h += "<select class='tm-select' id='tm-out' disabled onchange='tmOnChange()'></select>";
+			h += "<input type='text' class='tm-input' id='tm-out-edit' style='display:none;' " +
+				"placeholder='/path/to/output' autocomplete='off' " +
+				"onkeydown='if(event.key===\"Enter\")tmTogglePathEdit();" +
+				"else if(event.key===\"Escape\")tmTogglePathEdit(true)'>";
+			h += "<button class='tm-btn' id='tm-out-editbtn' disabled " +
+				"onclick='tmTogglePathEdit()' title='Type a custom output path'>Edit</button>";
+			h += "<a class='tm-link' id='tm-open-editor' onclick='tmOpenEditor()' " +
+				"title='Open the Trigger Menu Editor window (browse menus, edit prescales)'>" +
+				"Trigger Menu Editor &#x2197;</a>";
+			h += "<span class='tm-status' id='tm-status'></span>";
+			h += "</div>";
+			h += "</td></tr>";
+			return h;
+		}
+
+		function tmStatus(text, cls) {
+			var el = document.getElementById("tm-status");
+			if (!el) return;
+			el.textContent = text || "";
+			el.title = text || "";
+			el.className = "tm-status" + (cls ? " tm-status-" + cls : "");
+		}
+
+		// Locate the Trigger subsystem's ConfigurationGUI endpoint and the
+		// Trigger Menu Editor URL via the parent desktop's icon map.
+		function tmDiscoverEndpoint() {
+			var ss = triggerSubsystem();
+			if (!ss) return null;
+			var map = getDesktopIconMap();
+			if (!map) return null;
+
+			var originOf = function (url) {
+				var m = url && url.match(/^(https?:\/\/[^\/]+)/);
+				return m ? m[1] : null;
+			};
+
+			// 1. The Trigger Menu Editor page only exists on the Trigger gateway,
+			//    so its icon (anywhere on the desktop) pins down that gateway's
+			//    browser-reachable origin.
+			// 2. Otherwise use the Trigger subsystem's landing-page icon. Remote
+			//    icons are keyed "<folder>/<caption>" or, when the subsystem icon
+			//    sits at the desktop root, "<UserDataPath> <caption>".
+			var editorUrl = null, landingUrl = null;
+			var lp = ss.landingPage || "";
+			for (var key in map) {
+				if (!map.hasOwnProperty(key)) continue;
+				var url = map[key] && map[key][0];
+				if (!url) continue;
+				if (!editorUrl && url.indexOf("TriggerMenuEditor") >= 0) editorUrl = url;
+				if (!landingUrl && lp && (key === lp ||
+						key.substr(-(lp.length + 1)) === "/" + lp ||
+						key.substr(-(lp.length + 1)) === " " + lp) &&
+						url.indexOf("remoteServerOrigin=") >= 0)
+					landingUrl = url;
+			}
+			var origin = originOf(editorUrl) || originOf(landingUrl);
+			if (!origin) return null;
+
+			// ConfigurationGUI on that same origin (for the ?urn= LID)
+			var cfgUrl = null, anyRemoteUrl = null;
+			for (var key2 in map) {
+				if (!map.hasOwnProperty(key2)) continue;
+				var url2 = map[key2] && map[key2][0];
+				if (!url2 || originOf(url2) !== origin) continue;
+				if (!cfgUrl && url2.indexOf("ConfigurationGUI.html") >= 0) cfgUrl = url2;
+				if (!anyRemoteUrl && url2.indexOf("remoteServerOrigin=") >= 0) anyRemoteUrl = url2;
+			}
+			var probe = cfgUrl || editorUrl || landingUrl || anyRemoteUrl;
+
+			// ConfigurationGUI LID: from ?urn=NNN of the Configure icon, else from
+			// lid=NNN of the same, else the otsdaq default (281).
+			var urn = 0;
+			if (cfgUrl) {
+				var u = cfgUrl.match(/[?&]urn=(\d+)/) || cfgUrl.match(/lid=(\d+)/);
+				if (u) urn = u[1] | 0;
+			}
+			if (!urn) urn = 281;
+
+			if (!editorUrl) {
+				// Fall back to the well-known page path on the Trigger gateway,
+				// carrying the remote-gateway params so DesktopContent authenticates.
+				var rem = probe.match(/[?&](remoteServerOrigin=[^&]*&remoteServerUrnLid=\d+)/);
+				editorUrl = origin + "/WebPath/UserWebPath/html/TriggerMenuEditor.html?urn=" + urn +
+					(rem ? "&" + rem[1] : "");
+			}
+			return { origin: origin, urn: urn, editorUrl: editorUrl };
+		}
+
+		// POST a Request to the Trigger ConfigurationGUI supervisor.
+		// cb(req, errStr): errStr non-empty on transport/auth/<Error> failure.
+		function tmRequest(requestType, postData, cb) {
+			var ep = _tm.endpoint;
+			if (!ep) { cb(null, "Trigger endpoint not resolved."); return; }
+			var cookie = DesktopContent._cookieCodeMailbox || "";
+			var body = "RequestOrigin=" + encodeURIComponent(ep.origin) +
+				"&CookieCode=" + cookie + (postData ? "&" + postData : "");
+			var req = new XMLHttpRequest();
+			req.onreadystatechange = function () {
+				if (req.readyState !== 4) return;
+				if (req.status !== 200) {
+					cb(null, "HTTP " + req.status + " from " + ep.origin +
+						(req.status === 0 ? " (unreachable, blocked, or connection lost)" : ""));
+					return;
+				}
+				if (req.responseText === Globals.REQ_NO_LOGIN_RESPONSE ||
+						req.responseText === Globals.REQ_NO_PERMISSION_RESPONSE) {
+					cb(null, "Trigger gateway rejected the request: " + req.responseText +
+						". Open any Trigger window once to establish the remote login, then retry.");
+					return;
+				}
+				if (!req.responseXML) { cb(null, "Illegal XML response from Trigger gateway."); return; }
+				var errs = DesktopContent.getXMLRequestErrors(req);
+				if (errs.length) { cb(req, errs.join("\n")); return; }
+				cb(req, "");
+			};
+			req.onerror = function () { cb(null, "Network error reaching " + ep.origin); };
+			try {
+				req.open("POST", ep.origin + "/urn:xdaq-application:lid=" + ep.urn +
+					"/Request?RequestType=" + requestType, true);
+				req.setRequestHeader("Content-Type", "text/plain;charset=UTF-8");
+				req.send(body);
+			} catch (e) {
+				cb(null, "Failed to send request: " + e);
+			}
+		}
+
+		// Entry point: called after the subsystem table renders. Resolves the
+		// endpoint (retrying while the Trigger desktop folder is still loading),
+		// then loads variables and menu documents.
+		function tmLoad() {
+			if (_tm.refreshTimer) { clearTimeout(_tm.refreshTimer); _tm.refreshTimer = 0; }
+			if (!document.getElementById("tm-controls")) return;
+			var nonce = ++_tm.nonce;
+
+			_tm.endpoint = tmDiscoverEndpoint();
+			if (!_tm.endpoint) {
+				if (++_tm.discoverTries <= 12) {
+					tmStatus("waiting for Trigger desktop folder to load...");
+					_tm.refreshTimer = setTimeout(function () {
+						if (nonce === _tm.nonce) tmLoad();
+					}, 5000);
+				} else {
+					tmStatus("Trigger subsystem icons not available on this desktop; " +
+						"open the Trigger folder once and reload.", "err");
+				}
+				return;
+			}
+			_tm.discoverTries = 0;
+			tmFetch(nonce);
+		}
+
+		function tmFetch(nonce) {
+			var pending = 2, failed = "";
+			var done = function () {
+				if (--pending) return;
+				if (nonce !== _tm.nonce) return;
+				if (failed) { tmStatus(failed, "err"); }
+				else {
+					_tm.loaded = true;
+					tmRender();
+					tmStatus("");
+				}
+				tmUpdateEnabled();
+				_tm.refreshTimer = setTimeout(function () {
+					if (nonce === _tm.nonce && !tmIsDirty() && !_tm.busy) tmFetch(nonce);
+				}, _TM_REFRESH_MS);
+			};
+
+			tmRequest("getArtdaqSystemVariables", "", function (req, err) {
+				if (err) failed = err;
+				else {
+					var vars = {};
+					var dataEl = req.responseXML.getElementsByTagName("DATA")[0];
+					var kids = dataEl ? dataEl.childNodes : [];
+					for (var i = 0; i < kids.length; ++i) {
+						var n = kids[i];
+						if (n.nodeType !== 1) continue;
+						var tag = n.nodeName || n.tagName;
+						if (!tag || tag.indexOf("artdaq_") !== 0) continue;
+						vars[tag.substring(7)] = n.getAttribute("value") || n.textContent || "";
+					}
+					_tm.vars = vars;
+				}
+				done();
+			});
+			tmRequest("getJsonDocuments", "", function (req, err) {
+				if (err) failed = failed || err;
+				else {
+					var docs = {};
+					var names = req.responseXML.getElementsByTagName("jsonDoc_name");
+					var vers = req.responseXML.getElementsByTagName("jsonDoc_versions");
+					for (var i = 0; i < names.length; ++i) {
+						var nm = names[i].getAttribute("value") || "";
+						var vs = vers[i] ? (vers[i].getAttribute("value") || "") : "";
+						docs[nm] = vs ? vs.split(",") : [];
+					}
+					_tm.docs = docs;
+				}
+				done();
+			});
+		}
+
+		function tmFillSelect(sel, values, selected) {
+			sel.innerHTML = "";
+			for (var i = 0; i < values.length; ++i) {
+				var o = document.createElement("option");
+				o.value = values[i];
+				o.textContent = values[i];
+				sel.appendChild(o);
+			}
+			if (selected !== undefined && values.indexOf(selected) >= 0) sel.value = selected;
+		}
+
+		// Populate the controls from _tm.vars / _tm.docs (server truth).
+		function tmRender() {
+			var menuEl = document.getElementById("tm-menu");
+			var tagEl = document.getElementById("tm-tag");
+			var outEl = document.getElementById("tm-out");
+			if (!menuEl || !tagEl || !outEl) return;
+
+			var names = Object.keys(_tm.docs).sort();
+			var curMenu = _tm.vars.triggerMenuName || "";
+			if (curMenu && names.indexOf(curMenu) < 0) names.unshift(curMenu); // keep unknown current
+			tmFillSelect(menuEl, names, curMenu);
+			tmRenderTags(_tm.vars.triggerMenuTag || "");
+
+			var outs = _TM_OUTPUT_DIR_DEFAULTS.slice();
+			var curOut = _tm.vars.outputBaseDir || "";
+			if (curOut && outs.indexOf(curOut) < 0) outs.push(curOut);
+			tmFillSelect(outEl, outs, curOut);
+
+			// leave edit mode if we were in it
+			var edit = document.getElementById("tm-out-edit");
+			var btn = document.getElementById("tm-out-editbtn");
+			if (edit && btn) {
+				edit.style.display = "none";
+				outEl.style.display = "";
+				btn.textContent = "Edit";
+				_tm.editingPath = false;
+			}
+			tmMarkDirty();
+		}
+
+		function tmRenderTags(preferred) {
+			var menuEl = document.getElementById("tm-menu");
+			var tagEl = document.getElementById("tm-tag");
+			if (!menuEl || !tagEl) return;
+			var versions = (_tm.docs[menuEl.value] || []).slice();
+			if (preferred && versions.indexOf(preferred) < 0 && menuEl.value === _tm.vars.triggerMenuName)
+				versions.unshift(preferred);
+			tmFillSelect(tagEl, versions, preferred);
+			if (!preferred && versions.length) tagEl.value = versions[versions.length - 1]; // newest
+		}
+
+		// Selecting a menu re-populates the tag list (newest tag preselected),
+		// then both menu and tag are saved together so they never disagree.
+		function tmOnMenuChange() {
+			var menuEl = document.getElementById("tm-menu");
+			var same = menuEl && menuEl.value === _tm.vars.triggerMenuName;
+			tmRenderTags(same ? (_tm.vars.triggerMenuTag || "") : "");
+			tmOnChange();
+		}
+
+		// Auto-apply: any change is saved immediately. Controls are only
+		// enabled while Trigger is not Configured/Running/Paused, and the
+		// values take effect at the next Configure, so there is nothing to
+		// gain from a separate Apply step.
+		function tmOnChange() {
+			// Re-check the lock at save time: a transition may have started
+			// between the poll that enabled the controls and this click.
+			var reason = tmFrozenReason();
+			if (reason) {
+				Debug.warn("Trigger menu change not applied. " + reason);
+				tmRender(); // revert to server values
+				return;
+			}
+			tmMarkDirty();
+			var changes = tmChanges();
+			if (changes.length && !_tm.busy) tmSave(changes, []);
+		}
+
+		function tmCurrentOutput() {
+			var edit = document.getElementById("tm-out-edit");
+			var outEl = document.getElementById("tm-out");
+			if (_tm.editingPath && edit) return edit.value.trim();
+			return outEl ? outEl.value : "";
+		}
+
+		function tmSelection() {
+			var menuEl = document.getElementById("tm-menu");
+			var tagEl = document.getElementById("tm-tag");
+			return {
+				triggerMenuName: menuEl ? menuEl.value : "",
+				triggerMenuTag: tagEl ? tagEl.value : "",
+				outputBaseDir: tmCurrentOutput()
+			};
+		}
+
+		function tmChanges() {
+			var sel = tmSelection(), changes = [];
+			for (var i = 0; i < _TM_VARIABLE_KEYS.length; ++i) {
+				var k = _TM_VARIABLE_KEYS[i];
+				if (sel[k] !== "" && sel[k] !== (_tm.vars[k] || ""))
+					changes.push({ key: k, from: _tm.vars[k] || "", to: sel[k] });
+			}
+			return changes;
+		}
+
+		function tmIsDirty() { return _tm.loaded && tmChanges().length > 0; }
+
+		function tmMarkDirty() {
+			var changes = tmChanges();
+			var dirtyKeys = {};
+			for (var i = 0; i < changes.length; ++i) dirtyKeys[changes[i].key] = true;
+			var ids = { triggerMenuName: "tm-menu", triggerMenuTag: "tm-tag", outputBaseDir: "tm-out" };
+			for (var k in ids) {
+				var el = document.getElementById(ids[k]);
+				if (el) el.className = "tm-select" + (dirtyKeys[k] ? " tm-dirty" : "");
+			}
+			var edit = document.getElementById("tm-out-edit");
+			if (edit) edit.className = "tm-input" + (dirtyKeys.outputBaseDir ? " tm-dirty" : "");
+			tmUpdateEnabled();
+		}
+
+		// Controls are frozen while the Trigger subsystem is Configured/Running/
+		// Paused: the variables are resolved at Configure time, so a change can
+		// only take effect after a Halt + Configure anyway.
+		// The menu may only be changed while the Trigger subsystem is settled in
+		// Halted/Initial/Failed and the top-level FSM is idle. Any other state,
+		// or any transition in progress anywhere (Configuring, Starting,
+		// Stopping, Halting, "Launching ..."), locks the controls: the variables
+		// are read during Configure, and a change mid-transition could be picked
+		// up half-way or lost.
+		function tmFrozenReason() {
+			var ss = triggerSubsystem();
+			if (!ss) return "";
+			var st = ss.status || "";
+			var settledEditable = (st === "Halted" || st === "Initial" || st === "Failed" ||
+				st === "Error" || st === "Soft-Error" || st === "UNKNOWN" || st === "");
+			// Transition names: Configuring, Starting, "Starting Up", Stopping,
+			// Halting, Pausing, Resuming, Aborting, plus our local "Launching X"
+			// and "Rebooting" placeholders.
+			var ssInTransition = (ss.progress > 0 && ss.progress < 100) ||
+				/^(Launching|Configuring|Starting|Stopping|Halting|Pausing|Resuming|Aborting|Shutting|Rebooting)\b/.test(st);
+			if (ssInTransition)
+				return "Trigger is in transition (" + st + "): wait for it to settle.";
+			if (!settledEditable)
+				return "Trigger is " + st + ": Halt the Trigger subsystem to change the trigger menu " +
+					"(variables are applied at Configure).";
+			if (_system.inTransition)
+				return "System is " + (_system.transition || "in transition") +
+					": wait for the transition to finish.";
+			return "";
+		}
+
+		function tmUpdateEnabled() {
+			if (!document.getElementById("tm-controls")) return;
+			var reason = tmFrozenReason();
+			var frozen = reason !== "";
+			var ready = _tm.loaded && !_tm.busy;
+
+			// If we get frozen mid-edit of the output path, drop the edit.
+			if (frozen && _tm.editingPath) tmTogglePathEdit(true);
+
+			var ids = ["tm-menu", "tm-tag", "tm-out", "tm-out-edit", "tm-out-editbtn"];
+			for (var i = 0; i < ids.length; ++i) {
+				var el = document.getElementById(ids[i]);
+				if (el) {
+					el.disabled = !ready || frozen;
+					el.title = frozen ? reason : "";
+				}
+			}
+			var ctl = document.getElementById("tm-controls");
+			if (ctl) ctl.title = reason;
+			var row = document.getElementById("ss-trigmenu-row");
+			if (row) row.className = "ss-trigmenu-row" + (frozen ? " ss-trigmenu-frozen" : "");
+		}
+
+		// Edit -> free-text output path; Done/Enter commits (and saves), Escape cancels.
+		function tmTogglePathEdit(cancel) {
+			var outEl = document.getElementById("tm-out");
+			var edit = document.getElementById("tm-out-edit");
+			var btn = document.getElementById("tm-out-editbtn");
+			if (!outEl || !edit || !btn) return;
+			if (!_tm.editingPath) {
+				edit.value = outEl.value;
+				outEl.style.display = "none";
+				edit.style.display = "";
+				btn.textContent = "Done";
+				_tm.editingPath = true;
+				edit.focus();
+				return;
+			}
+			var val = cancel ? "" : edit.value.trim();
+			edit.style.display = "none";
+			outEl.style.display = "";
+			btn.textContent = "Edit";
+			_tm.editingPath = false;
+			if (val) {
+				var found = false;
+				for (var i = 0; i < outEl.options.length; ++i)
+					if (outEl.options[i].value === val) { found = true; break; }
+				if (!found) {
+					var o = document.createElement("option");
+					o.value = val; o.textContent = val;
+					outEl.appendChild(o);
+				}
+				outEl.value = val;
+			}
+			tmOnChange();
+		}
+
+		function tmSave(remaining, errors) {
+			if (!remaining.length) {
+				_tm.busy = false;
+				if (errors.length) {
+					tmStatus("save failed: " + errors.join("; "), "err");
+					Debug.err("Failed to save Trigger menu variables:\n\n" + errors.join("\n"));
+				} else {
+					tmStatus("saved " + new Date().toLocaleTimeString() +
+						" (applies at next Trigger Configure)", "ok");
+				}
+				tmFetch(++_tm.nonce); // re-read server truth
+				return;
+			}
+			_tm.busy = true;
+			tmUpdateEnabled();
+			var c = remaining.shift();
+			tmStatus("saving " + c.key + "...");
+			tmRequest("setArtdaqSystemVariable",
+				"key=" + encodeURIComponent(c.key) + "&value=" + encodeURIComponent(c.to),
+				function (req, err) {
+					if (err) errors.push(c.key + ": " + err);
+					tmSave(remaining, errors);
+				});
+		}
+
+		function tmOpenEditor() {
+			var ep = _tm.endpoint || tmDiscoverEndpoint();
+			if (!ep || !ep.editorUrl) {
+				Debug.err("Cannot open the Trigger Menu Editor: the Trigger subsystem's desktop " +
+					"icons are not loaded yet. Open the Trigger folder on the desktop once and retry.");
+				return;
+			}
+			openOtsDesktopWindow("Trigger Menu Editor", ep.editorUrl);
 		}
 
 		// =============================================================
