@@ -3739,7 +3739,7 @@ void DTCFrontEndInterface::start(std::string runNumber)
 		// iterations when standalone.
 		const unsigned int startIteration = getSubsystemSyncStepIndex();
 
-		if(startIteration == 0)
+		if(startIteration == 0 && has_real_roc_flow_)
 		{
 			__FE_COUT__ << "Issuing DTC SoftReset before starting ROCs..." << __E__;
 			getDTC()->SoftReset();
@@ -3757,7 +3757,8 @@ void DTCFrontEndInterface::start(std::string runNumber)
 			return;
 		}
 
-		if(startIteration == systemMinReady - 1 && getSubIterationIndex() == 0)
+		if(startIteration == systemMinReady - 1 && getSubIterationIndex() == 0 &&
+		   has_real_roc_flow_)
 			getDTC()->SoftReset();
 		usleep(500000);  // wait 100 ms for DTC to reset counters
 	}
