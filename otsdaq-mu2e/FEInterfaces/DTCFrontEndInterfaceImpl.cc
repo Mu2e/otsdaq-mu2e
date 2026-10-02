@@ -80,8 +80,8 @@ uint32_t evbKnownDefectMask(DTCLib::DTC* dtc)
 	case 0xd6092291:  // Sep-22 11:00 (last build with the known checker fault, per hw agent)
 	case 0xd6092496:  // Sep-24 16:00 (bit 13 still sets at first poll; user decision 2026-09-24)
 	case 0xd60924a0:  // Sep-24 20:00 (first checker fix + bits 31:27 counter; counter saturates
-	    //  at 31 during clean data -> checker still firing; hw agent 2026-09-25:
-	    //  "known-false, exclude"; THE BUILD AFTER THIS must read bit 13 = 0)
+		//  at 31 during clean data -> checker still firing; hw agent 2026-09-25:
+		//  "known-false, exclude"; THE BUILD AFTER THIS must read bit 13 = 0)
 		return (1u << 13);
 	default:
 		return 0;

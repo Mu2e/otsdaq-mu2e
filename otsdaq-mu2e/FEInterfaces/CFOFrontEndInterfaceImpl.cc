@@ -2138,7 +2138,7 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 				try
 				{
 					runSubsystemFrontEndMacro(
-				    dtcUID, "Enable/Disable DTC Link", argsIn, argsOut);
+					    dtcUID, "Enable/Disable DTC Link", argsIn, argsOut);
 				}
 				catch(const std::exception& e)
 				{
