@@ -77,6 +77,14 @@ class CFOandDTCCoreVInterface : public FEVInterface
 	std::vector<std::string> getSubsystemFEUIDsOfPlugin(const std::string& pluginName) const;
 	bool                     subsystemHasCFO(void) const;
 
+	/// Run an FE macro on another FE in this subsystem. If the target lives under the same
+	/// FESupervisor as this FE, call it in-process; a SOAP round trip back into our own
+	/// supervisor would block behind the transition we are executing and never return.
+	void runSubsystemFrontEndMacro(const std::string&                                   targetInterfaceID,
+	                               const std::string&                                   feMacroName,
+	                               const std::vector<FEVInterface::frontEndMacroArg_t>& inputArgs,
+	                               std::vector<FEVInterface::frontEndMacroArg_t>&       outputArgs);
+
 	/// Configure subsystem-iteration turn: standalone runs everything at once.
 	bool isMyConfigureSubsystemIteration(unsigned int myTurn) const
 	{

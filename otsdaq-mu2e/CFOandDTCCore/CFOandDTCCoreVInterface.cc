@@ -1,4 +1,5 @@
 #include "otsdaq-mu2e/CFOandDTCCore/CFOandDTCCoreVInterface.h"
+#include "otsdaq/FECore/FEVInterfacesManager.h"
 #include "otsdaq/FECore/MakeInterface.h"
 #include "otsdaq/Macros/BinaryStringMacros.h"
 #include "otsdaq/Macros/InterfacePluginMacros.h"
@@ -173,6 +174,29 @@ bool CFOandDTCCoreVInterface::subsystemHasCFO(void) const
 {
 	return !getSubsystemFEUIDsOfPlugin("CFOFrontEndInterface").empty();
 }  // end subsystemHasCFO()
+
+//==========================================================================================
+void CFOandDTCCoreVInterface::runSubsystemFrontEndMacro(
+    const std::string&                                   targetInterfaceID,
+    const std::string&                                   feMacroName,
+    const std::vector<FEVInterface::frontEndMacroArg_t>& inputArgs,
+    std::vector<FEVInterface::frontEndMacroArg_t>&       outputArgs)
+{
+	if(parentInterfaceManager_)
+	{
+		const auto& siblingInterfaces = parentInterfaceManager_->getFEInterfaces();
+		auto        siblingIt         = siblingInterfaces.find(targetInterfaceID);
+		if(siblingIt != siblingInterfaces.end())
+		{
+			__FE_COUT__ << "Running FE macro '" << feMacroName << "' on '"
+			            << targetInterfaceID
+			            << "' in-process (same FESupervisor as this FE)." << __E__;
+			siblingIt->second->runSelfFrontEndMacro(feMacroName, inputArgs, outputArgs);
+			return;
+		}
+	}
+	runFrontEndMacro(targetInterfaceID, feMacroName, inputArgs, outputArgs);
+}  // end runSubsystemFrontEndMacro()
 
 //===========================================================================================
 void CFOandDTCCoreVInterface::registerCFOandDTCFEMacros(void)

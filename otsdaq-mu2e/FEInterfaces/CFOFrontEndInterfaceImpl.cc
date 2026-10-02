@@ -2137,7 +2137,8 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 				argsIn.emplace_back("Set Link Rx Enable (Default := false)", "1");
 				try
 				{
-					runFrontEndMacro(dtcUID, "Enable/Disable DTC Link", argsIn, argsOut);
+					runSubsystemFrontEndMacro(
+				    dtcUID, "Enable/Disable DTC Link", argsIn, argsOut);
 				}
 				catch(const std::exception& e)
 				{
@@ -2207,7 +2208,8 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 			std::vector<FEVInterface::frontEndMacroArg_t> argsIn, argsOut;
 			try
 			{
-				runFrontEndMacro(dtcLock.uid, "Get Link Lock Status", argsIn, argsOut);
+				runSubsystemFrontEndMacro(
+				    dtcLock.uid, "Get Link Lock Status", argsIn, argsOut);
 
 				__FE_COUT__ << "DTC " << dtcLock.uid
 				            << " argsOut.size()=" << argsOut.size() << __E__;
@@ -2349,7 +2351,7 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 					std::vector<FEVInterface::frontEndMacroArg_t> argsIn, argsOut;
 					try
 					{
-						runFrontEndMacro(
+						runSubsystemFrontEndMacro(
 						    dtcUID, "Get RTF Interface Status", argsIn, argsOut);
 					}
 					catch(const std::exception& e)
@@ -2430,7 +2432,8 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 					std::vector<FEVInterface::frontEndMacroArg_t> argsIn, argsOut;
 					try
 					{
-						runFrontEndMacro(dtcUID, "Fix CFO Clock Edge", argsIn, argsOut);
+						runSubsystemFrontEndMacro(
+						    dtcUID, "Fix CFO Clock Edge", argsIn, argsOut);
 					}
 					catch(const std::exception& e)
 					{
@@ -2728,8 +2731,10 @@ void CFOFrontEndInterface::halt(void)
 
 	__FE_COUT__ << "HALT: CFO status" << __E__;
 
-	resetConfigPhase();
-	timing_chain_first_substep_ = -1;
+	// Do not reset the configure phase base here: halt() is also used as a plain
+	// hardware helper from inside configure() (run-plan compile, resets), where a
+	// reset would restart the phase sequence. The base is reset only at the start
+	// of a new configure() (isFirstIteration).
 
 	if(operatingMode_ != CFOandDTCCoreVInterface::CONFIG_MODE_LOOPBACK)
 	{
