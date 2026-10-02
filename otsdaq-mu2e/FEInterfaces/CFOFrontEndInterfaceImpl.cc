@@ -2558,7 +2558,7 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 		// Phase 6: Enable CFO Operation — last phase of the CFO pass.
 		// Do not reset the phase base here: other FEs in this subsystem may still be
 		// iterating, so configure() will be called again and must keep returning a
-		// phase past the last one. The base is reset only in configure() entry and halt().
+		// phase past the last one. The base is reset only on first-iteration configure() entry.
 		__FE_COUT__ << "Enable CFO operation (RF0, punch)." << __E__;
 		thisCFO_->EnableAcceleratorRF0();
 		thisCFO_->SetPunchEnable();

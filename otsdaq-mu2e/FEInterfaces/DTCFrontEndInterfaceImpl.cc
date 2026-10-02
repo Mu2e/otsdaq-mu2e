@@ -3230,7 +3230,7 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 		// DTC finishes together with the CFO's phase 13 (today's behavior).
 		// Do not reset the phase base here: other FEs in this subsystem may still be
 		// iterating, so configure() will be called again and must keep returning a
-		// phase past the last one. The base is reset only in configure() entry and halt().
+		// phase past the last one. The base is reset only on first-iteration configure() entry.
 		if(configSubsystemIterationTurn_ ==
 		   CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM)
 			indicateIterationWork();
