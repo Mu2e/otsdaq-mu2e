@@ -262,14 +262,29 @@ bool pollUntil(Pred pred, int timeoutMs, int stepUs = 500)
 }
 std::string decodeRingErrorFlags(uint32_t flags)
 {
-	struct BitName { uint8_t bit; const char* name; };
+	struct BitName
+	{
+		uint8_t     bit;
+		const char* name;
+	};
 	static const BitName ringErrorBits[] = {
-	    { 0, "S2C_OVF"},      { 1, "INVALID_S2C"},  { 2, "DCS_PEND"},
-	    { 3, "EWM_HBP"},      { 4, "PLL"},           { 5, "RXCDR"},
-	    { 6, "RX_OVF"},       { 7, "RX_INVALID"},    { 8, "DCS_TMO"},
-	    { 9, "DCS_OVF"},      {10, "CFO_TAG"},        {11, "HBP_OVF"},
-	    {12, "OUT_OF_BAND"},  {13, "BUF_RESIDUE"},   {14, "STRAY_EWM"},
-	    {15, "INT_EMU"},      {20, "EXT_EMU"},
+	    {0, "S2C_OVF"},
+	    {1, "INVALID_S2C"},
+	    {2, "DCS_PEND"},
+	    {3, "EWM_HBP"},
+	    {4, "PLL"},
+	    {5, "RXCDR"},
+	    {6, "RX_OVF"},
+	    {7, "RX_INVALID"},
+	    {8, "DCS_TMO"},
+	    {9, "DCS_OVF"},
+	    {10, "CFO_TAG"},
+	    {11, "HBP_OVF"},
+	    {12, "OUT_OF_BAND"},
+	    {13, "BUF_RESIDUE"},
+	    {14, "STRAY_EWM"},
+	    {15, "INT_EMU"},
+	    {20, "EXT_EMU"},
 	};
 
 	const uint32_t errorAndStatusMask = 0x001FFFFF;
@@ -6140,7 +6155,7 @@ void DTCFrontEndInterface::readTxDiagFIFO(__ARGS__)
 //========================================================================
 void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 {
-	auto dtc = getDTC();
+	auto         dtc    = getDTC();
 	DTCLib::DTC* rawDTC = dtc;
 
 	auto hex8 = [](uint32_t v) {
@@ -6171,39 +6186,36 @@ void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 			               static_cast<DTCLib::DTC_Link_ID>(linkIndex))
 			               ? "1"
 			               : "0");
-		output << "  CFO:"
-		       << (dtc->ReadSERDESRXCDRLock(DTCLib::DTC_Link_CFO) ? "1" : "0")
-		       << "  L7:"
-		       << ((readReg(rawDTC, 0x9140) & (1u << 7)) ? "1" : "0") << "\n";
+		output << "  CFO:" << (dtc->ReadSERDESRXCDRLock(DTCLib::DTC_Link_CFO) ? "1" : "0")
+		       << "  L7:" << ((readReg(rawDTC, 0x9140) & (1u << 7)) ? "1" : "0") << "\n";
 
 		bool allPllLocked = true;
 		for(int linkIndex = 0; linkIndex < 7; ++linkIndex)
-			allPllLocked &= dtc->ReadSERDESPLLLocked(
-			    static_cast<DTCLib::DTC_Link_ID>(linkIndex));
+			allPllLocked &=
+			    dtc->ReadSERDESPLLLocked(static_cast<DTCLib::DTC_Link_ID>(linkIndex));
 		allPllLocked &= (readReg(rawDTC, 0x9128) & (1u << 7)) != 0;
-		output << "  PLL Lock (0x9128): " << (allPllLocked ? "all OK" : "FAULT")
-		       << "\n";
+		output << "  PLL Lock (0x9128): " << (allPllLocked ? "all OK" : "FAULT") << "\n";
 
 		uint32_t linkEnableRaw = dtc->ReadLinkEnabledData();
 		output << "  TX enable: " << bin8(linkEnableRaw & 0xFF)
 		       << "  RX enable: " << bin8((linkEnableRaw >> 8) & 0xFF) << "\n";
 
-		uint32_t jaSourceValue = dtc->ReadJitterAttenuatorSelect().to_ulong();
-		std::string jaSourceName =
-		    jaSourceValue == 0
-		        ? "emulated CFO"
-		        : (jaSourceValue == 1 ? "RJ45" : "FMC/SFP+");
-		bool jaLocked = dtc->ReadJitterAttenuatorLocked();
-		uint32_t jaCSR = readReg(rawDTC, static_cast<uint16_t>(
-		                     DTCLib::DTC_Register_JitterAttenuatorCSR));
+		uint32_t    jaSourceValue = dtc->ReadJitterAttenuatorSelect().to_ulong();
+		std::string jaSourceName  = jaSourceValue == 0
+		                                ? "emulated CFO"
+		                                : (jaSourceValue == 1 ? "RJ45" : "FMC/SFP+");
+		bool        jaLocked      = dtc->ReadJitterAttenuatorLocked();
+		uint32_t    jaCSR         = readReg(
+            rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_JitterAttenuatorCSR));
 		uint32_t jaLOS = (jaCSR >> 8) & 0xF;
 		output << "  JA (0x9308): src=" << jaSourceName
-		       << ", LOL=" << (jaLocked ? "0" : "1")
-		       << ", LOS=" << std::bitset<4>(jaLOS) << "\n";
+		       << ", LOL=" << (jaLocked ? "0" : "1") << ", LOS=" << std::bitset<4>(jaLOS)
+		       << "\n";
 	}
 
 	// ===== Section 2: Per-Link Error Flags =====
-	output << "\n=== Per-Link Flags (0x9380-0x939C, latched, cleared by link reset) ===\n";
+	output
+	    << "\n=== Per-Link Flags (0x9380-0x939C, latched, cleared by link reset) ===\n";
 	{
 		static const char* linkLabels[] = {
 		    "ROC 0", "ROC 1", "ROC 2", "ROC 3", "ROC 4", "ROC 5", "CFO  ", "L7   "};
@@ -6228,40 +6240,38 @@ void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 	// ===== Section 3: Latched Flag Registers =====
 	output << "\n=== Latched Flags ===\n";
 	{
-		uint32_t fifo0 = readReg(rawDTC, static_cast<uint16_t>(
-		                     DTCLib::DTC_Register_FIFOFullErrorFlag0));
-		uint32_t fifo1 = readReg(rawDTC, static_cast<uint16_t>(
-		                     DTCLib::DTC_Register_FIFOFullErrorFlag1));
-		uint32_t fifo2 = readReg(rawDTC, static_cast<uint16_t>(
-		                     DTCLib::DTC_Register_FIFOFullErrorFlag2));
+		uint32_t fifo0 = readReg(
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_FIFOFullErrorFlag0));
+		uint32_t fifo1 = readReg(
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_FIFOFullErrorFlag1));
+		uint32_t fifo2 = readReg(
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_FIFOFullErrorFlag2));
 		output << "  FIFO 0x9190:" << hex8(fifo0) << "  0x9194:" << hex8(fifo1)
 		       << "  0x9198:" << hex8(fifo2) << "\n";
 
-		uint32_t rxBuf = readReg(rawDTC, static_cast<uint16_t>(
-		                     DTCLib::DTC_Register_ReceivePacketError));
-		uint32_t rxPktCount = readReg(rawDTC, static_cast<uint16_t>(
-		                          DTCLib::DTC_Register_RXPacketCountErrorFlags));
+		uint32_t rxBuf = readReg(
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_ReceivePacketError));
+		uint32_t rxPktCount = readReg(
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_RXPacketCountErrorFlags));
 		output << "  RX buf (0x919C): pkt_err=" << ((rxBuf >> 8) & 0x7F)
 		       << ", crc_err=" << (rxBuf & 0x7F)
 		       << "   pkt_count (0x91CC): " << (rxPktCount & 0x7F) << "\n";
 
 		uint32_t serdesDisp = readReg(
 		    rawDTC,
-		    static_cast<uint16_t>(
-		        DTCLib::CFOandDTC_Register_SERDES_RXDisparityError));
-		uint32_t serdesNIT = readReg(
-		    rawDTC,
-		    static_cast<uint16_t>(
-		        DTCLib::CFOandDTC_Register_SERDES_RXCharacterNotInTableError));
+		    static_cast<uint16_t>(DTCLib::CFOandDTC_Register_SERDES_RXDisparityError));
+		uint32_t serdesNIT =
+		    readReg(rawDTC,
+		            static_cast<uint16_t>(
+		                DTCLib::CFOandDTC_Register_SERDES_RXCharacterNotInTableError));
 		uint32_t serdesUnlock = readReg(
-		    rawDTC,
-		    static_cast<uint16_t>(DTCLib::CFOandDTC_Register_SERDES_UnlockError));
+		    rawDTC, static_cast<uint16_t>(DTCLib::CFOandDTC_Register_SERDES_UnlockError));
 		output << "  SERDES disp (0x911C): " << hex2(serdesDisp)
 		       << "  NIT (0x9120): " << hex2(serdesNIT)
 		       << "  unlock (0x9124): " << hex2(serdesUnlock) << "\n";
 
-		uint32_t evbFlags = readReg(rawDTC, static_cast<uint16_t>(
-		                        DTCLib::DTC_Register_EventBuilderErrorFlags));
+		uint32_t evbFlags = readReg(
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_EventBuilderErrorFlags));
 		output << "  EVB (0x9370): " << hex8(evbFlags);
 		if(evbFlags == 0)
 			output << "  (clean)";
@@ -6271,11 +6281,9 @@ void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 				output << "    " << line << "\n";
 
 		uint32_t vfifoSerdes = readReg(
-		    rawDTC,
-		    static_cast<uint16_t>(DTCLib::DTC_Register_InputBufferErrorFlags));
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_InputBufferErrorFlags));
 		uint32_t vfifoPci = readReg(
-		    rawDTC,
-		    static_cast<uint16_t>(DTCLib::DTC_Register_OutputBufferErrorFlags));
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_OutputBufferErrorFlags));
 		output << "  VFIFO SERDES (0x9374): " << hex8(vfifoSerdes)
 		       << "  PCI (0x9378): " << hex8(vfifoPci) << "\n";
 	}
@@ -6283,7 +6291,7 @@ void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 	// ===== Section 4: Error Counters =====
 	output << "\n=== Counters ===\n";
 	{
-		auto formatLinkArray7 = [&](const std::string& label,
+		auto formatLinkArray7 = [&](const std::string&           label,
 		                            std::function<uint32_t(int)> readFn) {
 			output << "  " << label << ": ";
 			for(int linkIndex = 0; linkIndex < 7; ++linkIndex)
@@ -6294,7 +6302,7 @@ void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 			}
 			output << "\n";
 		};
-		auto formatLinkArray6 = [&](const std::string& label,
+		auto formatLinkArray6 = [&](const std::string&           label,
 		                            std::function<uint32_t(int)> readFn) {
 			output << "  " << label << ": ";
 			for(int linkIndex = 0; linkIndex < 6; ++linkIndex)
@@ -6311,8 +6319,7 @@ void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 			    static_cast<DTCLib::DTC_Link_ID>(linkIndex));
 		});
 		formatLinkArray7("CDR unlock (0x93B0)    ", [&](int linkIndex) {
-			return dtc->ReadRXCDRUnlockCount(
-			    static_cast<DTCLib::DTC_Link_ID>(linkIndex));
+			return dtc->ReadRXCDRUnlockCount(static_cast<DTCLib::DTC_Link_ID>(linkIndex));
 		});
 		formatLinkArray6("Missed CFO pkt (0x9340)", [&](int linkIndex) {
 			return dtc->ReadMissedCFOPacketCount(
@@ -6323,30 +6330,25 @@ void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 			    static_cast<DTCLib::DTC_Link_ID>(linkIndex));
 		});
 
-		output << "  Local event drop (0x9360): "
-		       << dtc->ReadLocalFragmentDropCount() << "\n";
+		output << "  Local event drop (0x9360): " << dtc->ReadLocalFragmentDropCount()
+		       << "\n";
 		output << "  10G RX pkt err (0x9590): "
 		       << dtc->ReadEVBSERDESRXPacketErrorCounter() << "\n";
 
-		output << "  JA lock loss (0x93CC): "
-		       << dtc->ReadJitterAttenuatorUnlockCount()
-		       << "   JA sig loss: "
-		       << dtc->ReadJitterAttenuatorRecoveredClockLOSCount() << " / "
-		       << dtc->ReadJitterAttenuatorExternalClockLOSCount() << "\n";
+		output << "  JA lock loss (0x93CC): " << dtc->ReadJitterAttenuatorUnlockCount()
+		       << "   JA sig loss: " << dtc->ReadJitterAttenuatorRecoveredClockLOSCount()
+		       << " / " << dtc->ReadJitterAttenuatorExternalClockLOSCount() << "\n";
 
 		uint32_t cfoEventStartErrors = readReg(
 		    rawDTC,
-		    static_cast<uint16_t>(
-		        DTCLib::DTC_Register_CFOLinkEventStartErrorCount));
+		    static_cast<uint16_t>(DTCLib::DTC_Register_CFOLinkEventStartErrorCount));
 		uint32_t cfo40MHzErrors = readReg(
-		    rawDTC,
-		    static_cast<uint16_t>(DTCLib::DTC_Register_CFOLink40MHzErrorCount));
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_CFOLink40MHzErrorCount));
 		output << "  CFO evt-start err (0x93D0): " << cfoEventStartErrors
 		       << "   CFO 40MHz err (0x93D4): " << cfo40MHzErrors << "\n";
 
 		uint32_t cdcDiag = dtc->ReadCFOCDCDiag();
-		output << "  CFO CDC diag (0x9688): parity="
-		       << ((cdcDiag >> 16) & 0xFFFF)
+		output << "  CFO CDC diag (0x9688): parity=" << ((cdcDiag >> 16) & 0xFFFF)
 		       << ", batch_slip=" << (cdcDiag & 0xFFFF) << "\n";
 	}
 
@@ -6354,14 +6356,11 @@ void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 	output << "\n=== System ===\n";
 	{
 		uint32_t xadcAlarm = readReg(
-		    rawDTC,
-		    static_cast<uint16_t>(
-		        DTCLib::CFOandDTC_Register_FPGA_MonitorAlarm));
+		    rawDTC, static_cast<uint16_t>(DTCLib::CFOandDTC_Register_FPGA_MonitorAlarm));
 		output << "  XADC alarm (0x9020): " << hex8(xadcAlarm) << "\n";
 
 		uint32_t slowOptical = readReg(
-		    rawDTC,
-		    static_cast<uint16_t>(DTCLib::DTC_Register_SlowOpticalLinksDiag));
+		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_SlowOpticalLinksDiag));
 		output << "  Slow optical (0x9410): " << hex8(slowOptical) << "\n";
 	}
 
