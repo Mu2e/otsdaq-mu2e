@@ -1,4 +1,5 @@
 #include "otsdaq-mu2e/CFOandDTCCore/CFOandDTCCoreVInterface.h"
+#include "otsdaq/FECore/FEVInterfacesManager.h"
 #include "otsdaq/FECore/MakeInterface.h"
 #include "otsdaq/Macros/BinaryStringMacros.h"
 #include "otsdaq/Macros/InterfacePluginMacros.h"
@@ -122,6 +123,80 @@ CFOandDTCCoreVInterface::~CFOandDTCCoreVInterface(void)
 	// if(fd_) close(fd_);
 	__FE_COUT__ << "Destructed." << __E__;
 }  // end destructor()
+
+//==========================================================================================
+std::vector<std::string> CFOandDTCCoreVInterface::getSubsystemFEUIDsOfPlugin(
+    const std::string& pluginName) const
+{
+	std::vector<std::string> uids;
+	auto                     cfgMgr   = Configurable::getConfigurationManager();
+	auto                     contexts = cfgMgr->getNode("XDAQContextTable").getChildren();
+	for(const auto& ctx : contexts)
+	{
+		if(!ctx.second.isEnabled())
+			continue;
+		try
+		{
+			auto apps = ctx.second.getNode("LinkToApplicationTable").getChildren();
+			for(const auto& app : apps)
+			{
+				if(!app.second.isEnabled())
+					continue;
+				try
+				{
+					auto feChildren = app.second.getNode("LinkToSupervisorTable")
+					                      .getNode("LinkToFEInterfaceTable")
+					                      .getChildren();
+					for(const auto& fe : feChildren)
+					{
+						if(!fe.second.isEnabled())
+							continue;
+						if(fe.second.getNode("FEInterfacePluginName")
+						       .getValue<std::string>() != pluginName)
+							continue;
+						uids.push_back(fe.first);
+					}
+				}
+				catch(...)
+				{
+				}
+			}
+		}
+		catch(...)
+		{
+		}
+	}
+	return uids;
+}  // end getSubsystemFEUIDsOfPlugin()
+
+//==========================================================================================
+bool CFOandDTCCoreVInterface::subsystemHasCFO(void) const
+{
+	return !getSubsystemFEUIDsOfPlugin("CFOFrontEndInterface").empty();
+}  // end subsystemHasCFO()
+
+//==========================================================================================
+void CFOandDTCCoreVInterface::runSubsystemFrontEndMacro(
+    const std::string&                                   targetInterfaceID,
+    const std::string&                                   feMacroName,
+    const std::vector<FEVInterface::frontEndMacroArg_t>& inputArgs,
+    std::vector<FEVInterface::frontEndMacroArg_t>&       outputArgs)
+{
+	if(parentInterfaceManager_)
+	{
+		const auto& siblingInterfaces = parentInterfaceManager_->getFEInterfaces();
+		auto        siblingIt         = siblingInterfaces.find(targetInterfaceID);
+		if(siblingIt != siblingInterfaces.end())
+		{
+			__FE_COUT__ << "Running FE macro '" << feMacroName << "' on '"
+			            << targetInterfaceID
+			            << "' in-process (same FESupervisor as this FE)." << __E__;
+			siblingIt->second->runSelfFrontEndMacro(feMacroName, inputArgs, outputArgs);
+			return;
+		}
+	}
+	runFrontEndMacro(targetInterfaceID, feMacroName, inputArgs, outputArgs);
+}  // end runSubsystemFrontEndMacro()
 
 //===========================================================================================
 void CFOandDTCCoreVInterface::registerCFOandDTCFEMacros(void)
