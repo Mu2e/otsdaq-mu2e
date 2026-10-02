@@ -2632,9 +2632,8 @@ void CFOFrontEndInterface::configureForTimingChain(int step)
 	switch(step)
 	{
 	case 0:
-		// Do not call halt() here: it resets the configure phase base and the timing-chain
-		// sub-step base, which makes this sub-step repeat forever. Its register writes
-		// (disable beam on/off modes) are done directly below.
+		// Do not call halt() here; its register writes (disable beam on/off modes) are
+		// done directly below, so the configure phase bookkeeping stays untouched.
 		next_starting_event_window_tag_ = 0;
 		thisCFO_->DisableBeamOnMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
 		thisCFO_->DisableBeamOffMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
