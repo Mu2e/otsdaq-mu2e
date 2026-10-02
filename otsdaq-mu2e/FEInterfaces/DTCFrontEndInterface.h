@@ -328,7 +328,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void RunROCFEMacro(__ARGS__);
 	void DTCSendHeartbeatAndDataRequest(__ARGS__);
 	void ResetLossOfLockCounter(__ARGS__);
-	void ReadLossOfLockCounter(__ARGS__);
+	void GetDTCErrors(__ARGS__);
 	void SpyBuffer(__ARGS__);
 	void ReleaseAllDAQBuffers(__ARGS__);
 	void GetLinkLockStatus(__ARGS__);
@@ -346,7 +346,6 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void DTCCounters(__ARGS__);
 	void readRxDiagFIFO(__ARGS__);
 	void readTxDiagFIFO(__ARGS__);
-	void GetLinkErrors(__ARGS__);
 	void GetRTFInterfaceStatus(__ARGS__);
 	void RTFMarkerOffsetApply(__ARGS__);
 	void FixCFOClockEdge(__ARGS__);
