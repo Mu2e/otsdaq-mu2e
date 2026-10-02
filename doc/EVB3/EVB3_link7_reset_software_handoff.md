@@ -212,7 +212,7 @@ It is reproducible on every start, which makes it a one-capture ILA job on this 
    in the capture. Signals to read: `rxdata`, `rxctrl`, `rxdatavalidp`, `rxCRCword` (probe22[47:16], the
    engine's CRC at the compare beat), `rxCRC_frame78`, `rx_fcs_check_pending`.
 2. On the sending DTC (DTC_1) arm `evb_tx_ila`, trigger on the first frame start (`tx_mon_in_frame`
-   rising) or on `tx_window_overrun` (probe21[30]). Read `txdata`, `txctrl`, `txdatavalid`,
+   rising) or on `tx_window_overrun` (evb_tx_ila probe19[13] since 2026-09-28; was probe21[30]). Read `txdata`, `txctrl`, `txdatavalid`,
    `DestinationDTC_ip`, `tx_window_words_remaining`.
 3. Then enable DTC_1's emulator. Both ILAs fire on the first burst. Compare the sender's T block FCS with
    the receiver's rxCRCword: equal = receiver compare bug; different = the sender's first frames really
