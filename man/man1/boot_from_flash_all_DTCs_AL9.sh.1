@@ -1,0 +1,113 @@
+.TH BOOT_FROM_FLASH_ALL_DTCS_AL9.SH 1 "2026-10-06" "otsdaq-mu2e 11.03.00" "Mu2e DAQ Manual"
+.SH NAME
+boot_from_flash_all_DTCs_AL9.sh \- make every JTAG-attached FPGA on this node
+reload its flash image, then reset PCIe
+.SH SYNOPSIS
+.B boot_from_flash_all_DTCs_AL9.sh
+.RB [ NORESET ]
+.RB [ NOKILL ]
+.RI [ dryrun ]
+.SH DESCRIPTION
+.B boot_from_flash_all_DTCs_AL9.sh
+throws away a volatile bitstream loaded by
+.BR program_all_FPGA_AL9.sh (1)
+and returns each FPGA to the image stored in its configuration flash.
+That image is the one written by
+.BR program_flash_all_FPGA_AL9.sh (1).
+.PP
+The script sources
+.IR /home/xilinx/Vivado_Lab/2021.2/settings64.sh .
+It scans
+.I /sys/bus/usb/devices
+for the same USB JTAG adapters as the programming scripts
+.RB ( 0403:6014 ", " 03fd:0013 ", " 03fd:0008 ).
+For the
+.IR N th
+adapter it runs, in the current working directory:
+.PP
+.EX
+vivado_lab \-mode batch \-source dir/boot_from_flash_one_DTC.tcl \-tclargs N
+.EE
+.PP
+The Tcl script opens hardware target
+.I N
+and issues
+.B boot_hw_device
+on its device 0.
+.PP
+Unless
+.B NORESET
+is given, the script then runs
+.B sudo
+.IB dir /reset_PCIe_AL9.sh
+(with
+.B NOKILL
+if given).
+.I dir
+is this script's directory, after resolving one level of symbolic link.
+Unlike the programming scripts, it calls nothing in
+.IR /home/mu2ehwdev .
+It takes no lock and writes no line to
+.IR vivado_user_log.txt .
+There is no confirmation prompt.
+.SH OPTIONS
+.TP
+.B NORESET
+Must be the first argument.
+Skips the PCIe reset.
+.TP
+.B NOKILL
+Must be the first argument, or the second after
+.BR NORESET .
+It is passed to
+.BR reset_PCIe_AL9.sh (1).
+.TP
+.I dryrun
+Any other non-empty first positional argument.
+The
+.BR source ,
+Vivado and reset commands are printed, not run.
+A mistyped keyword, for example
+.BR noreset ,
+is therefore taken as a dry run.
+.SH FILES
+.TP
+.IB dir /boot_from_flash_one_DTC.tcl
+Vivado Tcl, from this directory.
+.TP
+.I /home/xilinx/Vivado_Lab/2021.2/settings64.sh
+Vivado Lab environment.
+.TP
+.IR vivado_lab*.log ", " vivado_lab*.jou
+Written by Vivado into the current working directory.
+.SH ENVIRONMENT
+No variable changes the script's behaviour.
+.SH EXIT STATUS
+Always 0, whatever Vivado or the reset did.
+The header comment, "Usage: ./program_flash all_FPGA_AL9.sh", was copied
+from another script and does not describe this one.
+.SH EXAMPLES
+.EX
+/home/mu2ehwdev/boot_from_flash_all_DTCs_AL9.sh
+/home/mu2ehwdev/boot_from_flash_all_DTCs_AL9.sh NORESET
+/home/mu2ehwdev/boot_from_flash_all_DTCs_AL9.sh d
+.EE
+.PP
+The third command is a dry run.
+The
+.I /home/mu2ehwdev
+location of the script is the shifter convention.
+In the repository the script lives in
+.IR otsdaq\-mu2e/tools .
+.SH SEE ALSO
+.BR program_flash_all_FPGA_AL9.sh (1),
+.BR program_all_FPGA_AL9.sh (1),
+.BR reset_PCIe_AL9.sh (1),
+.BR otsdaq-mu2e-tools (7)
+.SH AUTHOR
+Ryan Rivera and the Mu2e TDAQ group (from the git history of
+.IR otsdaq-mu2e/tools ).
+This page was written for the September 2026 DAQ mega-review from the script
+source at
+.I otsdaq-mu2e
+commit 828cfe24.

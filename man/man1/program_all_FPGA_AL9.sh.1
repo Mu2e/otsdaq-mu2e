@@ -1,0 +1,263 @@
+.TH PROGRAM_ALL_FPGA_AL9.SH 1 "2026-10-06" "otsdaq-mu2e 11.03.00" "Mu2e DAQ Manual"
+.SH NAME
+program_all_FPGA_AL9.sh \- load one bitstream into the FPGA behind every
+USB JTAG cable on this node, then reset PCIe
+.SH SYNOPSIS
+.B program_all_FPGA_AL9.sh
+.RB [ NORESET ]
+.RB [ NOKILL ]
+.I bitfile
+.RI [ dryrun ]
+.SH DESCRIPTION
+.B program_all_FPGA_AL9.sh
+is the step that the shifter firmware procedure
+.RI ( mu2edaq-documentation/shifter/docs/experts/daq/flash-firmware.md )
+runs on every CFO, RTF and DTC node.
+It loads a Vivado
+.I .bit
+file into the FPGA configuration memory over JTAG.
+This configuration is volatile: it is lost at the next power cycle, when the
+FPGA boots from its flash again.
+To change the image the FPGA boots from, use
+.BR program_flash_all_FPGA_AL9.sh (1).
+.PP
+There is no confirmation prompt.
+The script works in three steps.
+.IP 1. 4
+It scans
+.I /sys/bus/usb/devices
+for USB JTAG adapters whose
+.IR idVendor : idProduct
+is
+.B 0403:6014
+(FTDI, reported as "Future Tech" by
+.IR find_JTAG_usb_AL9.sh ),
+.B 03fd:0013
+or
+.B 03fd:0008
+(Xilinx).
+.IP 2. 4
+For the
+.IR N th
+match, counting from 0 in sysfs order, it runs
+.EX
+/home/mu2ehwdev/program_one_FPGA_AL9.sh NORESET N bitfile
+.EE
+.IP "" 4
+That script takes
+.IR /tmp/mu2e.lock ,
+changes directory to
+.IR /home/mu2ehwdev ,
+deletes the Vivado logs there, appends one line to
+.IR /home/mu2ehwdev/.Xil/vivado_user_log.txt ,
+and runs
+.B vivado_lab \-mode batch
+with
+.IR program_one_FPGA.tcl .
+The Tcl script opens hardware target
+.I N
+(an index into Vivado's
+.BR get_hw_targets )
+and programs device 0 on it.
+The
+.I program_one_FPGA_AL9.sh
+path is hard-coded.
+The copy in
+.I /home/mu2ehwdev
+runs, not the copy next to this script.
+.IP 3. 4
+Unless
+.B NORESET
+is given, it runs
+.B sudo
+.IB dir /reset_PCIe_AL9.sh
+(with
+.B NOKILL
+if given).
+.I dir
+is this script's directory, after resolving one level of symbolic link.
+By default, therefore, the script kills every
+.B xdaq.exe
+and
+.B boardreader
+process on the node, and every process holding
+.IR /dev/mu2e* ,
+and reloads the
+.B mu2e
+driver.
+See
+.BR reset_PCIe_AL9.sh (1).
+.PP
+Steps 1 and 2 match USB adapters to Vivado hardware targets by position only.
+Every target receives the same bitstream, so the order does not matter, but
+the count does.
+If the sysfs scan finds a different number of adapters than Vivado lists
+targets, a target is left unprogrammed or Vivado reports an error for a
+missing index.
+.SH OPTIONS
+The keywords are positional and case-sensitive.
+They are matched only in the order shown.
+.TP
+.B NORESET
+Must be the first argument.
+Skips step 3.
+The FPGAs are reprogrammed, but the
+.B mu2e
+driver and the PCIe link are not reset, so nothing running on the node is
+killed.
+The new firmware is not usable through
+.I /dev/mu2e*
+until a later PCIe reset.
+.TP
+.B NOKILL
+Must be the first argument, or the second after
+.BR NORESET .
+It is passed through to
+.BR reset_PCIe_AL9.sh (1),
+which then skips its process kills.
+It has no effect together with
+.BR NORESET .
+.B NOKILL NORESET
+in that order is rejected, with "No bit file NORESET found".
+.TP
+.I bitfile
+The bitstream.
+The existence check runs relative to the caller's working directory, but
+.I program_one_FPGA_AL9.sh
+changes to
+.I /home/mu2ehwdev
+before Vivado opens the file.
+A relative path therefore works only when the caller is in
+.IR /home/mu2ehwdev .
+Use an absolute path.
+.TP
+.I dryrun
+Any non-empty second positional argument (the source comment suggests
+.BR d ).
+The USB scan still runs, but the program and reset commands are only
+printed.
+.SH FILES
+.TP
+.I /home/mu2ehwdev/program_one_FPGA_AL9.sh
+Per-target programmer, called by absolute path.
+.TP
+.I /home/xilinx/Vivado_Lab/2021.2/settings64.sh
+Vivado Lab environment, sourced by
+.IR program_one_FPGA_AL9.sh .
+.TP
+.I /home/mu2ehwdev/.Xil/vivado_user_log.txt
+Append-only record of each FPGA load (date, script, user, host, JTAG index,
+bitfile).
+It is the only record the scripts keep.
+.TP
+.I /tmp/mu2e.lock
+Symbolic link to the holder's PID.
+It is shared with
+.BR reset_PCIe_AL9.sh (1)
+and with
+.I read_dtc_temps.sh
+in mu2edaq-operations.
+.SH ENVIRONMENT
+.B HOSTNAME
+and
+.B USER
+appear only in messages.
+No variable changes the script's behaviour.
+.SH EXIT STATUS
+.TP
+.B 1
+.I bitfile
+is non-empty and is not an existing file.
+.TP
+.B 0
+Every other case.
+This includes no JTAG adapter found, Vivado failing to program, and the
+.B sudo
+reset failing.
+The closing line "Found N JTAGs, programmed bitfile and PCIe reset for each!"
+is printed unconditionally.
+.PP
+To check the result, read the Vivado output: a line containing
+.B HIGH
+is flagged "Look here!", and an
+.B ERROR
+line is flagged "ERROR!".
+Also check the version that
+.BR reset_PCIe_AL9.sh (1)
+reads from register 0x9004, or run
+.BR check_firmware_version.sh (1).
+.SH EXAMPLES
+CFO, from the shifter procedure (as
+.BR mu2eshift ).
+This command already resets PCIe and kills processes:
+.PP
+.EX
+/home/mu2ehwdev/program_all_FPGA_AL9.sh \e
+    /home/mu2ehwdev/CFO_Firmware/CFO2026Apr15_07_22.1/CFO.bit
+.EE
+.PP
+Reprogram without disturbing running processes, and reset later:
+.PP
+.EX
+/home/mu2ehwdev/program_all_FPGA_AL9.sh NORESET \e
+    /home/mu2ehwdev/DTC_Firmware/DTC2026Jun08_08_22.1_CRV_6ROC/DTC.bit
+.EE
+.PP
+Show what would be done:
+.PP
+.EX
+/home/mu2ehwdev/program_all_FPGA_AL9.sh /abs/path/DTC.bit d
+.EE
+.PP
+RTF, from the procedure.
+The relative path works because of the
+.BR cd :
+.PP
+.EX
+cd /home/mu2ehwdev
+\&./program_all_FPGA_AL9.sh NORESET RTF_Firmware/RTF2026Jun10_13_23.1a/RTF.bit
+.EE
+.SH CAVEATS
+Running the script with no arguments does not print usage.
+The unquoted test
+.B [ ! \-f $BITFILE ]
+passes when
+.I bitfile
+is empty, and
+.I program_one_FPGA_AL9.sh
+rejects its argument list, so no FPGA is touched.
+Step 3 still runs and kills every
+.B xdaq.exe
+and
+.B boardreader
+on the node.
+.B program_all_FPGA_AL9.sh NOKILL
+with no bitfile likewise resets PCIe.
+.PP
+In the shifter procedure, the CFO, Tracker, CRV and STM sections run this
+script without
+.BR NORESET ,
+and then run
+.B sudo reset_PCIe_AL9.sh NOKILL
+"when others may be using the system".
+By then, the first command has already killed their processes.
+.PP
+When this script runs over
+.B ssh
+without a terminal, as in the procedure's calorimeter loop, the
+.B sudo
+in step 3 needs a passwordless sudoers entry.
+Otherwise it fails, and the script still exits 0.
+.SH SEE ALSO
+.BR reset_PCIe_AL9.sh (1),
+.BR program_flash_all_FPGA_AL9.sh (1),
+.BR boot_from_flash_all_DTCs_AL9.sh (1),
+.BR check_firmware_version.sh (1),
+.BR otsdaq-mu2e-tools (7)
+.SH AUTHOR
+Ryan Rivera and the Mu2e TDAQ group (from the git history of
+.IR otsdaq-mu2e/tools ).
+This page was written for the September 2026 DAQ mega-review from the script
+source at
+.I otsdaq-mu2e
+commit 828cfe24.

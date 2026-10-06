@@ -1,0 +1,101 @@
+.TH CHECK_FIRMWARE_VERSION.SH 1 "2026-10-06" "otsdaq-mu2e 11.03.00" "Mu2e DAQ Manual"
+.SH NAME
+check_firmware_version.sh \- compare the firmware version register of PCIe
+devices 0 and 1 with an expected value
+.SH SYNOPSIS
+.B check_firmware_version.sh
+.I expected
+.SH DESCRIPTION
+The script sources
+.I /mu2e/spack_pcie/setup\-env.sh
+and runs
+.BR "spack env activate pcie" .
+It then reads register
+.B 0x9004
+from PCIe devices 0 and 1 with
+.BR "my_cntl \-d0 read 0x9004" " and " "my_cntl \-d1 read 0x9004" .
+.BR reset_PCIe_AL9.sh (1)
+prints the same register after a reset.
+.PP
+Each result is the first output line, stdout or stderr, that contains
+.BR 0x .
+It is compared with
+.I expected
+as an exact string.
+For each device the script prints one line:
+.PP
+.EX
+===> HOST DTC0 Exact version match. *
+===> HOST DTC1 Version mismatch! \-\-\-\-\-\-\-\-> <read> and expected <expected>
+.EE
+.PP
+It reads registers only and changes nothing.
+.SH OPTIONS
+.TP
+.I expected
+The register value as
+.B my_cntl
+prints it, for example
+.BR 0xd5100695 .
+The comparison is string equality, so case and leading zeros must match.
+Exactly one argument is required.
+.SH FILES
+.TP
+.I /mu2e/spack_pcie/setup\-env.sh
+Spack environment that provides
+.B my_cntl
+(mu2e-pcie-utils).
+This is a different mechanism from the
+.I /root/setup_pcie_AL9.sh
+that
+.BR reset_PCIe_AL9.sh (1)
+uses.
+.TP
+.I /dev/mu2e0 ", " /dev/mu2e1
+The devices read.
+Only indices 0 and 1 are checked.
+.SH ENVIRONMENT
+.TP
+.B HOSTNAME
+Used in messages.
+If it is unset, the output of
+.B hostname \-f
+is used.
+.SH EXIT STATUS
+.TP
+.B 1
+Wrong number of arguments.
+.TP
+.B 0
+Every other case, including a mismatch and a missing device.
+A missing device gives an empty or error string and is reported as a
+mismatch.
+To use the result in a script, filter the output for
+.BR mismatch .
+.SH EXAMPLES
+.EX
+tools/check_firmware_version.sh 0xd5100695
+.EE
+.PP
+Calorimeter nodes, printing only failures:
+.PP
+.EX
+for node in calo\-{01..12} calo\-14; do
+    ssh mu2eshift@mu2e\-$node \e
+        /path/to/otsdaq\-mu2e/tools/check_firmware_version.sh 0xd5100695
+done | grep \-i mismatch
+.EE
+.PP
+The expected value for each firmware build is listed on the daq-operations
+wiki page "Firmware-Versions".
+.SH SEE ALSO
+.BR reset_PCIe_AL9.sh (1),
+.BR program_all_FPGA_AL9.sh (1),
+.BR otsdaq-mu2e-tools (7)
+.SH AUTHOR
+Ryan Rivera and the Mu2e TDAQ group (from the git history of
+.IR otsdaq-mu2e/tools ).
+This page was written for the September 2026 DAQ mega-review from the script
+source at
+.I otsdaq-mu2e
+commit 828cfe24.

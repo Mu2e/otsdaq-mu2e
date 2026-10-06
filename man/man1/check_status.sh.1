@@ -1,0 +1,70 @@
+.TH CHECK_STATUS.SH 1 "2026-10-06" "otsdaq-mu2e 11.03.00" "Mu2e DAQ Manual"
+.SH NAME
+check_status.sh \- run git fetch, git status and git remote in each otsdaq
+source directory of an MRB development area
+.SH SYNOPSIS
+.B sh check_status.sh
+.SH DESCRIPTION
+Despite its name,
+.B check_status.sh
+does not check hardware or DAQ status.
+It is a source-tree status sweep from the MRB/UPS era.
+Run it from the
+.I srcs/
+directory of an MRB development area.
+It enters each of these eleven directories in turn and runs
+.BR "git fetch" ,
+.B git status
+and
+.BR "git remote \-v" :
+.PP
+.EX
+mu2e_pcie_utils  otsdaq_components  otsdaq  otsdaq_utilities
+otsdaq_mu2e_calorimeter  otsdaq_mu2e_trigger  otsdaq_mu2e
+otsdaq_mu2e_crv  otsdaq_mu2e_extmon  otsdaq_mu2e_stm  otsdaq_mu2e_tracker
+.EE
+.PP
+The names use underscores.
+Spack development areas use hyphenated names such as
+.IR otsdaq\-mu2e .
+.B git fetch
+contacts every remote and can prompt for credentials.
+.PP
+The file has no
+.B #!
+line and is not installed on the
+.BR PATH .
+.SH OPTIONS
+None.
+Arguments are ignored.
+.SH EXIT STATUS
+The status of the final
+.BR cd ,
+normally 0.
+Failures of
+.B git
+are not reported in the exit status.
+.SH CAVEATS
+A failed
+.B cd
+is not detected.
+For every directory that is missing, the
+.B git
+commands run in the starting directory instead.
+In a Spack area, the sweep therefore reports the same repository (or "not a
+git repository") eleven times.
+.SH EXAMPLES
+.EX
+cd $MRB_SOURCE && sh /path/to/otsdaq\-mu2e/tools/check_status.sh
+.EE
+.SH SEE ALSO
+.BR check_firmware_version.sh (1)
+(for DTC firmware),
+.BR otsdaq-mu2e-tools (7)
+.SH AUTHOR
+Eric Flumerfelt and the Mu2e TDAQ group (from the git history of
+.IR otsdaq-mu2e/tools ).
+This page was written for the September 2026 DAQ mega-review from the script
+source at
+.I otsdaq-mu2e
+commit 828cfe24.

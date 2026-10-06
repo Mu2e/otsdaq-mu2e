@@ -1,0 +1,480 @@
+.TH OTSDAQ-MU2E-TOOLS 7 "2026-10-06" "otsdaq-mu2e 11.03.00" "Mu2e DAQ Manual"
+.SH NAME
+otsdaq-mu2e-tools \- index of the scripts, Tcl files and configuration
+fragments in otsdaq-mu2e/tools
+.SH DESCRIPTION
+.I otsdaq\-mu2e/tools
+holds 52 files besides
+.IR CMakeLists.txt .
+They cover FPGA programming, PCIe reset, installation and bootstrap,
+configuration snapshots, and test-stand utilities.
+This page gives one line per file, from a reading of each.
+Files with their own page are marked (1).
+.PP
+How the files are installed:
+.IP \(bu 2
+The top-level
+.I CMakeLists.txt
+copies the whole directory into the build tree and installs it
+.RB ( "INSTALL(DIRECTORY tools ...)" ).
+Only four scripts are registered with
+.B cet_script
+and so placed on the
+.B PATH
+of a built area:
+.BR create_mu2e_ots_snapshot.sh ,
+.BR reset_mu2e_ots_snapshot.sh ,
+.B create_mu2e_ops_snapshot.sh
+and
+.BR reset_mu2e_ops_snapshot.sh .
+.IP \(bu 2
+On the DAQ nodes, the shifter procedure runs the firmware scripts from
+.IR /home/mu2ehwdev .
+The
+.I program_all
+and
+.I program_flash_all
+scripts call
+.I /home/mu2ehwdev/program_one_FPGA_AL9.sh
+and
+.I /home/mu2ehwdev/program_flash_one_FPGA_AL9.sh
+by absolute path.
+This repository does not record whether those copies are symbolic links into
+a checkout or independent copies.
+.PP
+The
+.B _AL9
+scripts are the AlmaLinux 9 generation.
+The unsuffixed
+.I *.sh
+variants with the same names are the earlier SL7-era versions.
+They
+.B source
+.I reset_PCIe.sh
+into the caller's shell instead of running
+.B sudo reset_PCIe_AL9.sh
+as a child.
+.SS FPGA programming and PCIe reset (AL9, current)
+.TP
+.BR program_all_FPGA_AL9.sh (1)
+Load one
+.I .bit
+into every JTAG-attached FPGA, then
+.B sudo reset_PCIe_AL9.sh
+by default.
+.TP
+.BR program_flash_all_FPGA_AL9.sh (1)
+Erase, write and verify one
+.I .mcs
+in every FPGA's BPI flash, boot from it, then reset PCIe.
+.TP
+.BR boot_from_flash_all_DTCs_AL9.sh (1)
+Make every JTAG-attached FPGA reload its flash image, then reset PCIe.
+.TP
+.BR reset_PCIe_AL9.sh (1)
+Kill device users, unload
+.BR mu2e ,
+remove and rescan the Xilinx 7042/7043 devices, reload, and print register
+0x9004.
+.TP
+.B reset_PCIe_AL9_sudowrapper.sh
+Three lines: runs
+.B sudo
+on the
+.I ~mu2ehwdev/ots_spack/srcs/otsdaq\-mu2e/tools
+copy of
+.IR reset_PCIe_AL9.sh .
+It is meant to be installed as
+.IR ~mu2ehwdev/reset_PCIe_AL9.sh .
+.TP
+.B program_one_FPGA_AL9.sh
+.RB [ NORESET ]
+.I N bitfile
+\(em program JTAG target
+.IR N .
+Takes
+.IR /tmp/mu2e.lock ,
+works in
+.IR /home/mu2ehwdev ,
+and logs to
+.IR .Xil/vivado_user_log.txt .
+.TP
+.B program_flash_one_FPGA_AL9.sh
+.I N mcsfile
+.RI [ flashpart ]
+\(em write flash on target
+.I N
+(default part
+.BR mt28gu01gaax1e\-bpi\-x16 ).
+No lock and no
+.B #!
+line.
+.TP
+.B program_both_DTCs_AL9.sh
+.I bit0
+.RI [ bit1 ]
+\(em program targets 0 and 1, then
+.BR "sudo reset_PCIe_AL9.sh" .
+Takes the lock.
+.TP
+.B program_flash_both_DTCs_AL9.sh
+.I mcs
+.RI [ part0 " [" part1 ]]
+or
+.I mcs0 part0 mcs1 part1
+\(em write the flash of targets 0 and 1.
+No reset.
+.TP
+.B boot_from_flash_both_DTCs_AL9.sh
+Boot targets 0 and 1 from flash, then
+.BR "sudo reset_PCIe_AL9.sh" .
+Takes the lock.
+If the lock is held, it sends SIGTERM to any running mu2edaq-operations
+.I read_dtc_temps.sh
+and proceeds once that has gone.
+.TP
+.B reset_both_JAs_AL9.sh
+Run
+.I /home/mu2eshift/JA_ots_setup.sh
+as
+.B mu2eshift
+on this host over
+.BR ssh ,
+to set up both jitter attenuators.
+.TP
+.B setup_vivado_lab_AL9.sh
+Source Vivado Lab 2021.2.
+Kills every
+.BR vivado_lab ,
+.B java
+and
+.B hw_server
+process the user may signal, deletes
+.I ~/.Xilinx
+and
+.IR /tmp/.Xilinx ,
+then runs
+.I clear_vivado_lab.tcl
+twice.
+.TP
+.B find_JTAG_usb_AL9.sh
+List the USB JTAG adapters by vendor:product, and print the sysfs
+unbind/bind commands that reset one.
+.SS FPGA programming and PCIe reset (legacy, SL7 era)
+.TP
+.B program_one_FPGA.sh
+.I N bitfile
+\(em program target
+.IR N ,
+then
+.B source reset_PCIe.sh .
+.TP
+.B program_both_DTCs.sh
+.I bit0
+.RI [ bit1 ]
+\(em program targets 0 and 1, then
+.B source reset_PCIe.sh .
+.TP
+.B program_flash_one_FPGA.sh
+.I N mcs
+.RI [ part ]
+\(em write flash on target
+.IR N ,
+then
+.B source reset_PCIe.sh .
+.TP
+.B program_flash_both_DTCs.sh
+Write flash on targets 0 and 1, then
+.B source reset_PCIe.sh .
+.TP
+.B boot_from_flash_both_DTCs.sh
+Boot targets 0 and 1 from flash, then
+.B source reset_PCIe.sh .
+.TP
+.B erase_flash_both_DTCs.sh
+.RI [ part0 " [" part1 ]]
+\(em erase the configuration flash of targets 0 and 1, then
+.B source reset_PCIe.sh .
+.TP
+.B reset_PCIe.sh
+SL7 predecessor of
+.IR reset_PCIe_AL9.sh .
+It sends one
+.B kill
+(SIGTERM) to device holders and
+.B killall \-9 xdaq.exe ,
+makes one
+.B rmmod
+attempt (exit 1 on failure), then removes, rescans and reloads.
+It sources
+.IR /root/setup_pcie.sh .
+.SS Vivado Tcl (run by the scripts above with vivado_lab \-mode batch)
+.TP
+.B program_one_FPGA.tcl
+Program device 0 of target
+.I argv[0]
+with
+.IR argv[1] .
+.TP
+.B program_both_DTCs.tcl
+Program device 0 of targets 0 and 1.
+.TP
+.B program_flash_one_FPGA.tcl
+Create the cfgmem object for part
+.IR argv[2] ,
+erase, program and verify the flash with
+.IR argv[1] ,
+then
+.BR boot_hw_device .
+.TP
+.B program_flash_both_DTCs.tcl
+The same for targets 0 and 1.
+.TP
+.B erase_flash_both_DTCs.tcl
+Erase the configuration flash of targets 0 and 1.
+.TP
+.B boot_from_flash_one_DTC.tcl
+.B boot_hw_device
+on device 0 of target
+.IR argv[0] .
+.TP
+.B boot_from_flash_both_DTCs.tcl
+.B boot_hw_device
+on targets 0 and 1.
+.TP
+.B clear_vivado_lab.tcl
+Open and close the hardware server and target twice, to clear a stuck
+session.
+.SS Firmware and source checks
+.TP
+.BR check_firmware_version.sh (1)
+Compare register 0x9004 of devices 0 and 1 with an expected value.
+Exit 0 on mismatch.
+.TP
+.BR check_status.sh (1)
+.BR "git fetch" / status / "remote \-v"
+over eleven MRB-era underscore-named source directories.
+This is not a hardware check.
+.SS Installation and bootstrap
+.TP
+.B install_ots_ops.sh
+.I target_dir
+\(em create an operations workspace.
+It clones
+.IR otsdaq\-mu2e\-config ,
+links
+.IR setup_ots.sh ,
+copies
+.I db_setup_ots.sh
+and
+.I mongodb_setup.sh
+from
+.IR ~/.secrets ,
+downloads
+.I mu2e\-quick\-spack\-start_v0.28.sh
+from the
+.B develop
+branch on GitHub and runs it, then runs
+.B UpdateOTS.sh \-\-tables
+for eight subsystems.
+.TP
+.B mu2e\-quick\-spack\-start.sh
+Symbolic link to
+.IR mu2e\-quick\-spack\-start_v0.28.sh .
+.TP
+.B mu2e\-quick\-spack\-start_v0.28.sh
+Spack bootstrap of the Mu2e TDAQ software stack into an empty directory.
+It uses
+.I /mu2e/spack_v0.28
+and cvmfs upstreams.
+Open issue #245 covers its fetch of a file that no longer exists.
+.TP
+.B mu2e\-quick\-spack\-start_v1.1.sh
+The same against the Spack v1.1 upstreams.
+It has no
+.B \-\-no\-emacs
+option.
+.TP
+.B quick\-mrb\-start.sh
+MRB/UPS-era download of
+.I otsdaq_demo
+(Eric Flumerfelt, 2016).
+.TP
+.B quick_mu2e_ots_install.sh
+MRB-era installer, sourced as root.
+It installs packages with
+.B yum
+and fetches from
+.I otsdaq.fnal.gov
+and cdcvs Redmine URLs.
+.TP
+.B quick_mu2e_trigger_ots_install.sh
+The same for the trigger area.
+.TP
+.B build\-mu2e_tdaq.sh
+CI-style build of the bundle, driven by
+.BR WORKSPACE ,
+.BR QUAL ,
+.B BUILDTYPE
+and
+.BR COPYBACK_DEPS .
+.TP
+.B mu2e_tdaq_software\-cfg\-1.00.00
+UPS
+.B buildFW
+bundle configuration, pinning otsdaq 2.06.11, mu2e_pcie_utils v2_08_05 and
+otsdaq_mu2e v1_03_02, among others.
+.SS Configuration snapshots
+These are the four scripts placed on the
+.BR PATH .
+Each takes
+.BI \-\-name " snapshot"
+and requires that the user is in the
+.B mu2eshift
+k5login.
+.TP
+.B create_mu2e_ots_snapshot.sh
+Zip a
+.I Data
+and a
+.I databases
+area (given by
+.BR \-\-data ,
+.BR \-\-database )
+and copy them with
+.B scp
+to
+.I /mu2e/DataFiles/UserSnapshots/
+as
+.BR mu2eshift .
+.TP
+.B create_mu2e_ops_snapshot.sh
+The same for the operations area (all Data and databases folders).
+.TP
+.B reset_mu2e_ots_snapshot.sh
+Replace the local configuration with a named snapshot.
+It downloads
+.I get_mu2e_snapshot_data.sh
+and
+.I get_mu2e_snapshot_database.sh
+from the
+.B develop
+branch on GitHub
+.RB ( "wget \-\-no\-check\-certificate" )
+and runs them.
+.B \-\-list
+runs
+.B ls
+on
+.I /mu2e/DataFiles/UserSnapshots/
+through
+.BR mu2eshift@mu2egateway01 .
+.TP
+.B reset_mu2e_ops_snapshot.sh
+The same for the operations area.
+.TP
+.B get_mu2e_snapshot_data.sh
+Fetch and unpack
+.IR snapshot_ NAME _Data.zip
+into
+.BR $USER_DATA .
+It deletes
+.IR Logs ,
+.IR ARTDAQConfigurations ,
+.I TriggerConfigurations
+and
+.I OutputData
+there.
+.TP
+.B get_mu2e_snapshot_database.sh
+Fetch and unpack
+.I snapshot_ NAME _database.zip
+into the filesystem database named by
+.BR ARTDAQ_DATABASE_URI ,
+keeping a
+.I .bak
+of the previous one.
+.SS Logbook
+.TP
+.B post_to_ecl.sh
+.I title message
+\(em run
+.I /home/mu2eshift/ecl_post.sh
+as
+.B mu2eshift
+on this host over
+.BR ssh .
+.SS Test-stand and demo utilities
+.TP
+.B start_collection.sh
+.B ssh
+to mu2edaq05, 06, 14, 17 and 16 (hard-coded) and run
+.I ~/test_stand/ots/collect.sh
+on each in parallel.
+.TP
+.B collect.sh
+For 16 minutes, sample DTC register 0x93C8 (cleared first) once a second
+into
+.IR ~/otsdaq_ HOST _lock.txt .
+.TP
+.B generate_plotscript.sh
+Write a gnuplot script,
+.IR script.p ,
+that plots the
+.I collect.sh
+files for the 10-DTC chain.
+.TP
+.B distributed_setup_ots.sh
+.I subsystem
+\(em source
+.IB /home/ base /ots/setup_ots.sh
+for
+.BR hwdev ,
+.B sync
+or
+.BR stm .
+.TP
+.B sync_demo_ots.sh
+Start ots for the sync demo.
+On mu2edaq06 it also starts it on mu2edaq04 and mu2edaq05 over
+.BR ssh .
+.SS Configuration fragments
+.TP
+.B MacroMakerModeFhiclDump_edit.fcl
+Example MacroMaker-mode FHiCL for two DTCs with hardware-emulated ROCs:
+.B DTCFrontEndInterface
+with
+.BR ROCDTCHardwareEmulated .
+.PP
+The legacy, MRB-era and test-stand files carry 2016\(en2023 hostnames and
+paths.
+They are listed here for completeness and are not part of the current
+shifter procedure.
+.SH FILES
+.TP
+.I /tmp/mu2e.lock
+PID symbolic-link lock, shared by the
+.B _AL9
+programming and reset scripts and by mu2edaq-operations
+.IR read_dtc_temps.sh .
+.TP
+.I /home/xilinx/Vivado_Lab/2021.2/settings64.sh
+Vivado Lab environment sourced by every FPGA script.
+.TP
+.I /home/mu2ehwdev/.Xil/vivado_user_log.txt
+Audit line per FPGA load or flash write.
+.SH SEE ALSO
+.BR program_all_FPGA_AL9.sh (1),
+.BR reset_PCIe_AL9.sh (1),
+.BR program_flash_all_FPGA_AL9.sh (1),
+.BR boot_from_flash_all_DTCs_AL9.sh (1),
+.BR check_firmware_version.sh (1),
+.BR check_status.sh (1)
+.PP
+.I otsdaq\-mu2e/doc/INTERFACES.md
+covers the plugins and the run-control interfaces.
+.SH AUTHOR
+Written for the September 2026 DAQ mega-review from the files at
+.I otsdaq-mu2e
+commit 828cfe24.
+The scripts are by the Mu2e TDAQ group, chiefly Ryan Rivera.

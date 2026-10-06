@@ -1,0 +1,253 @@
+.TH RESET_PCIE_AL9.SH 1 "2026-10-06" "otsdaq-mu2e 11.03.00" "Mu2e DAQ Manual"
+.SH NAME
+reset_PCIe_AL9.sh \- unload the mu2e driver, remove and rescan the DTC/CFO
+PCIe devices, reload the driver and print their firmware versions
+.SH SYNOPSIS
+.B sudo reset_PCIe_AL9.sh
+.RB [ NOKILL ]
+.SH DESCRIPTION
+.B reset_PCIe_AL9.sh
+brings a reprogrammed DTC, CFO or RTF board back onto the PCIe bus.
+It must run as root, but it does not check that it does.
+There is no confirmation prompt and no dry-run mode.
+The steps are:
+.IP 1. 4
+.B Sweep.
+It sends
+.B kill \-9
+to every process whose
+.B ps aux
+line contains
+.BR reset_PCIe .
+Two kinds of line are spared: a line that contains this process's PID
+anywhere as a substring, and a line that contains the word
+.BR sudo .
+See
+.BR BUGS .
+.IP 2. 4
+.B Lock.
+It creates
+.I /tmp/mu2e.lock
+as a symbolic link to its PID.
+If a live process holds the lock, the script waits 2 s between checks, up to
+31 times, and then exits 1.
+There is one exception: if the holder is the only running
+.IR program_*AL9.sh
+or
+.IR boot_from_flash*AL9.sh
+other than
+.IR program_all_FPGA_AL9.sh ,
+the script treats the holder as its caller and proceeds while the caller
+holds the lock.
+A stale lock is removed once.
+The lock is removed on exit.
+.IP 3. 4
+.B Unload.
+This step runs only if
+.B lspci
+lists a device matching
+.B Xilinx.*704[23]
+(device ID 7042 or 7043).
+If none matches, it prints "No ... cards found" and goes to step 4.
+.RS 4
+.IP a. 3
+Unless
+.B NOKILL
+is given, it sends
+.B kill \-9
+to every process holding
+.I /dev/mu2e*
+(per
+.BR lsof ),
+up to 8 rounds 3 s apart.
+It then runs
+.B killall \-9 xdaq.exe
+and
+.BR "killall \-9 boardreader" .
+These kill every such process on the node, for every user and every
+partition, whether or not it uses the card.
+.IP b. 3
+It waits 3 s and runs
+.BR "rmmod mu2e" .
+If
+.B lsmod
+still lists
+.BR mu2e ,
+it repeats a and b with no limit.
+See
+.BR BUGS .
+.IP c. 3
+It writes
+.B 1
+to
+.IR /sys/bus/pci/devices/0000: BDF /remove
+for each matching device.
+.RE
+.IP 4. 4
+.B Rescan.
+It writes
+.B 1
+to
+.I /sys/bus/pci/rescan
+and runs
+.BR "modprobe mu2e" .
+.IP 5. 4
+.B Report.
+It changes to
+.IR /root ,
+sources
+.I ./setup_pcie_AL9.sh
+(which is not in this repository), and prints
+.B my_cntl \-d 0 read 0x9004
+and
+.B my_cntl \-d 1 read 0x9004
+(the firmware version register of devices 0 and 1).
+.PP
+.BR program_all_FPGA_AL9.sh (1),
+.BR program_flash_all_FPGA_AL9.sh (1)
+and
+.BR boot_from_flash_all_DTCs_AL9.sh (1)
+call this script through
+.B sudo
+unless they are given
+.BR NORESET .
+.SH OPTIONS
+.TP
+.B NOKILL
+Skips step 3a only: the device-holder kills and the two
+.B killall
+calls.
+It does not skip the sweep in step 1, the module unload, the device removal
+or the rescan.
+.B rmmod mu2e
+fails while any process holds
+.IR /dev/mu2e* .
+With
+.BR NOKILL ,
+the reset therefore completes only when nothing has the device open, and is
+then the same as a reset without the flag.
+If anything does hold the device, the script loops forever.
+Check first with
+.BR "lsof /dev/mu2e*" .
+.PP
+The shifter procedure says of this flag: "It skips killing running processes
+before resetting the PCIe cards".
+That is accurate.
+The procedure's advice to pass it "when others may be using the system"
+describes exactly the case in which the reset cannot finish.
+.SH FILES
+.TP
+.I /tmp/mu2e.lock
+Symbolic link to the holder's PID.
+It is shared with
+.IR program_one_FPGA_AL9.sh ,
+.IR program_both_DTCs_AL9.sh ,
+.I boot_from_flash_both_DTCs_AL9.sh
+and mu2edaq-operations
+.IR read_dtc_temps.sh .
+.TP
+.I /dev/mu2e*
+Character devices of the
+.B mu2e
+driver (mu2e-pcie-utils).
+.TP
+.IR /sys/bus/pci/devices/0000: BDF /remove ", " /sys/bus/pci/rescan
+Written in steps 3c and 4.
+.TP
+.I /root/setup_pcie_AL9.sh
+Puts
+.B my_cntl
+on the
+.BR PATH .
+It is node-local and not version-controlled here.
+.TP
+.I reset_PCIe_AL9_sudowrapper.sh
+A three-line wrapper in this directory.
+Its comment says to install it as
+.IR ~mu2ehwdev/reset_PCIe_AL9.sh .
+It runs:
+.EX
+sudo /home/mu2ehwdev/ots_spack/srcs/otsdaq\-mu2e/tools/reset_PCIe_AL9.sh "$@"
+.EE
+.SH EXIT STATUS
+.TP
+.B 1
+The lock could not be acquired.
+.TP
+.B 0
+Every other case, including no matching card, a failed
+.BR modprobe ,
+and
+.B my_cntl
+errors.
+The "mu2e kernel module failed to unload" exit is unreachable in practice,
+because the loop in step 3b ends only when the module is gone.
+.SH EXAMPLES
+CFO, Tracker, CRV and STM nodes, from the shifter procedure:
+.PP
+.EX
+sudo /home/mu2ehwdev/reset_PCIe_AL9.sh NOKILL
+.EE
+.PP
+Before relying on
+.BR NOKILL ,
+see whether anything holds the device:
+.PP
+.EX
+lsof /dev/mu2e*
+.EE
+.PP
+Calorimeter nodes, as root over ssh, in parallel:
+.PP
+.EX
+for node in calo\-{01..12} calo\-14; do
+    ssh root@mu2e\-$node bash /home/mu2ehwdev/reset_PCIe_AL9.sh &
+done; wait
+.EE
+.SH BUGS
+The unload loop never ends if the module cannot be removed.
+.B TRIES=3
+is tested with
+.BR "expr $TRIES \- 1" ,
+but nothing decrements it.
+Three cases trigger this:
+.B NOKILL
+while a process holds the device; running without root; and a holder that
+survives
+.BR "kill \-9" ,
+for example one in uninterruptible sleep.
+The loop prints every 3 s and keeps
+.I /tmp/mu2e.lock
+held.
+Interrupt it with Ctrl-C.
+.PP
+The sweep in step 1 matches its own sudo wrapper.
+Suppose
+.I ~mu2ehwdev/reset_PCIe_AL9.sh
+is the wrapper, as the wrapper's comment instructs.
+Then the wrapper's
+.B bash
+process is killed by the real script.
+The outer
+.B sudo
+returns status 137, and the prompt comes back while the reset continues in
+the background.
+A second invocation started at that point kills the first.
+The PID exclusion is also a substring match, so an unrelated PID that
+contains this PID's digits is spared.
+.SH SEE ALSO
+.BR program_all_FPGA_AL9.sh (1),
+.BR program_flash_all_FPGA_AL9.sh (1),
+.BR boot_from_flash_all_DTCs_AL9.sh (1),
+.BR check_firmware_version.sh (1),
+.BR otsdaq-mu2e-tools (7),
+.BR lsof (8),
+.BR rmmod (8),
+.BR modprobe (8)
+.SH AUTHOR
+Ryan Rivera and the Mu2e TDAQ group (from the git history of
+.IR otsdaq-mu2e/tools ).
+This page was written for the September 2026 DAQ mega-review from the script
+source at
+.I otsdaq-mu2e
+commit 828cfe24.
