@@ -96,9 +96,9 @@ bool evbHasRetransmission(DTCLib::DTC* dtc)
 {
 	if(!dtc)
 		return false;
-	constexpr uint32_t sixRocFlag             = 0x80u;
+	constexpr uint32_t sixRocFlag               = 0x80u;
 	constexpr uint32_t firstRetransmissionBuild = 0xd6100291u;
-	uint32_t           designDate             = 0;
+	uint32_t           designDate               = 0;
 	dtc->GetDevice()->read_register(0x9004, 100, &designDate);
 	return (designDate & ~sixRocFlag) >= (firstRetransmissionBuild & ~sixRocFlag);
 }
@@ -111,15 +111,15 @@ uint32_t evbRecoveredLossMask(DTCLib::DTC* dtc)
 // 0x9174 (one read; the two halves count on different clocks, so a read on a busy link can
 // be off by one -- quiet-run values are exact) and the RX_ACKPOS row of every peer.
 // peersRequestingResend = peers whose last header still asked us to resend.
-std::string formatEVBRetransmission(DTCLib::DTC* dtc,
+std::string formatEVBRetransmission(DTCLib::DTC*       dtc,
                                     const std::string& indent,
                                     unsigned&          peersRequestingResend)
 {
 	std::ostringstream o;
 	peersRequestingResend = 0;
 	uint32_t  resendCount = 0;
-	const int readError =
-	    dtc->GetDevice()->read_register(DTCLib::DTC_Register_EVBResendCount, 100, &resendCount);
+	const int readError   = dtc->GetDevice()->read_register(
+        DTCLib::DTC_Register_EVBResendCount, 100, &resendCount);
 	if(readError != 0)
 		o << indent << "0x9174 read error " << readError << "\n";
 	else
@@ -129,8 +129,9 @@ std::string formatEVBRetransmission(DTCLib::DTC* dtc,
 		  << dtc->ReadEVBResendsServed(resendCount) << "\n";
 
 	const uint8_t startNode = dtc->ReadEVBStartNode();
-	const uint8_t numNodes  = std::min<uint8_t>(dtc->ReadEVBNumberOfDestinationNodes(), 32);
-	const int     selfSlot  = static_cast<int>(dtc->ReadEVBLocalMACAddress()) - startNode;
+	const uint8_t numNodes =
+	    std::min<uint8_t>(dtc->ReadEVBNumberOfDestinationNodes(), 32);
+	const int selfSlot = static_cast<int>(dtc->ReadEVBLocalMACAddress()) - startNode;
 	o << indent << "Peer feedback on our stream (RX_ACKPOS row 0xA, snapshot):\n";
 	for(uint8_t slot = 0; slot < numNodes; ++slot)
 	{
@@ -7308,13 +7309,13 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	{
 		// 0x9104: the firmware cuts chunks and records at the DMA maximum, so the cap decides
 		// when a subevent is split and what the largest FAFA chunk can be (hw agent 2026-10-05)
-		const uint16_t dmaMaxBytes = dtc->ReadTriggerDMATransferLength();
-		const uint16_t dmaMinBytes = dtc->ReadMinDMATransferLength();
+		const uint16_t dmaMaxBytes   = dtc->ReadTriggerDMATransferLength();
+		const uint16_t dmaMinBytes   = dtc->ReadMinDMATransferLength();
 		const int      chunkCapWords = static_cast<int>(dmaMaxBytes / 8) - 2;
-		o << "  DMA size (0x9104):  max 0x" << std::hex << dmaMaxBytes << std::dec << " (" << dmaMaxBytes
-		  << " B), min 0x" << std::hex << dmaMinBytes << std::dec << " (" << dmaMinBytes
-		  << " B) => chunk cap " << chunkCapWords << " words, record cap " << (dmaMaxBytes - 8)
-		  << " B\n";
+		o << "  DMA size (0x9104):  max 0x" << std::hex << dmaMaxBytes << std::dec << " ("
+		  << dmaMaxBytes << " B), min 0x" << std::hex << dmaMinBytes << std::dec << " ("
+		  << dmaMinBytes << " B) => chunk cap " << chunkCapWords << " words, record cap "
+		  << (dmaMaxBytes - 8) << " B\n";
 	}
 	{
 		// Rate arithmetic: an idle frame = (4 + words) beats + gap beats at 156.25 MHz.
@@ -7356,8 +7357,10 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	{
 		unsigned peersRequestingResend = 0;
 		o << formatEVBRetransmission(dtc, "  ", peersRequestingResend);
-		o << "  Served on a DTC should equal requested on the DTCs it sends to. Bit 1 with\n"
-		     "  bit 27 clear and no resend_req pending = frames lost and all recovered.\n";
+		o << "  Served on a DTC should equal requested on the DTCs it sends to. Bit 1 "
+		     "with\n"
+		     "  bit 27 clear and no resend_req pending = frames lost and all "
+		     "recovered.\n";
 	}
 	else
 		o << "  Not in this bitfile (retransmission starts with 0xd6100291).\n";
@@ -9611,11 +9614,12 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			    << "INVALID: sticky errors observed during this test: 0x" << std::hex
 			    << threadStruct->evbStickyErrorsSeen_.load() << std::dec << __E__;
 		else if(resendStillPending)
-			kv("HW EVB run validity")
-			    << "INVALID: a resend is still pending after the test stopped (bit 27 or a "
-			       "peer's resend_req set); if traffic was still flowing, re-check with EVB "
-			       "Status once quiet"
-			    << __E__;
+			kv("HW EVB run validity") << "INVALID: a resend is still pending after the "
+			                             "test stopped (bit 27 or a "
+			                             "peer's resend_req set); if traffic was still "
+			                             "flowing, re-check with EVB "
+			                             "Status once quiet"
+			                          << __E__;
 		else if(threadStruct->evbStatusReadFailed_)
 			kv("HW EVB run validity")
 			    << "UNKNOWN: a hardware status check failed" << __E__;
@@ -10641,9 +10645,10 @@ try
 				const uint64_t now = threadStruct->subeventsCount_;
 				if(now / 1000 != lastCount / 1000 || (now == lastCount && ii % 2000 == 0))
 				{
-					__GEN_COUT__
-					    << "No more subevents found in DMA buffer... waiting... iteration #"
-					    << ii << ", SubEvents received so far = " << now << __E__;
+					__GEN_COUT__ << "No more subevents found in DMA buffer... waiting... "
+					                "iteration #"
+					             << ii << ", SubEvents received so far = " << now
+					             << __E__;
 					lastCount = now;
 				}
 			}
@@ -10717,9 +10722,10 @@ try
 				const uint64_t now = threadStruct->subeventsCount_;
 				if(now / 1000 != lastCount / 1000 || (now == lastCount && ii % 2000 == 0))
 				{
-					__GEN_COUT__
-					    << "No more subevents found in DMA buffer... waiting... iteration #"
-					    << ii << ", SubEvents received so far = " << now << __E__;
+					__GEN_COUT__ << "No more subevents found in DMA buffer... waiting... "
+					                "iteration #"
+					             << ii << ", SubEvents received so far = " << now
+					             << __E__;
 					lastCount = now;
 				}
 			}
