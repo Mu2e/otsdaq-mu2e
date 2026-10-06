@@ -88,6 +88,69 @@ uint32_t evbKnownDefectMask(DTCLib::DTC* dtc)
 	}
 }
 
+// Retransmission (link re-sends lost frames) is in the bitfile from 0xd6100291 (Oct-02 11:00,
+// first one on the bench).  On those builds bit 1 (RX_SEQ_GAP) alone is a recovered loss, not
+// a bad run; the run is bad only if a resend never lands (bit 27 or an RX_ACKPOS resend_req
+// still set after traffic stops).  0x9004 bit 7 is the 6-ROC flag, so compare without it.
+bool evbHasRetransmission(DTCLib::DTC* dtc)
+{
+	if(!dtc)
+		return false;
+	constexpr uint32_t sixRocFlag             = 0x80u;
+	constexpr uint32_t firstRetransmissionBuild = 0xd6100291u;
+	uint32_t           designDate             = 0;
+	dtc->GetDevice()->read_register(0x9004, 100, &designDate);
+	return (designDate & ~sixRocFlag) >= (firstRetransmissionBuild & ~sixRocFlag);
+}
+
+uint32_t evbRecoveredLossMask(DTCLib::DTC* dtc)
+{
+	return evbHasRetransmission(dtc) ? DTCLib::EVBRxSequenceGapBit : 0;
+}
+
+// 0x9174 (one read; the two halves count on different clocks, so a read on a busy link can
+// be off by one -- quiet-run values are exact) and the RX_ACKPOS row of every peer.
+// peersRequestingResend = peers whose last header still asked us to resend.
+std::string formatEVBRetransmission(DTCLib::DTC* dtc,
+                                    const std::string& indent,
+                                    unsigned&          peersRequestingResend)
+{
+	std::ostringstream o;
+	peersRequestingResend = 0;
+	uint32_t  resendCount = 0;
+	const int readError =
+	    dtc->GetDevice()->read_register(DTCLib::DTC_Register_EVBResendCount, 100, &resendCount);
+	if(readError != 0)
+		o << indent << "0x9174 read error " << readError << "\n";
+	else
+		o << indent << "Resends requested by this RX (0x9174[15:0]): "
+		  << dtc->ReadEVBResendsRequested(resendCount) << "\n"
+		  << indent << "Resends served by this TX (0x9174[31:16]):   "
+		  << dtc->ReadEVBResendsServed(resendCount) << "\n";
+
+	const uint8_t startNode = dtc->ReadEVBStartNode();
+	const uint8_t numNodes  = std::min<uint8_t>(dtc->ReadEVBNumberOfDestinationNodes(), 32);
+	const int     selfSlot  = static_cast<int>(dtc->ReadEVBLocalMACAddress()) - startNode;
+	o << indent << "Peer feedback on our stream (RX_ACKPOS row 0xA, snapshot):\n";
+	for(uint8_t slot = 0; slot < numNodes; ++slot)
+	{
+		if(slot == selfSlot)
+			continue;
+		const auto ackPosition = DTCLib::DecodeEVBAckPosition(
+		    dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType_RxAckPosition, slot));
+		if(ackPosition.resendRequested)
+			++peersRequestingResend;
+		o << indent << "  from #" << static_cast<int>(startNode + slot)
+		  << ": resend_req=" << ackPosition.resendRequested << "  last_seq_seen=0x"
+		  << std::hex << std::setw(2) << std::setfill('0')
+		  << static_cast<int>(ackPosition.lastSequenceSeen) << std::dec
+		  << std::setfill(' ') << "  ack_pos=" << ackPosition.ackPosition
+		  << (ackPosition.resendRequested ? "  <- peer still waiting for a resend" : "")
+		  << "\n";
+	}
+	return o.str();
+}
+
 std::string requireEVBBufferTestReady(DTCLib::DTC* dtc, uint32_t operatorIgnoreMask = 0)
 {
 	// SoftReset drops bit 25 (DDR calibration done) for ~1 s through the reset chain;
@@ -6279,6 +6342,14 @@ void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 		if(evbFlags != 0)
 			for(const auto& line : DTCLib::DecodeEVBErrorStatus(evbFlags))
 				output << "    " << line << "\n";
+		if(evbHasRetransmission(rawDTC))
+		{
+			uint32_t resendCount = readReg(
+			    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_EVBResendCount));
+			output << "  EVB resends (0x9174): requested "
+			       << rawDTC->ReadEVBResendsRequested(resendCount) << ", served "
+			       << rawDTC->ReadEVBResendsServed(resendCount) << "\n";
+		}
 
 		uint32_t vfifoSerdes = readReg(
 		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_InputBufferErrorFlags));
@@ -7235,6 +7306,17 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	o << "  Idle Packet Words:  " << idleWords << " (8-byte words, 0x915C[31:16])\n";
 	o << "  Idle Burst:         " << idleBurst << " per dest window (0x9170[15:0])\n";
 	{
+		// 0x9104: the firmware cuts chunks and records at the DMA maximum, so the cap decides
+		// when a subevent is split and what the largest FAFA chunk can be (hw agent 2026-10-05)
+		const uint16_t dmaMaxBytes = dtc->ReadTriggerDMATransferLength();
+		const uint16_t dmaMinBytes = dtc->ReadMinDMATransferLength();
+		const int      chunkCapWords = static_cast<int>(dmaMaxBytes / 8) - 2;
+		o << "  DMA size (0x9104):  max 0x" << std::hex << dmaMaxBytes << std::dec << " (" << dmaMaxBytes
+		  << " B), min 0x" << std::hex << dmaMinBytes << std::dec << " (" << dmaMinBytes
+		  << " B) => chunk cap " << chunkCapWords << " words, record cap " << (dmaMaxBytes - 8)
+		  << " B\n";
+	}
+	{
 		// Rate arithmetic: an idle frame = (4 + words) beats + gap beats at 156.25 MHz.
 		const int    beatsPerIdle = 4 + idleWords + ipg;
 		const double maxPps       = 156.25e6 / beatsPerIdle;
@@ -7267,6 +7349,18 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		o << "  *** Bit 7 set: bit 1 and the Rx-type BRAM rows/rates on this DTC are "
 		     "unreliable "
 		     "(RX bookkeeping collision). Use word-count parity for loss. ***\n";
+	o << "\n";
+
+	o << "=== EVB Retransmission (0x9174 SoftReset clear, 16-bit wrap) ===\n";
+	if(evbHasRetransmission(dtc))
+	{
+		unsigned peersRequestingResend = 0;
+		o << formatEVBRetransmission(dtc, "  ", peersRequestingResend);
+		o << "  Served on a DTC should equal requested on the DTCs it sends to. Bit 1 with\n"
+		     "  bit 27 clear and no resend_req pending = frames lost and all recovered.\n";
+	}
+	else
+		o << "  Not in this bitfile (retransmission starts with 0xd6100291).\n";
 	o << "\n";
 
 	o << "=== EVB Pipeline Counters ===\n";
@@ -9335,6 +9429,11 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 		    << (threadStruct->thisDTC_ ? threadStruct->thisDTC_->GetEVBFramingErrors()
 		                               : 0)
 		    << __E__;
+		kv("EVB Split Subevents Joined (DTC cumulative)")
+		    << (threadStruct->thisDTC_
+		            ? threadStruct->thisDTC_->GetEVBSplitSubeventsJoined()
+		            : 0)
+		    << __E__;
 		const bool mergingStatus =
 		    threadStruct->mergeMode_ != DetachedMergeMode::Off && threadStruct->otherDTC_;
 		if(threadStruct->thisDTC_)
@@ -9442,6 +9541,7 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			statusSs << "HW EVB Counters: read error: " << e.what() << __E__;
 		}
 
+		bool resendStillPending = false;
 		try
 		{
 			const uint32_t evbErr = readEVBBufferTestStatus(threadStruct->thisDTC_);
@@ -9458,6 +9558,15 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			                threadStruct->evbNumDestNodes_ > 1,
 			                false /* keep GUI descriptions plain-language */,
 			                threadStruct->evbStickyIgnoreMask_);
+			if(evbHasRetransmission(threadStruct->thisDTC_))
+			{
+				unsigned peersRequestingResend = 0;
+				statusSs << "HW EVB Retransmission..." << __E__
+				         << formatEVBRetransmission(
+				                threadStruct->thisDTC_, "\t ", peersRequestingResend);
+				resendStillPending = !threadStruct->running_ &&
+				                     (check.resendActive || peersRequestingResend > 0);
+			}
 		}
 		catch(const std::exception& e)
 		{
@@ -9477,7 +9586,8 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 				                threadStruct->evbTrafficStarted_,
 				                threadStruct->evbNumDestNodesOther_ > 1,
 				                false /* keep GUI descriptions plain-language */,
-				                evbKnownDefectMask(threadStruct->otherDTC_));
+				                evbKnownDefectMask(threadStruct->otherDTC_) |
+				                    evbRecoveredLossMask(threadStruct->otherDTC_));
 			}
 			catch(const std::exception& e)
 			{
@@ -9500,6 +9610,12 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			kv("HW EVB run validity")
 			    << "INVALID: sticky errors observed during this test: 0x" << std::hex
 			    << threadStruct->evbStickyErrorsSeen_.load() << std::dec << __E__;
+		else if(resendStillPending)
+			kv("HW EVB run validity")
+			    << "INVALID: a resend is still pending after the test stopped (bit 27 or a "
+			       "peer's resend_req set); if traffic was still flowing, re-check with EVB "
+			       "Status once quiet"
+			    << __E__;
 		else if(threadStruct->evbStatusReadFailed_)
 			kv("HW EVB run validity")
 			    << "UNKNOWN: a hardware status check failed" << __E__;
@@ -9513,7 +9629,8 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 		         << __E__;
 
 		if(threadStruct->error_ != "" || threadStruct->evbFramingErrors_ > 0 ||
-		   threadStruct->evbStickyErrorsSeen_ || threadStruct->evbStatusReadFailed_)
+		   threadStruct->evbStickyErrorsSeen_ || threadStruct->evbStatusReadFailed_ ||
+		   resendStillPending)
 		{
 			__SS__ << "Error identified in the detached buffer EVB status";
 			if(threadStruct->evbFramingErrors_ > 0)
@@ -9997,6 +10114,7 @@ try
 	// run validity only, still shown in every report.
 	threadStruct->evbStickyIgnoreMask_ =
 	    evbKnownDefectMask(threadStruct->thisDTC_) |
+	    evbRecoveredLossMask(threadStruct->thisDTC_) |
 	    (threadStruct->evbOperatorIgnoreMask_ & DTCLib::EVBDefinedErrorMask);
 
 	//------------------------
@@ -10437,13 +10555,18 @@ try
 
 			}  //end primary event retrieval loop
 			//if here, no more data in DMA buffer
-			if(lastCount != threadStruct->eventsCount_ || ii % 100 == 0)
+			// Large events drain one per DMA buffer, so "on any change" printed one line per
+			// event (200k lines in a 6x1000 run).  Print when the count crosses a 1000
+			// boundary, or every 2000 idle polls with no change.
 			{
-				__GEN_COUT__
-				    << "No more events found in DMA buffer... waiting... iteration #"
-				    << ii << ", Events received so far = " << threadStruct->eventsCount_
-				    << __E__;
-				lastCount = threadStruct->eventsCount_;
+				const uint64_t now = threadStruct->eventsCount_;
+				if(now / 1000 != lastCount / 1000 || (now == lastCount && ii % 2000 == 0))
+				{
+					__GEN_COUT__
+					    << "No more events found in DMA buffer... waiting... iteration #"
+					    << ii << ", Events received so far = " << now << __E__;
+					lastCount = now;
+				}
 			}
 		}
 		else if(0)  //Treat as Subevent
@@ -10514,14 +10637,15 @@ try
 				//threadStruct->thisDTC_->ReleaseBuffers(DTC_DMA_Engine_DAQ,subevents.size()); // This currently does not exist, but it would be most efficient to release here
 			}  //end primary Sub Event loop
 			//if here, no more data in DMA buffer
-			if(lastCount != threadStruct->subeventsCount_ || ii % 2000 == 0)
 			{
-				__GEN_COUT__
-				    << "No more subevents found in DMA buffer... waiting... iteration #"
-				    << ii
-				    << ", SubEvents received so far = " << threadStruct->subeventsCount_
-				    << __E__;
-				lastCount = threadStruct->subeventsCount_;
+				const uint64_t now = threadStruct->subeventsCount_;
+				if(now / 1000 != lastCount / 1000 || (now == lastCount && ii % 2000 == 0))
+				{
+					__GEN_COUT__
+					    << "No more subevents found in DMA buffer... waiting... iteration #"
+					    << ii << ", SubEvents received so far = " << now << __E__;
+					lastCount = now;
+				}
 			}
 		}     // end Sub Event handling
 		else  //extract Subevent as Events
@@ -10589,14 +10713,15 @@ try
 				handleMergedDetachedEvents(merged, threadStruct);
 
 			//if here, no more data in DMA buffer
-			if(lastCount != threadStruct->subeventsCount_ || ii % 2000 == 0)
 			{
-				__GEN_COUT__
-				    << "No more subevents found in DMA buffer... waiting... iteration #"
-				    << ii
-				    << ", SubEvents received so far = " << threadStruct->subeventsCount_
-				    << __E__;
-				lastCount = threadStruct->subeventsCount_;
+				const uint64_t now = threadStruct->subeventsCount_;
+				if(now / 1000 != lastCount / 1000 || (now == lastCount && ii % 2000 == 0))
+				{
+					__GEN_COUT__
+					    << "No more subevents found in DMA buffer... waiting... iteration #"
+					    << ii << ", SubEvents received so far = " << now << __E__;
+					lastCount = now;
+				}
 			}
 		}  // end Sub Event as Event handling
 

@@ -188,11 +188,14 @@ countdown pauses and resumes.
 
 ### Which AXIMux the EVB build uses
 
-EVB builds compile the PLAIN `AXIMuxFromRingsData.v`, never
-`AXIMuxFromRingsData_bundled.v` (Ryan, 2026-09-08). Both files declare
-`module AXIMuxFromRingsData` (instantiated by RingController), so the choice
-is made by which file is in the Vivado project, not by a parameter or define.
-Consequences for the HEB path:
+Since 2026-10-05 there is ONE ring mux file, `AXIMuxFromRingsData.v`, with two
+modes selected by its `BundleSubeventsIntoDMA` input = NOT 0x9114 bit 7
+(RingController wires it from `HardwareEventBuildingEnable`). Bit 7 = 1 is the
+per-subevent mode described below (what the plain file did before); bit 7 = 0
+is the bundled mode of the retired `AXIMuxFromRingsData_bundled.v` (the
+non-EVB build's DMA format, through EVB3's passthrough). History: until then
+EVB builds compiled the plain file and non-EVB builds the bundled one, both
+declaring the same module name. Consequences for the HEB path (bit 7 = 1):
 
 - The mux does no bundling of its own: one DMA transfer per record, closed by
   one extra tlast word that the count quadword does not declare (end of
@@ -202,10 +205,11 @@ Consequences for the HEB path:
 - The mux splits an aggregate above `DMA_max_packetcount` into several
   transfers ("need to do multiple DMAs"), each with its own count quadword.
   That is what bounds a record to `DMA_max_size - 8` bytes.
-- The Aldec sim elaborates the same plain file, so sim and HW agree on this
-  module in EVB mode.
-- Timing: the plain file's fsm-7 `total == max` compare is registered
-  (`total_DMA_at_max_r`, 2026-09-08), mirroring the `_bundled.v` fix.
+- The sim elaborates the same file with `HardwareEventBuildingEnable` = 1, so
+  sim and HW agree on this module in EVB mode.
+- Timing: the fsm-7 `total == max` compare and the fsm-0 ready gate are
+  registered (`total_DMA_at_max_r`, `all_ROCs_event_ready_r` and friends; the
+  fsm-0 exit lands one clock later than before 2026-10-05).
 
 ### Local filler drop
 
@@ -219,10 +223,10 @@ EVBERR_LOCAL_BAD_HEADER (0x9370 bit 6).
 
 ### DMA bundling and tlast
 
-Multiple chunks stack into one DMA transfer (scheme borrowed from
-`AXIMuxFromRingsData_bundled.v`: `bundled_has_data`, accumulated word count,
-200 µs timeout -- EVB builds do NOT compile that file, see "Which AXIMux the
-EVB build uses" above; the buffer manager is the only bundler). The DMA
+Multiple chunks stack into one DMA transfer (the same scheme as the ring
+mux's bundled mode: `bundled_has_data`, accumulated word count, 200 µs timeout
+-- with bit 7 = 1 the ring mux is in per-subevent mode, see "Which AXIMux the
+EVB build uses" above, so the buffer manager is the only bundler). The DMA
 engine requires tlast to close a transfer; the buffer manager emits one
 all-ones filler word flagged `data_out_chunk_last`, which the m_axis stage
 turns into `m_axis_tlast`, when a pending chunk no longer fits under
