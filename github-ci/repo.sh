@@ -37,7 +37,8 @@ packages_without_ci=(
   "TDAQFirmware"
   "mu2e-spack"
   "mu2e-tdaq-suite"
-  "daq-shifter-tools"
+  "mu2edaq-shifter-tools"
+  "mu2edaq-documentation"
 )
 
 packages=(
