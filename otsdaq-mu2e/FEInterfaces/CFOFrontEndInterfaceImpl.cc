@@ -4748,7 +4748,19 @@ void CFOFrontEndInterface::SharedRunPlanStatus(__ARGS__)
 	std::string       divider(55, '=');
 	divider += "\n";
 
-	result << "CFO Run Plan Status: " << __E__;
+	bool beamOnEnabled  = thisCFO_->ReadBeamOnMode();
+	bool beamOffEnabled = thisCFO_->ReadBeamOffMode();
+	bool isRunning      = beamOnEnabled || beamOffEnabled;
+
+	result << "CFO Shared Run Plan: " << (isRunning ? "RUNNING" : "OFF")
+	       << (beamOnEnabled ? " (Beam-On)" : "")
+	       << (beamOffEnabled ? " (Beam-Off)" : "") << __E__;
+
+	result << "Available chunk loop counts: {";
+	for(size_t i = 0; i < standardNValues_.size(); ++i)
+		result << (i ? ", " : "") << standardNValues_[i];
+	result << "}" << __E__;
+
 	result << "\n" << divider << thisCFO_->FormatRunPlanCurrentTag() << __E__;
 
 	uint64_t eventDurationInClocks = extractSharedRunPlanEventDuration();

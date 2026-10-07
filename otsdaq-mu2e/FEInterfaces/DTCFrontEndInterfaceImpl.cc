@@ -2885,6 +2885,10 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 			auto dtc = getDTC();
 
 			// Step 1: EVB register setup
+			// EventBuilderMode doubles as the hardware event building enable:
+			//	0 = EVB link (link 7) stays off, nonzero = EVB link enabled in Step 3.
+			//	(Firmware never reads 0x9154 bits [23:16], so the value is free to use.)
+			bool hardwareEventBuildingEnabled = false;
 			dtc->DisableLink(DTCLib::DTC_Link_EVB);
 			try
 			{
@@ -2901,6 +2905,7 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 				__FE_COUTV__(partID);
 				__FE_COUTV__(macIdx);
 				dtc->SetEVBInfo(dtcID, mode, partID, macIdx);
+				hardwareEventBuildingEnabled = (mode != 0);
 			}
 			catch(...)
 			{
@@ -2930,8 +2935,15 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 				dtc->DisableSoftwareDRP();
 			}
 
-			// Step 3: Enable EVB link
-			dtc->EnableLink(DTCLib::DTC_Link_EVB);
+			// Step 3: Enable EVB link only when hardware event building is configured
+			if(hardwareEventBuildingEnabled)
+			{
+				__FE_COUT__ << "EventBuilderMode != 0: enabling EVB link (link 7)." << __E__;
+				dtc->EnableLink(DTCLib::DTC_Link_EVB);
+			}
+			else
+				__FE_COUT__ << "EventBuilderMode == 0: leaving EVB link (link 7) disabled."
+				            << __E__;
 
 			// Step 4: Event Mode Required Mask
 			uint32_t eventModeRequiredMask = 0;
@@ -2981,7 +2993,7 @@ void DTCFrontEndInterface::configureLoopbackMode(int step)
 
 //==============================================================================
 // Phase 1 (Establish Clocks) for DTC.
-//	Sub-step 0: ClearControlRegister (preserve edge bits), selective link disable, passthrough
+//	Sub-step 0: ClearControlRegister (preserve edge bits), EVB link off, ROC links off, passthrough
 //	Sub-step 1: JA setup — check lock, full reset if unlocked, mux-only if locked
 //	Sub-steps 2+: JA lock polling (up to ~10 polls, 1s each)
 void DTCFrontEndInterface::configureForTimingChain(int step)
@@ -2997,8 +3009,9 @@ void DTCFrontEndInterface::configureForTimingChain(int step)
 		const uint32_t controlRegisterKeepMask = (1u << 5) | (1u << 6) | (1u << 7);
 		getDTC()->ClearControlRegister(controlRegisterKeepMask);
 
-		if(has_real_roc_flow_)
-			getDTC()->DisableLink(DTCLib::DTC_Link_EVB);
+		// EVB link (link 7) starts off for every DTC; Phase 5 re-enables it only
+		// when EventBuilderMode != 0 on the real-ROC path.
+		getDTC()->DisableLink(DTCLib::DTC_Link_EVB);
 
 		// ROC link enable/disable follows roc_mask_ only, independent of
 		// has_real_roc_flow_ (i.e. of EnableROCConfigureStep), so the ROC links are

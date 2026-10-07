@@ -34,7 +34,7 @@ Key design constraints:
 
 | Iter | Phase | CFO | DTC (no real ROCs) | DTC (real ROCs) |
 |---|---|---|---|---|
-| 0 | **1a — Establish Clocks** | `halt()`, `DisableBeamOnMode(ALL)`, `DisableBeamOffMode(ALL)`, `ClearControlRegister()`, `DisableAllOutputs()`, JA setup + lock poll | `ClearControlRegister(keepMask)`, `DisableCFOLoopback()`, JA setup + lock poll (keepMask preserves bits 5-7: edge settings) | idle |
+| 0 | **1a — Establish Clocks** | `halt()`, `DisableBeamOnMode(ALL)`, `DisableBeamOffMode(ALL)`, `ClearControlRegister()`, `DisableAllOutputs()`, JA setup + lock poll | `ClearControlRegister(keepMask)`, `DisableLink(EVB)`, `DisableCFOLoopback()`, JA setup + lock poll (keepMask preserves bits 5-7: edge settings) | idle |
 | 1 | **1b — Establish Clocks** | idle | idle | `ClearControlRegister(keepMask)`, `DisableLink(EVB)`, disable ROC links, `DisableCFOLoopback()`, JA setup + lock poll (keepMask preserves bits 5-7: edge settings) |
 | 2 | **2a — Timing Chain: Enable** | `EnableLink(CFO_Link_ALL)`, `EnableEmbeddedClockMarker()`; in both EB modes starts fixed-width event run plan (1.7µs, mode 0, infinite markers) for aggressive 8b10 traffic during edge fix | `EnableLink(DTC_Link_CFO)`; in Sync mode also enables CFO-RTF Offset Control (bit 6) | `EnableLink(DTC_Link_CFO)`; in Sync mode also enables CFO-RTF Offset Control (bit 6) |
 | 3 | **2b — Timing Chain: CDR Check** | Enumerate DTCs, call "Get Link Lock Status" FE Macro on each; if unlocked -> `ResetSERDES()` + retry; throw on 2nd failure | `ReadSERDESRXCDRLock(DTC_Link_CFO)` — throw if not locked | `ReadSERDESRXCDRLock(DTC_Link_CFO)` — throw if not locked |
@@ -45,7 +45,7 @@ Key design constraints:
 | 8 | **3d — Sync: RTF offset + verify (ROC)** | idle | idle | Same offset + verify sub-steps as 3c. **Sync mode only.** |
 | 9 | **3e — Stop CFO Events** | `DisableBeamOnMode(ALL)`, `DisableBeamOffMode(ALL)`. Active in both EB modes. | idle | idle |
 | 10 | **4 — ROC and DCS Setup** | idle | idle | `SetupROCs()` per link, `EnableDCSReception()`, CRV `SetPunchEnable()`, `SoftReset()`, ROC DCS-based configure |
-| 11 | **5 — ROC Data Path Setup** | idle | idle | `DisableLink(EVB)`, `SetEVBInfo()`, DRP mode, `EnableLink(EVB)`, `SetCFOEventModeRequiredMask()` |
+| 11 | **5 — ROC Data Path Setup** | idle | idle | `DisableLink(EVB)`, `SetEVBInfo()`, DRP mode, `EnableLink(EVB)` only if `EventBuilderMode != 0`, `SetCFOEventModeRequiredMask()` |
 | 12 | **Final SoftReset** | `SoftReset()` | `EnableLink(CFO)`, `SoftReset()` | `EnableLink(CFO)`, `SoftReset()` |
 | 13 | **6 — Enable CFO Operation** | `EnableAcceleratorRF0()`, `SetPunchEnable()` | idle | idle |
 
@@ -107,11 +107,13 @@ so operators can see why a DTC took a particular phase path.
 
 ### DTC sub-steps (iteration 0 for no-ROC, iteration 1 for ROC DTCs)
 
-0. `ClearControlRegister(keepMask)`, `DisableCFOLoopback()`.
+0. `ClearControlRegister(keepMask)`, `DisableLink(EVB)`, `DisableCFOLoopback()`.
    `keepMask` preserves control register bits 5 (CFO-RTF Edge Select), 6 (CFO-RTF Offset
    Control), and 7 (RTF Punched Clock Edge Select) — run-time error counters and previously
    calibrated edge settings are carried into Phase 2c for the first edge fix decision.
-   ROC DTCs also `DisableLink(EVB)` and disable configured ROC links. No-ROC DTCs skip these.
+   The EVB link (link 7) is turned off for every DTC so it starts from a known state; Phase 5
+   re-enables it only where hardware event building is configured. DTCs with a non-zero
+   `roc_mask_` also disable their configured ROC links.
 1. JA setup (same lock-aware pattern as CFO)
 2+. JA lock polling
 
@@ -286,7 +288,10 @@ No-ROC DTCs with no connected ROCs idle.
 1. `DisableLink(EVB)`, read `EventBuilderDTCID`/`EventBuilderMode`/`EventBuilderPartitionID`/
    `EventBuilderMACIndex` from config, `SetEVBInfo()`
 2. Software DRP mode: `EnableSoftwareDRP()` or `DisableSoftwareDRP()` based on config
-3. `EnableLink(EVB)`
+3. `EnableLink(EVB)` **only if `EventBuilderMode != 0`**. The firmware never reads the mode
+   byte (0x9154 bits [23:16]), so the config value doubles as the hardware event building
+   enable: 0 leaves link 7 off, anything else turns it on. If the EVB config nodes are
+   missing, link 7 stays off.
 4. Read `EventModeRequiredMask` from config (default 0), `SetCFOEventModeRequiredMask(mask)`
 
 ### No-ROC DTCs with connected ROCs
