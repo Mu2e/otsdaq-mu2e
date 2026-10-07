@@ -1998,11 +1998,16 @@
 				var isOn = e.status === "1" || e.status === "true";
 				var ssStatus = getSubsystemStatus(e.subsystemName);
 				var regIdx = _artdaqNodeRegistry.push(e) - 1;
+				var hasFcl = e.type !== "supervisor";
 				h += "<div class='sysoverview-item " +
 					(isOn ? "ss-bg-" + Mu2e.esc(ssStatus) : "ss-bg-disabled") + "'>";
-				h += "<span class='sysoverview-item-clickable'" +
-					" title='" + Mu2e.escAttr(e.subsystemName + " — click to open FHiCL") + "'" +
-					" onclick='openArtdaqNodeFcl(" + regIdx + ")'>";
+				if (hasFcl) {
+					h += "<span class='sysoverview-item-clickable'" +
+						" title='" + Mu2e.escAttr(e.subsystemName + " — click to open FHiCL") + "'" +
+						" onclick='openArtdaqNodeFcl(" + regIdx + ")'>";
+				} else {
+					h += "<span title='" + Mu2e.escAttr(e.subsystemName) + "'>";
+				}
 				h += "<span class='status-dot " + (isOn ? "status-on" : "status-off") + "'></span>";
 				h += Mu2e.esc(e.label || "?");
 				h += "</span>";
@@ -2066,29 +2071,41 @@
 
 		// Derive a subsystem's icon folder by locating the icon-map key that matches
 		// its landingPage (the landingPage is itself one of that folder's icons).
-		function findSubsystemIconFolder(landingPage) {
+		// When subsystemName is supplied (e.g. "Trigger_Gateway"), prefer the
+		// folder whose name matches the subsystem prefix ("Trigger") so that
+		// identically-named landing pages across subsystems resolve correctly.
+		function findSubsystemIconFolder(landingPage, subsystemName) {
 			var map = getDesktopIconMap();
 			if (!map || !landingPage) return null;
+			var firstMatch = null;
+			var ssPrefix = subsystemName
+				? subsystemName.replace(/_(Hardware|Hard)?[Gg]ateway$/, "").toLowerCase() : "";
 			for (var key in map) {
 				if (!map.hasOwnProperty(key)) continue;
+				var folder = null;
 				if (key === landingPage) {
 					var si = key.lastIndexOf("/");
-					return si >= 0 ? key.substring(0, si) : "";
+					folder = si >= 0 ? key.substring(0, si) : "";
+				} else {
+					var suffix = "/" + landingPage;
+					if (key.length > suffix.length &&
+						key.substring(key.length - suffix.length) === suffix)
+						folder = key.substring(0, key.length - suffix.length);
 				}
-				var suffix = "/" + landingPage;
-				if (key.length > suffix.length &&
-					key.substring(key.length - suffix.length) === suffix)
-					return key.substring(0, key.length - suffix.length);
+				if (folder !== null) {
+					if (ssPrefix && folder.toLowerCase() === ssPrefix) return folder;
+					if (firstMatch === null) firstMatch = folder;
+				}
 			}
-			return null;
+			return firstMatch;
 		}
 
 		// Return the reachable URL for a named icon within the subsystem's folder
 		// (e.g. iconName "Configure" or "Code Editor"). These URLs are already
 		// port-translated to browser-reachable form by the desktop icon map.
-		function findSubsystemIconUrl(landingPage, iconName) {
+		function findSubsystemIconUrl(landingPage, iconName, subsystemName) {
 			var map = getDesktopIconMap();
-			var folder = findSubsystemIconFolder(landingPage);
+			var folder = findSubsystemIconFolder(landingPage, subsystemName);
 			if (!map || folder === null) return null;
 			var mapKey = folder ? (folder + "/" + iconName) : iconName;
 			var entry = map[mapKey];
@@ -2106,7 +2123,7 @@
 			var e = _artdaqNodeRegistry[regIdx];
 			if (!e) return;
 
-			var url = findSubsystemIconUrl(e.subsystemLandingPage, "Configure");
+			var url = findSubsystemIconUrl(e.subsystemLandingPage, "Configure", e.subsystemName);
 			if (!url) {
 				Debug.err("Cannot open config for '" + e.subsystemName +
 					"': no Configure desktop icon found for landing page '" +
@@ -2132,7 +2149,7 @@
 			var e = _artdaqNodeRegistry[regIdx];
 			if (!e) return;
 
-			var baseUrl = findSubsystemIconUrl(e.subsystemLandingPage, "Code Editor");
+			var baseUrl = findSubsystemIconUrl(e.subsystemLandingPage, "Code Editor", e.subsystemName);
 			if (!baseUrl) {
 				Debug.err("Cannot open FHiCL for '" + e.subsystemName +
 					"': no Code Editor desktop icon found for landing page '" +
