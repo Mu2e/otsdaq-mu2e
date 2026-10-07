@@ -4582,6 +4582,27 @@ void CFOFrontEndInterface::CFOHalt(__ARGS__)
 }  //end CFOHalt()
 
 //========================================================================
+// "CFO Soft Reset" FE Macro (registered in CFOandDTCCoreVInterface).
+//	Disable on-spill (0x9148) and off-spill (0x914C) Run Plan list processing
+//	before the Soft Reset, so the reset does not restart the Run Plan from
+//	its base address unexpectedly. Re-enable with a Run Plan launch macro.
+void CFOFrontEndInterface::SoftReset(__ARGS__)
+{
+	const bool onSpillWasEnabled  = thisCFO_->ReadBeamOnMode();
+	const bool offSpillWasEnabled = thisCFO_->ReadBeamOffMode();
+
+	thisCFO_->DisableBeamOnMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
+	thisCFO_->DisableBeamOffMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
+
+	CFOandDTCCoreVInterface::SoftReset(feMacroStruct, argsIn, argsOut);
+
+	__FE_COUT_INFO__ << "CFO Soft Reset done. Run Plan list processing disabled first: "
+	                 << "on-spill was " << (onSpillWasEnabled ? "enabled" : "disabled")
+	                 << ", off-spill was " << (offSpillWasEnabled ? "enabled" : "disabled")
+	                 << "; both are now disabled." << __E__;
+}  //end SoftReset()
+
+//========================================================================
 void CFOFrontEndInterface::GetCounters(__ARGS__)
 {
 	__SET_ARG_OUT__(

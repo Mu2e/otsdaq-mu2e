@@ -152,6 +152,16 @@ std::string formatEVBRetransmission(DTCLib::DTC*       dtc,
 	return o.str();
 }
 
+void snapshotEVBStallCounters(DTCLib::DTC*                          dtc,
+                              std::array<std::atomic<uint32_t>, 7>& target,
+                              std::atomic<bool>&                    valid)
+{
+	const auto values = dtc->ReadEVBStallCounters();
+	for(size_t index = 0; index < target.size() && index < values.size(); ++index)
+		target[index] = values[index];
+	valid = true;
+}
+
 std::string requireEVBBufferTestReady(DTCLib::DTC* dtc, uint32_t operatorIgnoreMask = 0)
 {
 	// SoftReset drops bit 25 (DDR calibration done) for ~1 s through the reset chain;
@@ -7316,6 +7326,11 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		  << dmaMaxBytes << " B), min 0x" << std::hex << dmaMinBytes << std::dec << " ("
 		  << dmaMinBytes << " B) => chunk cap " << chunkCapWords << " words, record cap "
 		  << (dmaMaxBytes - 8) << " B\n";
+		const uint16_t localChunkCapWords = dtc->ReadEVBLocalChunkCap();
+		o << "  Self chunk cap (0x9178): " << localChunkCapWords << " words"
+		  << (localChunkCapWords == 0 ? " (0 = whole-record self chunks)" : "")
+		  << (localChunkCapWords >= 1 && localChunkCapWords <= 31 ? " (1..31 act as 32)" : "")
+		  << " (reset value 1024)\n";
 	}
 	{
 		// Rate arithmetic: an idle frame = (4 + words) beats + gap beats at 156.25 MHz.
@@ -7413,6 +7428,12 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	  << "\n";
 	o << "  Tx Packets sent:              "
 	  << dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType_TxPacketCount, 0) << "\n";
+	o << "\n";
+
+	o << "=== EVB Stall Time (0x9210-0x9228, user_clk clocks since SoftReset, share of timebase) ===\n";
+	o << dtc->FormatEVBStallCountersText("  ");
+	o << "  Read these after a run, before SoftReset. Credit stall + remote waiting high => credit\n"
+	     "  refresh (hw step 2); DDR read busy ~100% with wire busy < 80% => DDR read path.\n";
 	o << "\n";
 
 	// Live DTC Control (0x9100): shows whether the emulator, autogen DRP, etc. are
@@ -9538,6 +9559,26 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			         << (output == expected ? "PASS" : "MISMATCH") << " <= " << output
 			         << " == (" << selfXfer << " + " << bufmgr
 			         << ") mod 65536 = " << expected << __E__;
+			{
+				std::vector<uint32_t> stallAtStart, stallAtEnd;
+				if(threadStruct->evbStallAtStartValid_)
+					for(const auto& value : threadStruct->evbStallAtStart_)
+						stallAtStart.push_back(value);
+				if(threadStruct->evbStallAtEndValid_)
+					for(const auto& value : threadStruct->evbStallAtEnd_)
+						stallAtEnd.push_back(value);
+				else if(!stallAtStart.empty())  // run still going: up to now
+					stallAtEnd = threadStruct->thisDTC_->ReadEVBStallCounters();
+				if(!stallAtStart.empty())
+					statusSs << "HW EVB Stall Time over the run (first subevent -> "
+					         << (threadStruct->evbStallAtEndValid_ ? "last subevent" : "now")
+					         << ")..." << __E__
+					         << threadStruct->thisDTC_->FormatEVBStallCountersDeltaText(
+					                stallAtStart, stallAtEnd, "\t ");
+				else
+					statusSs << "HW EVB Stall Time (0x9210-0x9228, since SoftReset; no run snapshot)..."
+					         << __E__ << threadStruct->thisDTC_->FormatEVBStallCountersText("\t ");
+			}
 		}
 		catch(const std::exception& e)
 		{
@@ -10112,6 +10153,8 @@ try
 	bool     lastMissingFrontier           = false;
 	bool     lastStatusReadFailed          = false;
 	threadStruct->evbErrAtStallOnsetValid_ = false;
+	threadStruct->evbStallAtStartValid_    = false;
+	threadStruct->evbStallAtEndValid_      = false;
 
 	// Known checker-defect bits for this bitfile (see evbKnownDefectMask), plus any bits the
 	// operator excluded for this session (copied into the struct at Start); excluded from
@@ -10265,6 +10308,8 @@ try
 				lastMissingFrontier                    = false;
 				lastStatusReadFailed                   = false;
 				threadStruct->evbErrAtStallOnsetValid_ = false;
+				threadStruct->evbStallAtStartValid_    = false;
+				threadStruct->evbStallAtEndValid_      = false;
 
 				//release buffers for restart
 				if(threadStruct->thisDTC_)
@@ -10341,6 +10386,10 @@ try
 					   threadStruct->thisDTC_->ReadEVBGBERXWords() != 0)
 						threadStruct->evbTrafficStarted_ = true;
 				}
+				if(threadStruct->evbTrafficStarted_ && !threadStruct->evbStallAtStartValid_)
+					snapshotEVBStallCounters(threadStruct->thisDTC_,
+					                         threadStruct->evbStallAtStart_,
+					                         threadStruct->evbStallAtStartValid_);
 				const auto check =
 				    DTCLib::CheckEVBStatus(evbErr & ~threadStruct->evbStickyIgnoreMask_,
 				                           threadStruct->evbTrafficStarted_,
@@ -10417,10 +10466,17 @@ try
 						threadStruct->evbErrAtStallOnsetTime_ =
 						    std::chrono::steady_clock::now();
 						threadStruct->evbErrAtStallOnsetValid_ = true;
+						if(threadStruct->evbStallAtStartValid_)
+							snapshotEVBStallCounters(threadStruct->thisDTC_,
+							                         threadStruct->evbStallAtEnd_,
+							                         threadStruct->evbStallAtEndValid_);
 					}
 				}
 				else
+				{
 					threadStruct->evbErrAtStallOnsetValid_ = false;
+					threadStruct->evbStallAtEndValid_      = false;
+				}
 			}
 			catch(const std::exception& e)
 			{

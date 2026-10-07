@@ -1,6 +1,7 @@
 #ifndef _ots_DTCFrontEndInterface_h_
 #define _ots_DTCFrontEndInterface_h_
 
+#include <array>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -191,6 +192,13 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		std::atomic<uint32_t>                              evbErrAtStallOnset_{0};
 		std::atomic<uint64_t>                              evbErrAtStallOnsetIter_{0};
 		std::chrono::time_point<std::chrono::steady_clock> evbErrAtStallOnsetTime_;
+		// EVB3 stall-time counters (0x9210-0x9228) sampled when traffic starts and on the first
+		// idle iteration after the last subevent (re-armed when data resumes); the difference
+		// gives the run's own stall shares, free of the pre-start idle time and the ~17 s wrap
+		std::atomic<bool>                    evbStallAtStartValid_{false};
+		std::atomic<bool>                    evbStallAtEndValid_{false};
+		std::array<std::atomic<uint32_t>, 7> evbStallAtStart_{};
+		std::array<std::atomic<uint32_t>, 7> evbStallAtEnd_{};
 
 		uint64_t                                           totalSubeventBytesTransferred_;
 		std::chrono::time_point<std::chrono::steady_clock> transferStartTime_,
