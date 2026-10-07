@@ -2938,12 +2938,14 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 			// Step 3: Enable EVB link only when hardware event building is configured
 			if(hardwareEventBuildingEnabled)
 			{
-				__FE_COUT__ << "EventBuilderMode != 0: enabling EVB link (link 7)." << __E__;
+				__FE_COUT__ << "EventBuilderMode != 0: enabling EVB link (link 7)."
+				            << __E__;
 				dtc->EnableLink(DTCLib::DTC_Link_EVB);
 			}
 			else
-				__FE_COUT__ << "EventBuilderMode == 0: leaving EVB link (link 7) disabled."
-				            << __E__;
+				__FE_COUT__
+				    << "EventBuilderMode == 0: leaving EVB link (link 7) disabled."
+				    << __E__;
 
 			// Step 4: Event Mode Required Mask
 			uint32_t eventModeRequiredMask = 0;

@@ -4753,8 +4753,8 @@ void CFOFrontEndInterface::SharedRunPlanStatus(__ARGS__)
 	bool isRunning      = beamOnEnabled || beamOffEnabled;
 
 	result << "CFO Shared Run Plan: " << (isRunning ? "RUNNING" : "OFF")
-	       << (beamOnEnabled ? " (Beam-On)" : "")
-	       << (beamOffEnabled ? " (Beam-Off)" : "") << __E__;
+	       << (beamOnEnabled ? " (Beam-On)" : "") << (beamOffEnabled ? " (Beam-Off)" : "")
+	       << __E__;
 
 	result << "Available chunk loop counts: {";
 	for(size_t i = 0; i < standardNValues_.size(); ++i)
