@@ -2079,7 +2079,7 @@
 			if (!map || !landingPage) return null;
 			var firstMatch = null;
 			var ssPrefix = subsystemName
-				? subsystemName.replace(/_(Hard)?[Gg]ateway$/, "").toLowerCase() : "";
+				? subsystemName.replace(/_(Hardware|Hard)?[Gg]ateway$/, "").toLowerCase() : "";
 			for (var key in map) {
 				if (!map.hasOwnProperty(key)) continue;
 				var folder = null;
