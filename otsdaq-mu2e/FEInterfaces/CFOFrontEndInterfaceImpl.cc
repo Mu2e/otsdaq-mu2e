@@ -1840,6 +1840,7 @@ void CFOFrontEndInterface::configureSlowControls(void)
 //===============================================================================================
 void CFOFrontEndInterface::configure(void)
 {
+	__FE_COUTV__(getSubsystemIterationIndexString());
 	__FE_COUTV__(getIterationIndex());
 	__FE_COUTV__(getSubIterationIndex());
 
@@ -1851,8 +1852,12 @@ void CFOFrontEndInterface::configure(void)
 	// 	regWriteMonitorStream_.flush();
 	// }
 
-	if(getIterationIndex() == 0 && getSubIterationIndex() == 0)
+	if(isFirstIteration())
+	{
 		recordTimeAlive();
+		resetConfigPhase();
+		timing_chain_first_substep_ = -1;
+	}
 
 	if(skipInit_)
 		return;
@@ -2078,9 +2083,23 @@ void CFOFrontEndInterface::configure(void)
 void CFOFrontEndInterface::configureEventBuildingMode(int step)
 {
 	if(step == -1)
-		step = getIterationIndex();
+	{
+		// The CFO subsystem always runs its pass first (subsystem-iteration 0, or
+		// STANDALONE). Kept as a guard for symmetry with the DTC turn rule.
+		if(!isMyConfigureSubsystemIteration(
+		       CFOandDTCCoreVInterface::CONFIG_SUBSYSTEM_ITERATION_CFO_SUBSYSTEM))
+		{
+			__FE_COUT__ << "Not the CFO subsystem's turn (subsystem-iteration "
+			            << getSubsystemIterationIndexString() << "); waiting." << __E__;
+			indicateSubsystemIterationWork();
+			return;
+		}
+		step = configPhase();
+	}
 
-	__FE_COUT_INFO__ << "configureEventBuildingMode() iteration=" << step << __E__;
+	__FE_COUT_INFO__ << "configureEventBuildingMode() phase=" << step
+	                 << " (subsystem-iteration " << getSubsystemIterationIndexString()
+	                 << ", iteration " << getIterationIndex() << ")" << __E__;
 
 	if(step == CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_CLOCKS_A)
 	{
@@ -2175,47 +2194,11 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 			bool        cfoCDRLocked = false;
 		};
 		std::vector<DTCLockInfo> dtcLockInfos;
+		for(const auto& uid : getSubsystemFEUIDsOfPlugin("DTCFrontEndInterface"))
 		{
-			auto cfgMgr   = Configurable::getConfigurationManager();
-			auto contexts = cfgMgr->getNode("XDAQContextTable").getChildren();
-			for(const auto& ctx : contexts)
-			{
-				if(!ctx.second.isEnabled())
-					continue;
-				try
-				{
-					auto apps =
-					    ctx.second.getNode("LinkToApplicationTable").getChildren();
-					for(const auto& app : apps)
-					{
-						if(!app.second.isEnabled())
-							continue;
-						try
-						{
-							auto supNode = app.second.getNode("LinkToSupervisorTable");
-							auto feChildren =
-							    supNode.getNode("LinkToFEInterfaceTable").getChildren();
-							for(const auto& fe : feChildren)
-							{
-								if(!fe.second.isEnabled())
-									continue;
-								if(fe.second.getNode("FEInterfacePluginName")
-								       .getValue<std::string>() != "DTCFrontEndInterface")
-									continue;
-								DTCLockInfo info;
-								info.uid = fe.first;
-								dtcLockInfos.push_back(std::move(info));
-							}
-						}
-						catch(...)
-						{
-						}
-					}
-				}
-				catch(...)
-				{
-				}
-			}
+			DTCLockInfo info;
+			info.uid = uid;
+			dtcLockInfos.push_back(std::move(info));
 		}
 
 		__FE_COUT__ << "Found " << dtcLockInfos.size() << " DTC FE interfaces." << __E__;
@@ -2349,51 +2332,9 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 
 			int subStep = getSubIterationIndex() - timing_chain_first_substep_;
 
-			// enumerate all DTCs from config tree
-			std::vector<std::string> dtcUIDs;
-			{
-				auto cfgMgr   = Configurable::getConfigurationManager();
-				auto contexts = cfgMgr->getNode("XDAQContextTable").getChildren();
-				for(const auto& ctx : contexts)
-				{
-					if(!ctx.second.isEnabled())
-						continue;
-					try
-					{
-						auto apps =
-						    ctx.second.getNode("LinkToApplicationTable").getChildren();
-						for(const auto& app : apps)
-						{
-							if(!app.second.isEnabled())
-								continue;
-							try
-							{
-								auto supNode =
-								    app.second.getNode("LinkToSupervisorTable");
-								auto feChildren =
-								    supNode.getNode("LinkToFEInterfaceTable")
-								        .getChildren();
-								for(const auto& fe : feChildren)
-								{
-									if(!fe.second.isEnabled())
-										continue;
-									if(fe.second.getNode("FEInterfacePluginName")
-									       .getValue<std::string>() !=
-									   "DTCFrontEndInterface")
-										continue;
-									dtcUIDs.push_back(fe.first);
-								}
-							}
-							catch(...)
-							{
-							}
-						}
-					}
-					catch(...)
-					{
-					}
-				}
-			}
+			// enumerate all DTCs in this subsystem from the config tree
+			std::vector<std::string> dtcUIDs =
+			    getSubsystemFEUIDsOfPlugin("DTCFrontEndInterface");
 
 			if(subStep == 0)
 			{
@@ -2606,8 +2547,10 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 	}
 	else if(step == CFOandDTCCoreVInterface::CONFIG_PHASE_FINAL_SOFT_RESET)
 	{
-		__FE_COUT__ << "Final SoftReset to clear errors before enabling CFO operation."
+		__FE_COUT__ << "Releasing DAQ DMA buffers, then Final SoftReset to clear errors "
+		               "before enabling CFO operation."
 		            << __E__;
+		thisCFO_->ReleaseAllBuffers(DTC_DMA_Engine_DAQ);
 		thisCFO_->SoftReset();
 		indicateIterationWork();
 	}
@@ -2830,10 +2773,11 @@ void CFOFrontEndInterface::start(std::string runNumber)  // runNumber)
 		return;
 	}
 
+	__FE_COUTV__(getSubsystemIterationIndexString());
 	__FE_COUTV__(getIterationIndex());
 	__FE_COUTV__(getSubIterationIndex());
 
-	if(getIterationIndex() == 0 && getSubIterationIndex() == 0)
+	if(isFirstIteration())
 	{
 		next_starting_event_window_tag_ = 0;  //reset next event window tag
 		__FE_COUTV__(next_starting_event_window_tag_);
@@ -2865,9 +2809,10 @@ void CFOFrontEndInterface::start(std::string runNumber)  // runNumber)
 		const unsigned int startIteration = getSubsystemSyncStepIndex();
 		if(startIteration < systemMinReady)
 		{
-			__FE_COUT_INFO__ << "Delaying CFO run plan launch until start iteration >= "
-			                 << systemMinReady << __E__;
-			indicateIterationWork();
+			__FE_COUT_INFO__ << "Delaying CFO run plan launch until start step >= "
+			                 << systemMinReady << " (now " << startIteration << ")"
+			                 << __E__;
+			indicateSubsystemSyncStepWork();
 			return;
 		}
 
