@@ -321,13 +321,13 @@ if [[ ${opt_develop:-0} -eq 1 ]];then
         done
         if ! [ -d offline ];then
             if [ $opt_w -eq 0 ];then
-                git clone https://github.com/Mu2e/Offline.git offline
+                git clone https://github.com/Mu2e/tdaq-offline.git offline
             else
-                git clone git@github.com:Mu2e/Offline.git offline
+                git clone git@github.com:Mu2e/tdaq-offline.git offline
             fi
         else
             cd offline
-            git remote set-url origin https://github.com/Mu2e/Offline.git
+            git remote set-url origin https://github.com/Mu2e/tdaq-offline.git
             git pull
             cd ..
         fi
