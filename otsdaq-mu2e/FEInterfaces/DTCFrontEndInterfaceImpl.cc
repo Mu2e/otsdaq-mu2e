@@ -7329,7 +7329,8 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		const uint16_t localChunkCapWords = dtc->ReadEVBLocalChunkCap();
 		o << "  Self chunk cap (0x9178): " << localChunkCapWords << " words"
 		  << (localChunkCapWords == 0 ? " (0 = whole-record self chunks)" : "")
-		  << (localChunkCapWords >= 1 && localChunkCapWords <= 31 ? " (1..31 act as 32)" : "")
+		  << (localChunkCapWords >= 1 && localChunkCapWords <= 31 ? " (1..31 act as 32)"
+		                                                          : "")
 		  << " (reset value 1024)\n";
 	}
 	{
@@ -7430,10 +7431,13 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	  << dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType_TxPacketCount, 0) << "\n";
 	o << "\n";
 
-	o << "=== EVB Stall Time (0x9210-0x9228, user_clk clocks since SoftReset, share of timebase) ===\n";
+	o << "=== EVB Stall Time (0x9210-0x9228, user_clk clocks since SoftReset, share of "
+	     "timebase) ===\n";
 	o << dtc->FormatEVBStallCountersText("  ");
-	o << "  Read these after a run, before SoftReset. Credit stall + remote waiting high => credit\n"
-	     "  refresh (hw step 2); DDR read busy ~100% with wire busy < 80% => DDR read path.\n";
+	o << "  Read these after a run, before SoftReset. Credit stall + remote waiting high "
+	     "=> credit\n"
+	     "  refresh (hw step 2); DDR read busy ~100% with wire busy < 80% => DDR read "
+	     "path.\n";
 	o << "\n";
 
 	// Live DTC Control (0x9100): shows whether the emulator, autogen DRP, etc. are
@@ -9571,13 +9575,16 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 					stallAtEnd = threadStruct->thisDTC_->ReadEVBStallCounters();
 				if(!stallAtStart.empty())
 					statusSs << "HW EVB Stall Time over the run (first subevent -> "
-					         << (threadStruct->evbStallAtEndValid_ ? "last subevent" : "now")
+					         << (threadStruct->evbStallAtEndValid_ ? "last subevent"
+					                                               : "now")
 					         << ")..." << __E__
 					         << threadStruct->thisDTC_->FormatEVBStallCountersDeltaText(
 					                stallAtStart, stallAtEnd, "\t ");
 				else
-					statusSs << "HW EVB Stall Time (0x9210-0x9228, since SoftReset; no run snapshot)..."
-					         << __E__ << threadStruct->thisDTC_->FormatEVBStallCountersText("\t ");
+					statusSs << "HW EVB Stall Time (0x9210-0x9228, since SoftReset; no "
+					            "run snapshot)..."
+					         << __E__
+					         << threadStruct->thisDTC_->FormatEVBStallCountersText("\t ");
 			}
 		}
 		catch(const std::exception& e)
@@ -10386,7 +10393,8 @@ try
 					   threadStruct->thisDTC_->ReadEVBGBERXWords() != 0)
 						threadStruct->evbTrafficStarted_ = true;
 				}
-				if(threadStruct->evbTrafficStarted_ && !threadStruct->evbStallAtStartValid_)
+				if(threadStruct->evbTrafficStarted_ &&
+				   !threadStruct->evbStallAtStartValid_)
 					snapshotEVBStallCounters(threadStruct->thisDTC_,
 					                         threadStruct->evbStallAtStart_,
 					                         threadStruct->evbStallAtStartValid_);

@@ -4598,7 +4598,8 @@ void CFOFrontEndInterface::SoftReset(__ARGS__)
 
 	__FE_COUT_INFO__ << "CFO Soft Reset done. Run Plan list processing disabled first: "
 	                 << "on-spill was " << (onSpillWasEnabled ? "enabled" : "disabled")
-	                 << ", off-spill was " << (offSpillWasEnabled ? "enabled" : "disabled")
+	                 << ", off-spill was "
+	                 << (offSpillWasEnabled ? "enabled" : "disabled")
 	                 << "; both are now disabled." << __E__;
 }  //end SoftReset()
 
