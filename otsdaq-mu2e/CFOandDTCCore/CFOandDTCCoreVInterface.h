@@ -72,6 +72,35 @@ class CFOandDTCCoreVInterface : public FEVInterface
 	void     testAndUpdateTimeAlive(const std::string& transitionName);
 	void     testRTFClockInEventBuildingMode(const std::string& transitionName);
 
+	/// UIDs of enabled FE interfaces of the given plugin type in this subsystem's config tree
+	/// (FE macros can only reach FEs in the same subsystem, so this is also the reach of the CFO).
+	std::vector<std::string> getSubsystemFEUIDsOfPlugin(const std::string& pluginName) const;
+	bool                     subsystemHasCFO(void) const;
+
+	/// Run an FE macro on another FE in this subsystem. If the target lives under the same
+	/// FESupervisor as this FE, call it in-process; a SOAP round trip back into our own
+	/// supervisor would block behind the transition we are executing and never return.
+	void runSubsystemFrontEndMacro(const std::string&                                   targetInterfaceID,
+	                               const std::string&                                   feMacroName,
+	                               const std::vector<FEVInterface::frontEndMacroArg_t>& inputArgs,
+	                               std::vector<FEVInterface::frontEndMacroArg_t>&       outputArgs);
+
+	/// Configure subsystem-iteration turn: standalone runs everything at once.
+	bool isMyConfigureSubsystemIteration(unsigned int myTurn) const
+	{
+		return isStandaloneSubsystem() || getSubsystemIterationIndex() == myTurn;
+	}
+	/// Configure phase = plain-iteration offset from the first iteration of this FE's pass.
+	/// (The iteration index never resets, and a DTC that waited for the CFO subsystem
+	///  starts its pass at iteration >= 1.)
+	int configPhase(void)
+	{
+		if(configPhaseBaseIteration_ == (unsigned int)-1)
+			configPhaseBaseIteration_ = getIterationIndex();
+		return (int)(getIterationIndex() - configPhaseBaseIteration_);
+	}
+	void resetConfigPhase(void) { configPhaseBaseIteration_ = (unsigned int)-1; }
+
   protected:
 	int         deviceIndex_           = -1;  //PCIe index
 	bool        configure_clock_       = false;

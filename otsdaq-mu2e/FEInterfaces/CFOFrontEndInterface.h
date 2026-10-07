@@ -172,6 +172,7 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 
 	void GetCounters(__ARGS__);
 
+	void SoftReset(__ARGS__) override;  // "CFO Soft Reset": stops Run Plan list processing first
 	void CFOReset(__ARGS__);
 	void CFOHalt(__ARGS__);
 	void EnableOrDisableClockMarkers(__ARGS__);

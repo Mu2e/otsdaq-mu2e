@@ -188,11 +188,14 @@ countdown pauses and resumes.
 
 ### Which AXIMux the EVB build uses
 
-EVB builds compile the PLAIN `AXIMuxFromRingsData.v`, never
-`AXIMuxFromRingsData_bundled.v` (Ryan, 2026-09-08). Both files declare
-`module AXIMuxFromRingsData` (instantiated by RingController), so the choice
-is made by which file is in the Vivado project, not by a parameter or define.
-Consequences for the HEB path:
+Since 2026-10-05 there is ONE ring mux file, `AXIMuxFromRingsData.v`, with two
+modes selected by its `BundleSubeventsIntoDMA` input = NOT 0x9114 bit 7
+(RingController wires it from `HardwareEventBuildingEnable`). Bit 7 = 1 is the
+per-subevent mode described below (what the plain file did before); bit 7 = 0
+is the bundled mode of the retired `AXIMuxFromRingsData_bundled.v` (the
+non-EVB build's DMA format, through EVB3's passthrough). History: until then
+EVB builds compiled the plain file and non-EVB builds the bundled one, both
+declaring the same module name. Consequences for the HEB path (bit 7 = 1):
 
 - The mux does no bundling of its own: one DMA transfer per record, closed by
   one extra tlast word that the count quadword does not declare (end of
@@ -202,10 +205,11 @@ Consequences for the HEB path:
 - The mux splits an aggregate above `DMA_max_packetcount` into several
   transfers ("need to do multiple DMAs"), each with its own count quadword.
   That is what bounds a record to `DMA_max_size - 8` bytes.
-- The Aldec sim elaborates the same plain file, so sim and HW agree on this
-  module in EVB mode.
-- Timing: the plain file's fsm-7 `total == max` compare is registered
-  (`total_DMA_at_max_r`, 2026-09-08), mirroring the `_bundled.v` fix.
+- The sim elaborates the same file with `HardwareEventBuildingEnable` = 1, so
+  sim and HW agree on this module in EVB mode.
+- Timing: the fsm-7 `total == max` compare and the fsm-0 ready gate are
+  registered (`total_DMA_at_max_r`, `all_ROCs_event_ready_r` and friends; the
+  fsm-0 exit lands one clock later than before 2026-10-05).
 
 ### Local filler drop
 
@@ -219,10 +223,10 @@ EVBERR_LOCAL_BAD_HEADER (0x9370 bit 6).
 
 ### DMA bundling and tlast
 
-Multiple chunks stack into one DMA transfer (scheme borrowed from
-`AXIMuxFromRingsData_bundled.v`: `bundled_has_data`, accumulated word count,
-200 µs timeout -- EVB builds do NOT compile that file, see "Which AXIMux the
-EVB build uses" above; the buffer manager is the only bundler). The DMA
+Multiple chunks stack into one DMA transfer (the same scheme as the ring
+mux's bundled mode: `bundled_has_data`, accumulated word count, 200 µs timeout
+-- with bit 7 = 1 the ring mux is in per-subevent mode, see "Which AXIMux the
+EVB build uses" above, so the buffer manager is the only bundler). The DMA
 engine requires tlast to close a transfer; the buffer manager emits one
 all-ones filler word flagged `data_out_chunk_last`, which the m_axis stage
 turns into `m_axis_tlast`, when a pending chunk no longer fits under
@@ -298,12 +302,113 @@ register), which is exactly what EVB3's `[15:3]` word fields (local peek, DDR
 pad-strip, count validation) and software's 16-bit mask cover. Records of one
 subevent are consecutive in the same source stream. The 10GbE
 TX path fragments this into ethernet packets of at most `MAX_PACKET_BYTES`
-(1492) bytes each. On the receive side the packets accumulate in the source's
+bytes each (1492 = 186 words on every build except 0xd6092888, which alone used
+1024 = 128 words as a one-day test of the switch's length-dependent loss on
+2026-09-28; the loss continued, the value went back to 1492 -- see the software
+status doc, section "Switch length test"). Software must not
+assume a fragment size: reassembly is per source stream and chunk boundaries
+carry no meaning either way. On the receive side the packets accumulate in the source's
 FIFO as pure data; the readout FSM frames whatever has accumulated into chunks,
 so a fragmented subevent reaches software as multiple FAFA chunks from the same
 source. Software reassembles per-source and finds subevent boundaries from the
 subevent headers inside the reassembled stream (see
 [EVB3_DMA_FAFA_protocol.md](EVB3_DMA_FAFA_protocol.md)).
+
+## Packet Retransmission (2026-09-28, firmware + protocol)
+
+The EVB switch loses about 1 in 2000-5000 max-size frames silently (see the software status doc,
+"Switch length test"). Since 2026-09-28 the link recovers a lost frame by itself; software sees
+a pause on that source's stream, never a hole. Nothing changes in the FAFA chunk format or in
+per-source reassembly.
+
+**Header word 3 (added 2026-09-30, replacing the 2026-09-28 placement inside the MAC bytes, which a real
+switch would have flooded / mis-learned -- see [EVB3_ethernet_frame_format.md](EVB3_ethernet_frame_format.md)):**
+one 64-bit word after the source/count word, before the payload, counted in the byte-count field as 8 more
+bytes. Bit positions in the word (bit 63 first on the wire):
+
+| bits | field | meaning |
+|---|---|---|
+| 63:44 | `pkt_pos[19:0]` | stream offset of this packet's first payload word: payload words the sender has sent to this destination before it (mod 2^20, from the common SoftReset). An idle packet carries the offset the next data word will have. (2026-10-01; was the sender's DDR address until then -- see "Why a stream offset" below.) |
+| 43:41 | 0 | |
+| 40 | `resend_req` | receiver-side feedback for THIS peer: "I am discarding your stream from `ack_pos`; resend" (level, in every header until cleared) |
+| 39:20 | `ack_pos[19:0]` | receiver-side feedback: stream offset of the first word of the peer's stream not yet stored (= last stored packet's `pkt_pos` + its words) |
+| 19:0 | 0 | |
+
+The byte-count field (offsets 12-13) is `8 x (payload words + 1) + 2`; a receiver takes `field[15:3] - 1`
+payload words after stripping word 3.
+
+The MAC bytes the switch keys on (dest node, partition, source node) are unchanged. The 8-bit
+sequence number stays the gap detector; the 20-bit position is the resume key (a sequence
+number wraps in 256 frames, a position does not wrap within any hold).
+
+**Why a stream offset (2026-10-01):** the position was the sender's DDR address until then. The
+DDR ring holds zero pad words between records that are never sent, so "this packet's address +
+its words" was not the next packet's address whenever a pad fell inside the packet; the receiver
+computed its `last_good` from exactly that sum, asked for a resend 13 words short of the real gap,
+and the sender re-sent 9 words the receiver already had (sim run 22/23, DTC_5 -> DTC_0). A count
+of words sent has no such holes: `pkt_pos + words` IS the next packet's `pkt_pos`, on both sides,
+with no tolerance. The sender keeps a small per-destination table mapping each packet's stream
+offset to its DDR address, which is what a rewind needs.
+
+**Receiver:** per source it keeps `last_good` = the stream offset of the first word it has NOT
+stored, in order (= the last stored packet's `pkt_pos` + its words). On a sequence gap it enters
+DISCARD for that source, starting with the very frame that revealed the gap (its payload is out of
+order too, and the resend will bring it again): frames from it are still parsed, sized, FCS-checked
+and counted, but their payload is not stored and not credited as drained. One exception
+(2026-10-01): a frame whose `pkt_pos` equals `last_good` is in order no matter what its sequence
+number says -- the lost frame was an idle, which carries no words -- so it is stored, the sequence
+chain re-seeds from it, and no resend is requested (the gap still counts in RxMissingPktCnt and
+0x9370 bit 1).
+Every header it sends to that peer (data or idle, every window) carries `ack_pos = last_good`
+and `resend_req = 1` until the answer arrives: the first packet whose `pkt_pos` equals
+`last_good`. A data packet there is the resend; it and everything after it is stored normally. An
+idle there means the lost frame was itself an idle, or nothing had been sent past `last_good`
+yet -- nothing is missing. Nothing else clears discard: not a packet before or after that
+position (a stale duplicate or a later one; the answer is still coming), not a timeout.
+
+**Idle packet position (sender rule):** an idle carries the offset the next data word will have
+= the sender's running count for that destination. After a rewind the count stands at the
+receiver's `ack_pos`, so the first header out of that window -- data or idle -- is the answer.
+
+
+**Sender:** every data packet is tagged with its stream offset, and the sender records the DDR
+address where each packet started. The ring keeps sent-but-not-yet-acknowledged bursts
+(hold-back: `sent_ptr` trails `read_ptr`; the write side may not reuse a burst until the peer's
+`ack_pos` has passed it). Once per rotation, just before it opens a destination's window, the
+sender reads that peer's feedback: it frees the ring up to the burst where the packet at
+`ack_pos` starts, and if `resend_req` is set and words were sent past `ack_pos`, it rewinds its
+read pointer to that packet's DDR address, drops what it had staged for that destination, sets
+its count back to `ack_pos`, and re-sends from there as the FIRST frame of that window. If
+nothing was sent past `ack_pos` there is nothing to rewind: the next header carries
+`pkt_pos == ack_pos` and clears the receiver. A request is served once per
+distinct `ack_pos`; the same request is served again only when the receiver repeats it in a header
+written AFTER the answer reached it. Every header carries `last_seq_seen`, the `seq` of the last
+frame its sender had received from the destination; the sender remembers the `seq` of the answer
+it sent, and a repeated request whose echo is at or past that `seq` means the answer itself was
+lost, so it is served again -- a loss of the resend costs one more rotation, never a stuck stream.
+A repeated request whose echo is behind the answer's `seq` was written before the answer could have
+arrived (or is an old row the receiver has not rewritten because it sent nothing since) and is left
+alone (2026-10-01: a "skip one read" rule and a row-written toggle both answered old requests twice
+or refused real repeats). Words re-sent are taken
+off the credit counter first (the receiver never drained the discarded ones), so the drained-
+credit pair stays exact.
+
+**Timing:** the gap is noticed at the source's next window to the receiver (the next frame from
+that source may be a full rotation away), the request rides in the receiver's next header to that
+peer (up to one rotation) and is acted on at the sender's next window for that destination (up to
+one more), so worst case is about three rotations after the loss (sim, 6 DTCs: a loss at 215 us was
+recovered at 308 us). During the hold the source's frontier stops advancing; after 1024 events the
+other DTCs self-throttle (the same intended hold a dead peer causes). Three rotations is far below
+that.
+
+**What software sees:** `0x9370` bit 1 (RX_SEQ_GAP) still latches for the record; status bit 27
+(RESEND_ACTIVE, live) is 1 while any source is in discard or a rewind is being served; register
+`0x9174` = `{resends served by this DTC's TX [31:16], resends requested by this DTC's RX [15:0]}`
+(SoftReset clear, 16-bit wrap). A run with bit 1 set, `0x9174` non-zero, exact zero-sum and whole
+records is a run in which the link recovered a loss. The FCS-bad count moved from `0x9370[31:27]`
+to `[31:28]` (saturates at 15). BRAM row type `0xA` (RX_ACKPOS, by source) = `{req[31], 3'b0,
+last_seq_seen[27:20], ack_pos[19:0]}`, readable through `0x9160` like the other rows; it is the
+peer's header word 3 feedback as last received from that source.
 
 ## Self-Subevent Throttle (software staging bound)
 
@@ -336,6 +441,14 @@ Consequences for software:
 - The tag comparison is a signed 16-bit modular difference, so tags may wrap.
 - Requires all DTCs to be SoftReset before a run (the parser assumes each peer's
   first received word is a subevent header).
+- Lost FIRST frame (2026-09-30): after the common SoftReset every sender's first frame to a
+  peer carries seq 1 at position 0. A receiver whose first frame from a source has any other
+  seq treats it as a gap, stores nothing, and requests a resend from position 0 -- so a drop of
+  the very first frame is recovered like any other. (A DTC reset alone while its peers keep
+  running therefore stays in discard for those peers: their first frame to it is not seq 1 and
+  the sender's ring has moved on. Reset all DTCs together, as the routing and credit already
+  require.)
+
 
 Visibility (no ILA port changes, packed into previously '0-tied probe bits):
 `evb_ddr_tx_ila` (ila_109, txgbeclk, present in the HW build) carries
