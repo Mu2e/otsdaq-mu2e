@@ -30,6 +30,11 @@ if [ -d "$TARGET_DIR" ]; then
     exit 1
 fi
 
+# Keep git from discovering a repository above the install area (e.g. an
+# accidental 'git init' in $HOME), which would trip the Spack start script's
+# fresh-directory check
+export GIT_CEILING_DIRECTORIES="$(pwd)"
+
 mkdir "$TARGET_DIR"
 cd "$TARGET_DIR"
 
@@ -131,6 +136,16 @@ cd ..
 
 echo "Rebuilding with mu2e/ots_ops changes..."
 bash -ic "source setup_ots.sh cfo && mb"
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "======================================================================"
+    echo "ERROR: Rebuild with mu2e/ots_ops changes failed!"
+    echo "The installed binaries do NOT include the mu2e/ots_ops changes."
+    echo "Fix the build (source setup_ots.sh cfo && mb), then run the"
+    echo "per-subsystem setup manually (see the subsystem loop in this script)."
+    echo "======================================================================"
+    exit 1
+fi
 
 # ==========================================
 # Subsystem Processing
