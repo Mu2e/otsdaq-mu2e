@@ -149,7 +149,7 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 	int                         timing_chain_first_substep_     = -1;
 	int                         cfo_edge_fix_consecutive_clean_ = 0;
 	uint64_t                    next_starting_event_window_tag_ = 0;
-	const std::vector<uint32_t> standardNValues_                = {100, 200, uint32_t(1e3), 2 * uint32_t(1e3)};  //, uint32_t(1e4), uint32_t(1e5), uint32_t(1e6), uint32_t(1e7), uint32_t(1e8), uint32_t(1e9)};
+	const std::vector<uint32_t> standardNValues_                = {100, 200, uint32_t(1e3), 2 * uint32_t(1e3), uint32_t(1e4), uint32_t(1e5), uint32_t(1e6), uint32_t(1e7), uint32_t(1e8), uint32_t(1e9)};
 	const std::map<std::string,
 	               uint16_t>
 	    supportedSubsystems_ = {
