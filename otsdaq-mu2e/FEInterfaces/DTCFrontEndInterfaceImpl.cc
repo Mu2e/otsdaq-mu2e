@@ -152,9 +152,9 @@ std::string formatEVBRetransmission(DTCLib::DTC*       dtc,
 	return o.str();
 }
 
-void snapshotEVBStallCounters(DTCLib::DTC*                          dtc,
+void snapshotEVBStallCounters(DTCLib::DTC*                           dtc,
                               std::array<std::atomic<uint32_t>, 15>& target,
-                              std::atomic<bool>&                    valid)
+                              std::atomic<bool>&                     valid)
 {
 	const auto values = dtc->ReadEVBStallCounters();
 	for(size_t index = 0; index < target.size() && index < values.size(); ++index)
@@ -169,11 +169,12 @@ void snapshotEVBStallCounters(DTCLib::DTC*                          dtc,
 // inside a block, the counter stepping by 2, and the block starting where the previous one on
 // that source/link ended.  The first mismatch throws: the detached thread exits at once with the
 // bad block in the error message (user 2026-10-07: any failure stops the test immediately).
-void checkROCEmulatorBlock(DTCFrontEndInterface::DetachedBufferTestThreadStruct& threadStruct,
-                           DTCLib::DTC_DataHeaderPacket&                         dataHeader,
-                           const DTCLib::DTC_DataBlock&                          dataBlock,
-                           uint8_t                                               sourceDTCId,
-                           uint64_t                                              eventWindowTag)
+void checkROCEmulatorBlock(
+    DTCFrontEndInterface::DetachedBufferTestThreadStruct& threadStruct,
+    DTCLib::DTC_DataHeaderPacket&                         dataHeader,
+    const DTCLib::DTC_DataBlock&                          dataBlock,
+    uint8_t                                               sourceDTCId,
+    uint64_t                                              eventWindowTag)
 {
 	const unsigned link = static_cast<unsigned>(dataHeader.GetLinkID());
 	if(link >= 6)
@@ -190,16 +191,20 @@ void checkROCEmulatorBlock(DTCFrontEndInterface::DetachedBufferTestThreadStruct&
 	auto noteError = [&](std::vector<uint64_t>& counter, const std::string& what) {
 		++counter[link];
 		std::ostringstream o;
-		o << "ROC emulator data check FAILED at EWT " << eventWindowTag << " src 0x" << std::hex
-		  << int(sourceDTCId) << std::dec << " link " << link << ": " << what << "\n";
+		o << "ROC emulator data check FAILED at EWT " << eventWindowTag << " src 0x"
+		  << std::hex << int(sourceDTCId) << std::dec << " link " << link << ": " << what
+		  << "\n";
 		o << "  Data header: " << dataHeader.toJSON() << "\n";
 		o << "  Payload (" << payloadBytes << " bytes, 16-bit words, first 64):";
-		const uint16_t* payloadWords = reinterpret_cast<const uint16_t*>(dataBlock.GetData());
-		const size_t    wordsToShow  = std::min<size_t>(64, static_cast<size_t>(payloadBytes) / 2);
+		const uint16_t* payloadWords =
+		    reinterpret_cast<const uint16_t*>(dataBlock.GetData());
+		const size_t wordsToShow =
+		    std::min<size_t>(64, static_cast<size_t>(payloadBytes) / 2);
 		for(size_t wordIndex = 0; wordIndex < wordsToShow; ++wordIndex)
-			o << (wordIndex % 8 == 0 ? "\n    " : " ") << std::hex << std::setw(4) << std::setfill('0')
-			  << payloadWords[wordIndex];
-		o << std::dec << std::setfill(' ') << "\n  Stopping the buffer test (Check ROC Emulator Data is on).";
+			o << (wordIndex % 8 == 0 ? "\n    " : " ") << std::hex << std::setw(4)
+			  << std::setfill('0') << payloadWords[wordIndex];
+		o << std::dec << std::setfill(' ')
+		  << "\n  Stopping the buffer test (Check ROC Emulator Data is on).";
 		threadStruct.rocEmulatorFirstErrors_.push_back(o.str());
 		throw std::runtime_error(o.str());
 	};
@@ -209,39 +214,47 @@ void checkROCEmulatorBlock(DTCFrontEndInterface::DetachedBufferTestThreadStruct&
 		threadStruct.rocEmulatorExpectedPackets_ = packets;
 	else if(packets != threadStruct.rocEmulatorExpectedPackets_)
 		noteError(threadStruct.rocEmulatorPacketCountErrorsCount_,
-		          "packet count " + std::to_string(packets) + " != " +
-		              std::to_string(threadStruct.rocEmulatorExpectedPackets_) + " seen first");
+		          "packet count " + std::to_string(packets) +
+		              " != " + std::to_string(threadStruct.rocEmulatorExpectedPackets_) +
+		              " seen first");
 
 	const uint16_t* words     = reinterpret_cast<const uint16_t*>(dataBlock.GetData());
 	const size_t    wordCount = static_cast<size_t>(payloadBytes) / 2;
 	if(wordCount < 2)
 		return;
-	const uint16_t streamKey       = static_cast<uint16_t>((uint16_t(sourceDTCId) << 3) | link);
+	const uint16_t streamKey = static_cast<uint16_t>((uint16_t(sourceDTCId) << 3) | link);
 	const uint16_t constantWord    = words[0];
 	uint16_t       expectedCounter = words[1];
 	auto           previous        = threadStruct.rocEmulatorNextCounter_.find(streamKey);
-	if(previous != threadStruct.rocEmulatorNextCounter_.end() && words[1] != previous->second)
-		noteError(threadStruct.rocEmulatorDataErrorsCount_,
-		          "block starts at counter " + hex4(words[1]) + ", expected " + hex4(previous->second) +
-		              " after the previous block (" +
-		              std::to_string(static_cast<uint16_t>(words[1] - previous->second) / 2) + " pairs skipped)");
+	if(previous != threadStruct.rocEmulatorNextCounter_.end() &&
+	   words[1] != previous->second)
+		noteError(
+		    threadStruct.rocEmulatorDataErrorsCount_,
+		    "block starts at counter " + hex4(words[1]) + ", expected " +
+		        hex4(previous->second) + " after the previous block (" +
+		        std::to_string(static_cast<uint16_t>(words[1] - previous->second) / 2) +
+		        " pairs skipped)");
 	for(size_t index = 0; index + 1 < wordCount; index += 2)
 	{
 		if(words[index] != constantWord)
 		{
 			noteError(threadStruct.rocEmulatorDataErrorsCount_,
-			          "pair " + std::to_string(index / 2) + " constant " + hex4(words[index]) + " != " + hex4(constantWord));
+			          "pair " + std::to_string(index / 2) + " constant " +
+			              hex4(words[index]) + " != " + hex4(constantWord));
 			break;
 		}
 		if(words[index + 1] != expectedCounter)
 		{
 			noteError(threadStruct.rocEmulatorDataErrorsCount_,
-			          "pair " + std::to_string(index / 2) + " counter " + hex4(words[index + 1]) + " != expected " + hex4(expectedCounter));
+			          "pair " + std::to_string(index / 2) + " counter " +
+			              hex4(words[index + 1]) + " != expected " +
+			              hex4(expectedCounter));
 			break;
 		}
 		expectedCounter = static_cast<uint16_t>(expectedCounter + 2);
 	}
-	threadStruct.rocEmulatorNextCounter_[streamKey] = static_cast<uint16_t>(words[wordCount - 1] + 2);
+	threadStruct.rocEmulatorNextCounter_[streamKey] =
+	    static_cast<uint16_t>(words[wordCount - 1] + 2);
 }
 
 // Sum (now - last snapshot) into the run totals, wrap-safe in 32 bits, then advance the snapshot
@@ -597,7 +610,8 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::SetupROCs),
 	    std::vector<std::string>{
-	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
+	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := "
+	        "all)",
 	        "Set Link RX/TX Enable (Default := false)",
 	        "Set Link Timing Enable (Default := false)",
 	        "Set ROC Emulation Enable (Default := false)",
@@ -634,10 +648,10 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    "ROC Write",  // feMacroName
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::WriteROC),  // feMacroFunction
-	    std::vector<std::string>{
-	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
-	        "address",
-	        "writeData"},
+	    std::vector<std::string>{"Target ROC or Mask (Default = -1 := all configured "
+	                             "ROCs, or 0x111111 := all)",
+	                             "address",
+	                             "writeData"},
 	    std::vector<std::string>{"Result"},  // namesOfOutput
 	    1,                                   // requiredUserPermissions
 	    "*",                                 // allowedCallingFEs
@@ -648,7 +662,8 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::ReadROC),  // feMacroFunction
 	    std::vector<std::string>{
-	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
+	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := "
+	        "all)",
 	        "address",
 	        "Fail on Exception (Default := true)"},  // namesOfInputArgs
 	    std::vector<std::string>{"readData"},
@@ -662,8 +677,8 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    "ROC Firmware Inventory",
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::ROCFirmwareInventory),
-	    std::vector<std::string>{
-	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)"},
+	    std::vector<std::string>{"Target ROC or Mask (Default = -1 := all configured "
+	                             "ROCs, or 0x111111 := all)"},
 	    std::vector<std::string>{"Status", "InventoryJSON"},
 	    1,
 	    "*",
@@ -686,11 +701,11 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    "ROC Block Read",
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::BlockReadROC),
-	    std::vector<std::string>{
-	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
-	        "address",
-	        "Number Of 16-bit words to Read (Default := 8)",
-	        "incrementAddress (Default := false)"},
+	    std::vector<std::string>{"Target ROC or Mask (Default = -1 := all configured "
+	                             "ROCs, or 0x111111 := all)",
+	                             "address",
+	                             "Number Of 16-bit words to Read (Default := 8)",
+	                             "incrementAddress (Default := false)"},
 	    std::vector<std::string>{"readData"},
 	    1,  // requiredUserPermissions
 	    "*",
@@ -701,7 +716,8 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::BlockWriteROC),
 	    std::vector<std::string>{
-	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
+	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := "
+	        "all)",
 	        "address",
 	        "writeData (CSV-literal or CSV-filename of 16-bit words, or keyword + "
 	        "parameter 'AUTOGENERATE count')",
@@ -730,11 +746,11 @@ void DTCFrontEndInterface::registerFEMacros(void)
 		    "ROC_Write_ExtRegister",  // feMacroName
 		    static_cast<FEVInterface::frontEndMacroFunction_t>(
 		        &DTCFrontEndInterface::WriteExternalROCRegister),  // feMacroFunction
-		    std::vector<std::string>{
-		        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
-		        "block",
-		        "address",
-		        "writeData"},
+		    std::vector<std::string>{"Target ROC or Mask (Default = -1 := all configured "
+		                             "ROCs, or 0x111111 := all)",
+		                             "block",
+		                             "address",
+		                             "writeData"},
 		    std::vector<std::string>{"Result"},  // namesOfOutputArgs
 		    1);                                  // requiredUserPermissions
 
@@ -742,10 +758,10 @@ void DTCFrontEndInterface::registerFEMacros(void)
 		    "ROC_Read_ExtRegister",
 		    static_cast<FEVInterface::frontEndMacroFunction_t>(
 		        &DTCFrontEndInterface::ReadExternalROCRegister),
-		    std::vector<std::string>{
-		        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
-		        "block",
-		        "address"},
+		    std::vector<std::string>{"Target ROC or Mask (Default = -1 := all configured "
+		                             "ROCs, or 0x111111 := all)",
+		                             "block",
+		                             "address"},
 		    std::vector<std::string>{"readData"},
 		    1);  // requiredUserPermissions
 	}
@@ -807,12 +823,12 @@ void DTCFrontEndInterface::registerFEMacros(void)
 		    "DTC_HighRate_DCS_Check",
 		    static_cast<FEVInterface::frontEndMacroFunction_t>(
 		        &DTCFrontEndInterface::DTCHighRateDCSCheck),
-		    std::vector<std::string>{
-		        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
-		        "loops",
-		        "baseAddress",
-		        "correctRegisterValue0",
-		        "correctRegisterValue1"},
+		    std::vector<std::string>{"Target ROC or Mask (Default = -1 := all configured "
+		                             "ROCs, or 0x111111 := all)",
+		                             "loops",
+		                             "baseAddress",
+		                             "correctRegisterValue0",
+		                             "correctRegisterValue1"},
 		    std::vector<std::string>{},
 		    1);  // requiredUserPermissions
 
@@ -820,12 +836,12 @@ void DTCFrontEndInterface::registerFEMacros(void)
 		    "DTC_HighRate_DCS_Block_Check",
 		    static_cast<FEVInterface::frontEndMacroFunction_t>(
 		        &DTCFrontEndInterface::DTCHighRateBlockCheck),
-		    std::vector<std::string>{
-		        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
-		        "loops",
-		        "baseAddress",
-		        "correctRegisterValue0",
-		        "correctRegisterValue1"},
+		    std::vector<std::string>{"Target ROC or Mask (Default = -1 := all configured "
+		                             "ROCs, or 0x111111 := all)",
+		                             "loops",
+		                             "baseAddress",
+		                             "correctRegisterValue0",
+		                             "correctRegisterValue1"},
 		    std::vector<std::string>{},
 		    1);  // requiredUserPermissions
 
@@ -1342,21 +1358,32 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    std::vector<std::string>{
 	        "Idle Payload Words (8-byte words, keep 12..197, Default := no change)",
 	        "Interpacket Gap in GbE TX clocks (keep >= 12, Default := no change)",
-	        "Idles per Dest Window (0x9170; 0 or 1 = one, N = up to N, Default := no change)",
-	        "Dead Time at Window Switch in GbE TX clocks (0x9158[31:16], Default := no change)",
-	        "Self Chunk Cap in 8-byte words (0x9178[15:0]; 0 = whole record, reset 1024, Default := no change)",
-	        "Remote Chunk Control (0x917C whole word, hex: hold clocks [31:16], min remote chunk words [15:0]; reset 0x04000080; build 3+, Default := no change)",
+	        "Idles per Dest Window (0x9170; 0 or 1 = one, N = up to N, Default := no "
+	        "change)",
+	        "Dead Time at Window Switch in GbE TX clocks (0x9158[31:16], Default := no "
+	        "change)",
+	        "Self Chunk Cap in 8-byte words (0x9178[15:0]; 0 = whole record, reset 1024, "
+	        "Default := no change)",
+	        "Remote Chunk Control (0x917C whole word, hex: hold clocks [31:16], min "
+	        "remote chunk words [15:0]; reset 0x04000080; build 3+, Default := no "
+	        "change)",
 	        "SoftReset first (Default := false)"},
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
-	    "Knobs for the pure-idle link test (EVB3_software_status_registers.md): idle frame "
-	    "size and rate without any data in the loop. Sets 0x915C (idle words, gap), 0x9170 "
-	    "(idles per window) and 0x9158[31:16] (dead time), each read-modify-write, and prints "
+	    "Knobs for the pure-idle link test (EVB3_software_status_registers.md): idle "
+	    "frame "
+	    "size and rate without any data in the loop. Sets 0x915C (idle words, gap), "
+	    "0x9170 "
+	    "(idles per window) and 0x9158[31:16] (dead time), each read-modify-write, and "
+	    "prints "
 	    "the resulting frame size, idles per window and packets/s per direction. Limits "
-	    "(hw agent 2026-10-07): 12..197 idle words (smaller = runt the switch drops, larger "
-	    "= 0x9370 bit 11 no longer means length mismatch), gap >= 12, dead time 0xFFFF is "
-	    "a special one-frame-per-marker mode. Also sets the self chunk cap 0x9178 (live) for "
+	    "(hw agent 2026-10-07): 12..197 idle words (smaller = runt the switch drops, "
+	    "larger "
+	    "= 0x9370 bit 11 no longer means length mismatch), gap >= 12, dead time 0xFFFF "
+	    "is "
+	    "a special one-frame-per-marker mode. Also sets the self chunk cap 0x9178 (live) "
+	    "for "
 	    "the data-rate study. Run on every DTC in the cluster. Then run a "
 	    "fixed time, freeze with TX disable only (0x9114 bit 7) and compare TxCount / "
 	    "TxIdleCount with the switch counters and the peer's RxIdleCount.");
@@ -1469,7 +1496,8 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	        &DTCFrontEndInterface::ProgramROCs),  // feMacroFunction
 	    std::vector<std::string>{
 	        //First, only write the bitfile, manually readback .. do not reprogram yet!
-	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
+	        "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := "
+	        "all)",
 	        "Path to Directory map file (Default := do not use)",
 	        "Write Directory map to SPI Flash (Default := false)",
 	        "Verify Directory map (Default := false)",
@@ -1564,7 +1592,8 @@ void DTCFrontEndInterface::registerFEMacros(void)
 					std::vector<std::string> inputArgs, outputArgs;
 					//take ROC target as parameter for ROC FE Macros (allow -1 as wildcard for all configured ROCs)
 					inputArgs.push_back(
-					    "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := "
+					    "Target ROC or Mask (Default = -1 := all configured ROCs, or "
+					    "0x111111 := "
 					    "all)");
 					for(auto& inArg : feMacro.second.namesOfInputArguments_)
 						inputArgs.push_back(inArg);
@@ -4579,7 +4608,8 @@ void DTCFrontEndInterface::ReadROC(__ARGS__)
 			__FE_COUTT__ << "Doing " << roc.second->getLinkID() << __E__;
 
 			std::string rocLabel =
-			    "(" + std::to_string(static_cast<uint8_t>(roc.second->getLinkID())) + ") ";
+			    "(" + std::to_string(static_cast<uint8_t>(roc.second->getLinkID())) +
+			    ") ";
 
 			DTCLib::roc_data_t readData = 0;
 			std::string        readError;
@@ -4604,18 +4634,19 @@ void DTCFrontEndInterface::ReadROC(__ARGS__)
 			{
 				if(failOnException)  //give user feedback on ROC status if exception caught
 				{
-					__SS__ << "Error during ROC read of link " << roc.second->getLinkID()
-					       << " - check that the ROC is enabled and ready; here is the DTC "
-					          "ROC setup: "
-					       << getDTC()->FormattedRegDump(
-					              0, getDTC()->formattedROCEmulationFunctions_)
-					       << "\nHere was the error: " << readError << __E__;
+					__SS__
+					    << "Error during ROC read of link " << roc.second->getLinkID()
+					    << " - check that the ROC is enabled and ready; here is the DTC "
+					       "ROC setup: "
+					    << getDTC()->FormattedRegDump(
+					           0, getDTC()->formattedROCEmulationFunctions_)
+					    << "\nHere was the error: " << readError << __E__;
 					__SS_THROW__;
 				}
 
-				__FE_COUT_WARN__ << "ROC read of link " << roc.second->getLinkID()
-				                 << " failed, continuing with remaining ROCs: " << readError
-				                 << __E__;
+				__FE_COUT_WARN__
+				    << "ROC read of link " << roc.second->getLinkID()
+				    << " failed, continuing with remaining ROCs: " << readError << __E__;
 				if(failedRocResults.size())
 					failedRocResults += ", ";
 				failedRocResults +=
@@ -4648,7 +4679,8 @@ void DTCFrontEndInterface::ReadROC(__ARGS__)
 	}
 
 	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal
-	          << " not found (-1 targets only ROCs present in the configuration)!" << __E__;
+	          << " not found (-1 targets only ROCs present in the configuration)!"
+	          << __E__;
 	__FE_SS_THROW__;
 }  // end ReadROC()
 
@@ -5038,7 +5070,8 @@ void DTCFrontEndInterface::WriteROC(__ARGS__)
 		return;
 	}
 
-	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal << " not found (-1 targets only ROCs present in the configuration)!"
+	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal
+	          << " not found (-1 targets only ROCs present in the configuration)!"
 	          << __E__;
 	__FE_SS_THROW__;
 }  // end WriteROC()
@@ -5140,7 +5173,8 @@ void DTCFrontEndInterface::WriteExternalROCRegister(__ARGS__)
 		return;
 	}
 
-	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal << " not found (-1 targets only ROCs present in the configuration)!"
+	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal
+	          << " not found (-1 targets only ROCs present in the configuration)!"
 	          << __E__;
 	__FE_SS_THROW__;
 }  // end WriteExternalROCRegister()
@@ -5233,7 +5267,8 @@ void DTCFrontEndInterface::ReadExternalROCRegister(__ARGS__)
 		return;
 	}
 
-	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal << " not found (-1 targets only ROCs present in the configuration)!"
+	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal
+	          << " not found (-1 targets only ROCs present in the configuration)!"
 	          << __E__;
 	__FE_SS_THROW__;
 }  // end ReadExternalROCRegister()
@@ -5344,7 +5379,8 @@ void DTCFrontEndInterface::BlockReadROC(__ARGS__)
 		return;
 	}
 
-	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal << " not found (-1 targets only ROCs present in the configuration)!"
+	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal
+	          << " not found (-1 targets only ROCs present in the configuration)!"
 	          << __E__;
 	__FE_SS_THROW__;
 
@@ -5511,7 +5547,8 @@ void DTCFrontEndInterface::BlockWriteROC(__ARGS__)
 		return;
 	}
 
-	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal << " not found (-1 targets only ROCs present in the configuration)!"
+	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal
+	          << " not found (-1 targets only ROCs present in the configuration)!"
 	          << __E__;
 	__FE_SS_THROW__;
 
@@ -5578,7 +5615,8 @@ void DTCFrontEndInterface::DTCHighRateBlockCheck(__ARGS__)
 	if(!found)
 	{
 		__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal
-		          << " not found (-1 targets only ROCs present in the configuration)!" << __E__;
+		          << " not found (-1 targets only ROCs present in the configuration)!"
+		          << __E__;
 		__FE_SS_THROW__;
 	}
 
@@ -5644,7 +5682,8 @@ void DTCFrontEndInterface::DTCHighRateDCSCheck(__ARGS__)
 	if(!found)
 	{
 		__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal
-		          << " not found (-1 targets only ROCs present in the configuration)!" << __E__;
+		          << " not found (-1 targets only ROCs present in the configuration)!"
+		          << __E__;
 		__FE_SS_THROW__;
 	}
 
@@ -5804,7 +5843,8 @@ void DTCFrontEndInterface::RunROCFEMacro(__ARGS__)
 		__FE_COUT__ << "Using ROC Link Index parameter to define ROC target" << __E__;
 
 		uint32_t rocLinkIndexVal = __GET_ARG_IN__(
-		    "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
+		    "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := "
+		    "all)",
 		    uint32_t,
 		    -1 /* all configured ROCs */);
 		bool usingRocMask = false;
@@ -7482,9 +7522,11 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		const uint16_t localChunkCapWords = dtc->ReadEVBLocalChunkCap();
 		{
 			const uint32_t remoteChunkControl = dtc->ReadEVBRemoteChunkControl();
-			o << "  Remote chunk control (0x917C): 0x" << std::hex << std::setw(8) << std::setfill('0')
-			  << remoteChunkControl << std::dec << std::setfill(' ') << " = hold " << (remoteChunkControl >> 16)
-			  << " clocks, min remote chunk " << (remoteChunkControl & 0xFFFFu) << " words (build 3+; reset 0x04000080)\n";
+			o << "  Remote chunk control (0x917C): 0x" << std::hex << std::setw(8)
+			  << std::setfill('0') << remoteChunkControl << std::dec << std::setfill(' ')
+			  << " = hold " << (remoteChunkControl >> 16) << " clocks, min remote chunk "
+			  << (remoteChunkControl & 0xFFFFu)
+			  << " words (build 3+; reset 0x04000080)\n";
 		}
 		o << "  Self chunk cap (0x9178): " << localChunkCapWords << " words"
 		  << (localChunkCapWords == 0 ? " (0 = whole-record self chunks)" : "")
@@ -8077,20 +8119,24 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 	    int,
 	    -1);
 	const int deadTimeInput = __GET_ARG_IN__(
-	    "Dead Time at Window Switch in GbE TX clocks (0x9158[31:16], Default := no change)",
+	    "Dead Time at Window Switch in GbE TX clocks (0x9158[31:16], Default := no "
+	    "change)",
 	    int,
 	    -1);
 	const int selfChunkCapInput = __GET_ARG_IN__(
-	    "Self Chunk Cap in 8-byte words (0x9178[15:0]; 0 = whole record, reset 1024, Default := no change)",
+	    "Self Chunk Cap in 8-byte words (0x9178[15:0]; 0 = whole record, reset 1024, "
+	    "Default := no change)",
 	    int,
 	    -1);
 	const std::string remoteChunkControlInput = __GET_ARG_IN__(
-	    "Remote Chunk Control (0x917C whole word, hex: hold clocks [31:16], min remote chunk words [15:0]; reset 0x04000080; build 3+, Default := no change)",
+	    "Remote Chunk Control (0x917C whole word, hex: hold clocks [31:16], min remote "
+	    "chunk words [15:0]; reset 0x04000080; build 3+, Default := no change)",
 	    std::string,
 	    "");
-	const bool softResetFirst = __GET_ARG_IN__("SoftReset first (Default := false)", bool, false);
+	const bool softResetFirst =
+	    __GET_ARG_IN__("SoftReset first (Default := false)", bool, false);
 
-	auto dtc = getDTC();
+	auto               dtc = getDTC();
 	std::ostringstream o;
 	o << "EVB idle packet setup on " << dtc->getDeviceUID() << "\n";
 
@@ -8104,9 +8150,10 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 	if(idleWordsInput > 0xFFFF || gapInput > 0xFF || idlesPerWindowInput > 0xFFFF ||
 	   deadTimeInput > 0xFFFF)
 	{
-		__FE_SS__ << "Input out of register range: idle words and idles per window are 16-bit, "
-		             "gap is 8-bit, dead time is 16-bit."
-		          << __E__;
+		__FE_SS__
+		    << "Input out of register range: idle words and idles per window are 16-bit, "
+		       "gap is 8-bit, dead time is 16-bit."
+		    << __E__;
 		__FE_SS_THROW__;
 	}
 
@@ -8118,12 +8165,15 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 
 	if(idleWordsInput >= 0 || gapInput >= 0)
 	{
-		const uint16_t idleWords = idleWordsInput >= 0 ? static_cast<uint16_t>(idleWordsInput)
-		                                               : dtc->ReadEVBIdlePacketWordCount();
-		const uint8_t gap = gapInput >= 0 ? static_cast<uint8_t>(gapInput)
-		                                  : dtc->ReadEVBInterpacketGap();
-		dtc->SetEVBPacketControlInfo(idleWords, gap, dtc->ReadEVBLoopbackCalibratedOffset());
-		o << "  Wrote 0x915C: idle words = " << idleWords << ", gap = " << (int)gap << "\n";
+		const uint16_t idleWords = idleWordsInput >= 0
+		                               ? static_cast<uint16_t>(idleWordsInput)
+		                               : dtc->ReadEVBIdlePacketWordCount();
+		const uint8_t  gap =
+            gapInput >= 0 ? static_cast<uint8_t>(gapInput) : dtc->ReadEVBInterpacketGap();
+		dtc->SetEVBPacketControlInfo(
+		    idleWords, gap, dtc->ReadEVBLoopbackCalibratedOffset());
+		o << "  Wrote 0x915C: idle words = " << idleWords << ", gap = " << (int)gap
+		  << "\n";
 	}
 	if(idlesPerWindowInput >= 0)
 	{
@@ -8133,18 +8183,21 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 	if(deadTimeInput >= 0)
 	{
 		dtc->SetEVBDeadTime(static_cast<uint16_t>(deadTimeInput));
-		o << "  Wrote 0x9158[31:16]: dead time = " << deadTimeInput << " (node fields kept)\n";
+		o << "  Wrote 0x9158[31:16]: dead time = " << deadTimeInput
+		  << " (node fields kept)\n";
 	}
 	if(selfChunkCapInput >= 0)
 	{
 		if(selfChunkCapInput > 0xFFFF)
 		{
-			__FE_SS__ << "Self chunk cap " << selfChunkCapInput << " does not fit 0x9178[15:0]." << __E__;
+			__FE_SS__ << "Self chunk cap " << selfChunkCapInput
+			          << " does not fit 0x9178[15:0]." << __E__;
 			__FE_SS_THROW__;
 		}
 		dtc->SetEVBLocalChunkCap(static_cast<uint16_t>(selfChunkCapInput));
-		o << "  Wrote 0x9178[15:0]: self chunk cap = " << selfChunkCapInput << " words (read back "
-		  << dtc->ReadEVBLocalChunkCap() << "; live register, no SoftReset needed; 1..31 act as 32)\n";
+		o << "  Wrote 0x9178[15:0]: self chunk cap = " << selfChunkCapInput
+		  << " words (read back " << dtc->ReadEVBLocalChunkCap()
+		  << "; live register, no SoftReset needed; 1..31 act as 32)\n";
 	}
 	if(!remoteChunkControlInput.empty() && remoteChunkControlInput != "Default")
 	{
@@ -8152,10 +8205,13 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 		    static_cast<uint32_t>(std::stoul(remoteChunkControlInput, nullptr, 0));
 		dtc->SetEVBRemoteChunkControl(remoteChunkControl);
 		const uint32_t readBack = dtc->ReadEVBRemoteChunkControl();
-		o << "  Wrote 0x917C = 0x" << std::hex << std::setw(8) << std::setfill('0') << remoteChunkControl
-		  << " (read back 0x" << std::setw(8) << readBack << std::dec << std::setfill(' ') << "): hold "
-		  << (readBack >> 16) << " clocks, min remote chunk " << (readBack & 0xFFFFu) << " words"
-		  << (readBack != remoteChunkControl ? "  (READ BACK DIFFERS: register not in this bitfile?)" : "")
+		o << "  Wrote 0x917C = 0x" << std::hex << std::setw(8) << std::setfill('0')
+		  << remoteChunkControl << " (read back 0x" << std::setw(8) << readBack
+		  << std::dec << std::setfill(' ') << "): hold " << (readBack >> 16)
+		  << " clocks, min remote chunk " << (readBack & 0xFFFFu) << " words"
+		  << (readBack != remoteChunkControl
+		          ? "  (READ BACK DIFFERS: register not in this bitfile?)"
+		          : "")
 		  << "\n";
 	}
 
@@ -8165,42 +8221,49 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 	const uint16_t idlesPerWindow = dtc->ReadEVBIdleBurst();
 	const uint16_t deadTime       = dtc->ReadEVBDeadTime();
 	const int      numberOfNodes  = dtc->ReadEVBNumberOfDestinationNodes();
-	const auto     evbLinkEnable  = dtc->ReadLinkEnabled(DTCLib::DTC_Link_ID::DTC_Link_EVB);
+	const auto evbLinkEnable = dtc->ReadLinkEnabled(DTCLib::DTC_Link_ID::DTC_Link_EVB);
 
-	constexpr double windowClocks       = 4 * 254.0;  // 4 CFO markers at 254 clocks each
-	constexpr double clockNs            = 6.4;        // 156.25 MHz txgbeclk
-	const int        beatsPerIdle       = idleWords + 5 + gap;
-	const int        idlesThatFit       = static_cast<int>(windowClocks / beatsPerIdle);
-	const int        idlesRequested     = idlesPerWindow == 0 ? 1 : idlesPerWindow;
-	const int        idlesSent          = std::min(idlesRequested, idlesThatFit);
-	const double     windowSeconds      = (windowClocks + deadTime) * clockNs * 1e-9;
-	const double     packetsPerSecond   = idlesSent / windowSeconds;
-	const int        frameBytes         = 24 + 8 * idleWords + 4;
+	constexpr double windowClocks     = 4 * 254.0;  // 4 CFO markers at 254 clocks each
+	constexpr double clockNs          = 6.4;        // 156.25 MHz txgbeclk
+	const int        beatsPerIdle     = idleWords + 5 + gap;
+	const int        idlesThatFit     = static_cast<int>(windowClocks / beatsPerIdle);
+	const int        idlesRequested   = idlesPerWindow == 0 ? 1 : idlesPerWindow;
+	const int        idlesSent        = std::min(idlesRequested, idlesThatFit);
+	const double     windowSeconds    = (windowClocks + deadTime) * clockNs * 1e-9;
+	const double     packetsPerSecond = idlesSent / windowSeconds;
+	const int        frameBytes       = 24 + 8 * idleWords + 4;
 
 	o << "  Now: idle words = " << idleWords << ", gap = " << (int)gap
 	  << ", idles per window = " << idlesPerWindow << ", dead time = " << deadTime
 	  << ", dest nodes = " << numberOfNodes << ", EVB link TX "
 	  << (evbLinkEnable.TransmitEnable ? "on" : "OFF") << "\n";
-	o << "  Frame on the wire: " << frameBytes << " B (24 + 8 x words + FCS); one idle takes ~"
-	  << beatsPerIdle << " beats = " << std::fixed << std::setprecision(2)
+	o << "  Frame on the wire: " << frameBytes
+	  << " B (24 + 8 x words + FCS); one idle takes ~" << beatsPerIdle
+	  << " beats = " << std::fixed << std::setprecision(2)
 	  << (beatsPerIdle * clockNs * 1e-3) << " us\n";
-	o << "  Window: " << windowClocks << " clocks + " << deadTime << " dead = "
-	  << std::setprecision(2) << (windowSeconds * 1e6) << " us; idles per window = min("
-	  << idlesRequested << ", " << idlesThatFit << ") = " << idlesSent << "\n";
-	o << "  Rate per direction: " << std::setprecision(1) << (packetsPerSecond * frameBytes * 1e-6)
-	  << " MB/s (" << std::setprecision(0) << packetsPerSecond << " frames/s of " << frameBytes
-	  << " B)" << (idlesRequested > idlesThatFit ? "  (window is full)" : "") << "\n";
+	o << "  Window: " << windowClocks << " clocks + " << deadTime
+	  << " dead = " << std::setprecision(2) << (windowSeconds * 1e6)
+	  << " us; idles per window = min(" << idlesRequested << ", " << idlesThatFit
+	  << ") = " << idlesSent << "\n";
+	o << "  Rate per direction: " << std::setprecision(1)
+	  << (packetsPerSecond * frameBytes * 1e-6) << " MB/s (" << std::setprecision(0)
+	  << packetsPerSecond << " frames/s of " << frameBytes << " B)"
+	  << (idlesRequested > idlesThatFit ? "  (window is full)" : "") << "\n";
 
 	if(idleWords < 12)
-		o << "  WARNING: idle words < 12: frames are runts (never padded); the switch drops "
+		o << "  WARNING: idle words < 12: frames are runts (never padded); the switch "
+		     "drops "
 		     "them and the receiver needs 16 beats per frame.\n";
 	if(idleWords > 197)
-		o << "  WARNING: idle words > 197: over 200 data blocks, so 0x9370 bit 11 fires as a "
+		o << "  WARNING: idle words > 197: over 200 data blocks, so 0x9370 bit 11 fires "
+		     "as a "
 		     "runaway and no longer means length mismatch.\n";
 	if(gap < 12)
 		o << "  WARNING: gap < 12 is below the protocol minimum.\n";
-	o << "  Next: SoftReset all DTCs together, clear the switch counters, run a fixed time, "
-	     "freeze with TX disable only (0x9114 bit 7), then compare TxCount and TxIdleCount "
+	o << "  Next: SoftReset all DTCs together, clear the switch counters, run a fixed "
+	     "time, "
+	     "freeze with TX disable only (0x9114 bit 7), then compare TxCount and "
+	     "TxIdleCount "
 	     "with the switch in/out counts and the peer's RxIdleCount (EVB Status).\n";
 
 	__FE_COUT_INFO__ << o.str();
@@ -9657,7 +9720,8 @@ std::string DTCFrontEndInterface::getDetachedBufferTestStatus(
 
 		if(threadStruct->checkROCEmulatorData_)
 		{
-			statusSs << "ROC Emulator Data Check (16-bit pairs [constant, counter+2], continuous per "
+			statusSs << "ROC Emulator Data Check (16-bit pairs [constant, counter+2], "
+			            "continuous per "
 			            "source and link; equal packet count on every block)..."
 			         << __E__;
 			statusSs << "\t Expected packets per block: "
@@ -9665,11 +9729,11 @@ std::string DTCFrontEndInterface::getDetachedBufferTestStatus(
 			for(size_t i = 0; i < threadStruct->rocEmulatorDataErrorsCount_.size(); ++i)
 			{
 				statusSs << "\t Roc-" << i << " Pattern errors:"
-			         << threadStruct->rocEmulatorDataErrorsCount_[i]
-			         << " Packet-count errors:"
-			         << threadStruct->rocEmulatorPacketCountErrorsCount_[i] << __E__;
+				         << threadStruct->rocEmulatorDataErrorsCount_[i]
+				         << " Packet-count errors:"
+				         << threadStruct->rocEmulatorPacketCountErrorsCount_[i] << __E__;
 				totalROCerrors += threadStruct->rocEmulatorDataErrorsCount_[i] +
-			                  threadStruct->rocEmulatorPacketCountErrorsCount_[i];
+				                  threadStruct->rocEmulatorPacketCountErrorsCount_[i];
 			}
 			for(const auto& firstError : threadStruct->rocEmulatorFirstErrors_)
 				statusSs << "\t\t " << firstError << __E__;
@@ -9717,18 +9781,28 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			kv("Detached thread caught error") << threadStruct->error_ << __E__;
 		kv("Detached thread running")
 		    << (threadStruct->running_ ? "true" : "false") << __E__;
-		kv("Mode") << (threadStruct->evbDrainOnly_ ? "EVB DRAIN-ONLY (no event assembly)" : "EVB")
+		kv("Mode") << (threadStruct->evbDrainOnly_ ? "EVB DRAIN-ONLY (no event assembly)"
+		                                           : "EVB")
 		           << __E__;
 		if(threadStruct->evbDrainOnly_)
 		{
 			kv("EVB Drain-Only Chunk Bytes Seen (DTC cumulative)")
-			    << (threadStruct->thisDTC_ ? threadStruct->thisDTC_->GetEVBDrainedBytes() : 0) << __E__;
+			    << (threadStruct->thisDTC_ ? threadStruct->thisDTC_->GetEVBDrainedBytes()
+			                               : 0)
+			    << __E__;
 			kv("EVB DMA Buffers Read (DTC cumulative)")
-			    << (threadStruct->thisDTC_ ? threadStruct->thisDTC_->GetEVBDMABuffersRead() : 0) << __E__;
-			statusSs << "\tDrain-only: SubEvents/Event counts stay 0 by design; Total Subevent Bytes and "
-			            "Average Data Rate below are FAFA chunk payload bytes (subevent data incl. headers, "
-			            "without the 8-byte chunk headers).  Compare the MB/s against a normal EVB run at the "
-			            "same settings to size the software assembly cost." << __E__;
+			    << (threadStruct->thisDTC_
+			            ? threadStruct->thisDTC_->GetEVBDMABuffersRead()
+			            : 0)
+			    << __E__;
+			statusSs << "\tDrain-only: SubEvents/Event counts stay 0 by design; Total "
+			            "Subevent Bytes and "
+			            "Average Data Rate below are FAFA chunk payload bytes (subevent "
+			            "data incl. headers, "
+			            "without the 8-byte chunk headers).  Compare the MB/s against a "
+			            "normal EVB run at the "
+			            "same settings to size the software assembly cost."
+			         << __E__;
 		}
 		statusSs << getDetachedMergeStatus(threadStruct, kvW);
 
@@ -9798,8 +9872,9 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 		    << (threadStruct->thisDTC_ ? threadStruct->thisDTC_->GetEVBChunksParsed() : 0)
 		    << __E__;
 		kv("EVB Remote FAFA Chunk Sizes (DTC cumulative)")
-		    << (threadStruct->thisDTC_ ? threadStruct->thisDTC_->FormatEVBRemoteChunkSizes()
-		                               : std::string("n/a"))
+		    << (threadStruct->thisDTC_
+		            ? threadStruct->thisDTC_->FormatEVBRemoteChunkSizes()
+		            : std::string("n/a"))
 		    << __E__;
 		kv("EVB Framing Errors (DTC cumulative)")
 		    << (threadStruct->thisDTC_ ? threadStruct->thisDTC_->GetEVBFramingErrors()
@@ -9923,16 +9998,19 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 					// evbStallAtStart_ is the LAST snapshot (it moves every ~8 s while the
 					// accumulated sum takes the earlier spans), so the tail is end - last snapshot
 					std::vector<uint64_t> totals;
-					for(size_t index = 0;
-					    index < threadStruct->evbStallAtStart_.size() && index < stallAtEnd.size();
+					for(size_t index = 0; index < threadStruct->evbStallAtStart_.size() &&
+					                      index < stallAtEnd.size();
 					    ++index)
-						totals.push_back(threadStruct->evbStallAccumulated_[index] +
-						                 static_cast<uint32_t>(stallAtEnd[index] -
-						                                       threadStruct->evbStallAtStart_[index]));
+						totals.push_back(
+						    threadStruct->evbStallAccumulated_[index] +
+						    static_cast<uint32_t>(stallAtEnd[index] -
+						                          threadStruct->evbStallAtStart_[index]));
 					statusSs << "HW EVB Stall Time over the run (first subevent -> "
-					         << (threadStruct->evbStallAtEndValid_ ? "last subevent" : "now")
+					         << (threadStruct->evbStallAtEndValid_ ? "last subevent"
+					                                               : "now")
 					         << ")..." << __E__
-					         << threadStruct->thisDTC_->FormatEVBStallCountersTotalsText(totals, "\t ");
+					         << threadStruct->thisDTC_->FormatEVBStallCountersTotalsText(
+					                totals, "\t ");
 				}
 				else
 					statusSs << "HW EVB Stall Time (0x9210-0x9228, since SoftReset; no "
@@ -10012,8 +10090,10 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			statusSs << __E__;
 			// bit 23 = PCIe DMA back-pressure: the sink (this reader) was not keeping up at the
 			// poll; the direct test of whether software is the bottleneck (hw agent 2026-10-07)
-			const uint64_t dmaBackpressure = threadStruct->evbDMABackpressurePolls_.load();
-			kv("HW EVB DMA back-pressure (bit 23) polls") << dmaBackpressure << " of " << polls;
+			const uint64_t dmaBackpressure =
+			    threadStruct->evbDMABackpressurePolls_.load();
+			kv("HW EVB DMA back-pressure (bit 23) polls")
+			    << dmaBackpressure << " of " << polls;
 			if(polls)
 				statusSs << " (" << std::fixed << std::setprecision(1)
 				         << (100.0 * dmaBackpressure / polls) << "%)";
@@ -10021,7 +10101,8 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			// bit 18 = this DTC's window has data but the destination gave no credit; bit 22 =
 			// a peer's data is piling up in this DTC's RX source buffer (hw agent 2026-10-07)
 			const uint64_t creditThrottle = threadStruct->evbCreditThrottlePolls_.load();
-			kv("HW EVB credit throttle (bit 18) polls") << creditThrottle << " of " << polls;
+			kv("HW EVB credit throttle (bit 18) polls")
+			    << creditThrottle << " of " << polls;
 			if(polls)
 				statusSs << " (" << std::fixed << std::setprecision(1)
 				         << (100.0 * creditThrottle / polls) << "%)";
@@ -10366,11 +10447,12 @@ void DTCFrontEndInterface::handleDetachedSubevent(
 			if(dataHeader->GetByteCount() - 16 == 0)  //count empty payloads
 				++(threadStruct->rocPayloadEmptyCount_[dataHeader->GetLinkID()]);
 			if(threadStruct->checkROCEmulatorData_)
-				checkROCEmulatorBlock(*threadStruct,
-				                      *dataHeader,
-				                      dataBlocks[j],
-				                      static_cast<uint8_t>(subevent->GetHeader()->source_dtc_id),
-				                      rxTag);
+				checkROCEmulatorBlock(
+				    *threadStruct,
+				    *dataHeader,
+				    dataBlocks[j],
+				    static_cast<uint8_t>(subevent->GetHeader()->source_dtc_id),
+				    rxTag);
 
 #if 1
 			auto dataPtr = reinterpret_cast<const uint8_t*>(dataBlocks[j].GetData());
@@ -10505,15 +10587,15 @@ try
 		threadStruct->mismatchedEventTagsCount_ = 0;
 		threadStruct->mismatchedEventTagJumps_.clear();
 		threadStruct->evbSourcesSeenForTag_.clear();
-		threadStruct->evbTagSynced_         = false;
-		threadStruct->evbStickyErrorsSeen_  = 0;
-		threadStruct->evbTrafficStarted_    = false;
-		threadStruct->evbStatusReadFailed_  = false;
-		threadStruct->evbSelfThrottlePolls_ = 0;
+		threadStruct->evbTagSynced_            = false;
+		threadStruct->evbStickyErrorsSeen_     = 0;
+		threadStruct->evbTrafficStarted_       = false;
+		threadStruct->evbStatusReadFailed_     = false;
+		threadStruct->evbSelfThrottlePolls_    = 0;
 		threadStruct->evbDMABackpressurePolls_ = 0;
 		threadStruct->evbCreditThrottlePolls_  = 0;
 		threadStruct->evbRxBufferHighPolls_    = 0;
-		threadStruct->evbStatusPolls_       = 0;
+		threadStruct->evbStatusPolls_          = 0;
 		threadStruct->evbRocFragmentsBySource_.clear();
 		threadStruct->evbRocPayloadBytesBySource_.clear();
 		if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
@@ -10523,15 +10605,19 @@ try
 			if(threadStruct->otherDTC_)
 				threadStruct->otherDTC_->SetEVBDrainOnly(threadStruct->evbDrainOnly_);
 			if(threadStruct->evbDrainOnly_)
-				__GEN_COUT_INFO__ << "EVB DRAIN-ONLY mode: FAFA chunks are walked and released without "
-				                     "event assembly; the report shows the software sink ceiling." << __E__;
+				__GEN_COUT_INFO__
+				    << "EVB DRAIN-ONLY mode: FAFA chunks are walked and released without "
+				       "event assembly; the report shows the software sink ceiling."
+				    << __E__;
 			if(threadStruct->evbDrainOnly_ && threadStruct->checkROCEmulatorData_)
-				__GEN_COUT_WARN__ << "Check ROC Emulator Data is ignored in EVB drain-only mode (no subevents are decoded)." << __E__;
+				__GEN_COUT_WARN__ << "Check ROC Emulator Data is ignored in EVB "
+				                     "drain-only mode (no subevents are decoded)."
+				                  << __E__;
 		}
-		threadStruct->subrunTransitionCount_         = 0;
-		threadStruct->lastSubrunBit_                 = false;
-		threadStruct->rocFragmentsCount_             = {0, 0, 0, 0, 0, 0};
-		threadStruct->rocPayloadEmptyCount_          = {0, 0, 0, 0, 0, 0};
+		threadStruct->subrunTransitionCount_             = 0;
+		threadStruct->lastSubrunBit_                     = false;
+		threadStruct->rocFragmentsCount_                 = {0, 0, 0, 0, 0, 0};
+		threadStruct->rocPayloadEmptyCount_              = {0, 0, 0, 0, 0, 0};
 		threadStruct->rocEmulatorDataErrorsCount_        = {0, 0, 0, 0, 0, 0};
 		threadStruct->rocEmulatorPacketCountErrorsCount_ = {0, 0, 0, 0, 0, 0};
 		threadStruct->rocEmulatorExpectedPackets_        = -1;
@@ -10552,8 +10638,10 @@ try
 	}
 
 	uint64_t lastCount = 0;
-	uint64_t lastDrainedBytes        = 0;  // EVB drain-only mode: DTC cumulative chunk bytes at last iteration
-	uint64_t lastDrainedProgressMark = 0;  // EVB drain-only mode: last progress line (100 MB steps)
+	uint64_t lastDrainedBytes =
+	    0;  // EVB drain-only mode: DTC cumulative chunk bytes at last iteration
+	uint64_t lastDrainedProgressMark =
+	    0;  // EVB drain-only mode: last progress line (100 MB steps)
 
 	// EVB mode: per-iteration 0x9370 sample; logged only on change, and the first idle
 	// iteration after data stops is kept for the abort report (see evbErrAtStallOnset_)
@@ -10668,23 +10756,25 @@ try
 						threadStruct->mismatchedEventTagsCount_ = 0;
 						threadStruct->mismatchedEventTagJumps_.clear();
 						threadStruct->evbSourcesSeenForTag_.clear();
-						threadStruct->evbTagSynced_         = false;
-						threadStruct->evbStickyErrorsSeen_  = 0;
-						threadStruct->evbTrafficStarted_    = false;
-						threadStruct->evbStatusReadFailed_  = false;
-						threadStruct->evbSelfThrottlePolls_ = 0;
+						threadStruct->evbTagSynced_            = false;
+						threadStruct->evbStickyErrorsSeen_     = 0;
+						threadStruct->evbTrafficStarted_       = false;
+						threadStruct->evbStatusReadFailed_     = false;
+						threadStruct->evbSelfThrottlePolls_    = 0;
 						threadStruct->evbDMABackpressurePolls_ = 0;
 						threadStruct->evbCreditThrottlePolls_  = 0;
 						threadStruct->evbRxBufferHighPolls_    = 0;
-						threadStruct->evbStatusPolls_       = 0;
+						threadStruct->evbStatusPolls_          = 0;
 						threadStruct->evbRocFragmentsBySource_.clear();
 						threadStruct->evbRocPayloadBytesBySource_.clear();
 						if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
 						{
 							threadStruct->thisDTC_->ResetEVBAssembly();
-							threadStruct->thisDTC_->SetEVBDrainOnly(threadStruct->evbDrainOnly_);
+							threadStruct->thisDTC_->SetEVBDrainOnly(
+							    threadStruct->evbDrainOnly_);
 							if(threadStruct->otherDTC_)
-								threadStruct->otherDTC_->SetEVBDrainOnly(threadStruct->evbDrainOnly_);
+								threadStruct->otherDTC_->SetEVBDrainOnly(
+								    threadStruct->evbDrainOnly_);
 							lastDrainedBytes        = 0;
 							lastDrainedProgressMark = 0;
 						}
@@ -10693,13 +10783,14 @@ try
 						   threadStruct->otherDTC_)
 							threadStruct->otherDTC_->ResetEVBAssembly();
 						resetDetachedMergeState(threadStruct);
-						threadStruct->subrunTransitionCount_         = 0;
-						threadStruct->lastSubrunBit_                 = false;
-						threadStruct->rocFragmentsCount_             = {0, 0, 0, 0, 0, 0};
-						threadStruct->rocPayloadEmptyCount_          = {0, 0, 0, 0, 0, 0};
-						threadStruct->rocEmulatorDataErrorsCount_        = {0, 0, 0, 0, 0, 0};
-						threadStruct->rocEmulatorPacketCountErrorsCount_ = {0, 0, 0, 0, 0, 0};
-						threadStruct->rocEmulatorExpectedPackets_        = -1;
+						threadStruct->subrunTransitionCount_      = 0;
+						threadStruct->lastSubrunBit_              = false;
+						threadStruct->rocFragmentsCount_          = {0, 0, 0, 0, 0, 0};
+						threadStruct->rocPayloadEmptyCount_       = {0, 0, 0, 0, 0, 0};
+						threadStruct->rocEmulatorDataErrorsCount_ = {0, 0, 0, 0, 0, 0};
+						threadStruct->rocEmulatorPacketCountErrorsCount_ = {
+						    0, 0, 0, 0, 0, 0};
+						threadStruct->rocEmulatorExpectedPackets_ = -1;
 						threadStruct->rocEmulatorNextCounter_.clear();
 						threadStruct->rocEmulatorFirstErrors_.clear();
 						threadStruct->rocFragmentTimeoutsCount_      = {0, 0, 0, 0, 0, 0};
@@ -10801,21 +10892,26 @@ try
 				uint64_t drainedTotalBytes = threadStruct->thisDTC_->GetEVBDrainedBytes();
 				if(merging)
 					drainedTotalBytes += threadStruct->otherDTC_->GetEVBDrainedBytes();
-				drainedDeltaBytes = drainedTotalBytes >= lastDrainedBytes
-				                        ? drainedTotalBytes - lastDrainedBytes
-				                        : drainedTotalBytes;  // reader counters were reset
+				drainedDeltaBytes =
+				    drainedTotalBytes >= lastDrainedBytes
+				        ? drainedTotalBytes - lastDrainedBytes
+				        : drainedTotalBytes;  // reader counters were reset
 				lastDrainedBytes = drainedTotalBytes;
 				if(drainedDeltaBytes)
 				{
 					if(threadStruct->transferStartTime_ ==
 					   std::chrono::steady_clock::time_point::min())
-						threadStruct->transferStartTime_ = std::chrono::steady_clock::now();
+						threadStruct->transferStartTime_ =
+						    std::chrono::steady_clock::now();
 					threadStruct->transferEndTime_ = std::chrono::steady_clock::now();
 					threadStruct->totalSubeventBytesTransferred_ += drainedDeltaBytes;
-					if(drainedTotalBytes / (100ull * 1000 * 1000) != lastDrainedProgressMark)
+					if(drainedTotalBytes / (100ull * 1000 * 1000) !=
+					   lastDrainedProgressMark)
 					{
-						lastDrainedProgressMark = drainedTotalBytes / (100ull * 1000 * 1000);
-						__GEN_COUT__ << "EVB drain-only: " << drainedTotalBytes / 1000000 << " MB drained in "
+						lastDrainedProgressMark =
+						    drainedTotalBytes / (100ull * 1000 * 1000);
+						__GEN_COUT__ << "EVB drain-only: " << drainedTotalBytes / 1000000
+						             << " MB drained in "
 						             << threadStruct->thisDTC_->GetEVBDMABuffersRead()
 						             << " DMA buffers at iteration #" << ii << __E__;
 					}
@@ -10857,9 +10953,11 @@ try
 					snapshotEVBStallCounters(threadStruct->thisDTC_,
 					                         threadStruct->evbStallAtStart_,
 					                         threadStruct->evbStallAtStartValid_);
-					threadStruct->evbStallLastSnapshotTime_ = std::chrono::steady_clock::now();
+					threadStruct->evbStallLastSnapshotTime_ =
+					    std::chrono::steady_clock::now();
 				}
-				else if(threadStruct->evbStallAtStartValid_ && !threadStruct->evbStallAtEndValid_ &&
+				else if(threadStruct->evbStallAtStartValid_ &&
+				        !threadStruct->evbStallAtEndValid_ &&
 				        std::chrono::steady_clock::now() -
 				                threadStruct->evbStallLastSnapshotTime_ >
 				            std::chrono::seconds(8))
@@ -10868,7 +10966,8 @@ try
 					accumulateEVBStallCounters(threadStruct->thisDTC_,
 					                           threadStruct->evbStallAtStart_,
 					                           threadStruct->evbStallAccumulated_);
-					threadStruct->evbStallLastSnapshotTime_ = std::chrono::steady_clock::now();
+					threadStruct->evbStallLastSnapshotTime_ =
+					    std::chrono::steady_clock::now();
 				}
 				const auto check =
 				    DTCLib::CheckEVBStatus(evbErr & ~threadStruct->evbStickyIgnoreMask_,
@@ -11410,7 +11509,7 @@ void DTCFrontEndInterface::BufferTest_detached(__ARGS__)
 	// bool displayPayloadAtGUI = __GET_ARG_IN__("Display Payload at GUI (Default: true)", bool, true);
 	unsigned int packetThresholdToSave = __GET_ARG_IN__(
 	    "Payload Packet Threshold for Saving Event (Default: 0)", unsigned int);
-	bool         inEVBMode   = __GET_ARG_IN__("EVB Mode (Default: false)", bool);
+	bool inEVBMode = __GET_ARG_IN__("EVB Mode (Default: false)", bool);
 	checkROCEmulatorData_ =
 	    __GET_ARG_IN__("Check ROC Emulator Data (Default: false)", bool, false);
 	evbDrainOnly_ =
@@ -11568,11 +11667,11 @@ void DTCFrontEndInterface::BufferTest_detached(__ARGS__)
 				bufferTestThreadStruct_->inSubeventMode_        = dataAreSubEvents;
 				bufferTestThreadStruct_->inEVBMode_             = inEVBMode;
 				bufferTestThreadStruct_->evbOperatorIgnoreMask_ = evbOperatorIgnoreMask_;
-			bufferTestThreadStruct_->checkROCEmulatorData_  = checkROCEmulatorData_;
-			bufferTestThreadStruct_->evbDrainOnly_          = evbDrainOnly_;
+				bufferTestThreadStruct_->checkROCEmulatorData_  = checkROCEmulatorData_;
+				bufferTestThreadStruct_->evbDrainOnly_          = evbDrainOnly_;
 				bufferTestThreadStruct_->evbOperatorIgnoreMask_ = evbOperatorIgnoreMask_;
-			bufferTestThreadStruct_->checkROCEmulatorData_  = checkROCEmulatorData_;
-			bufferTestThreadStruct_->evbDrainOnly_          = evbDrainOnly_;
+				bufferTestThreadStruct_->checkROCEmulatorData_  = checkROCEmulatorData_;
+				bufferTestThreadStruct_->evbDrainOnly_          = evbDrainOnly_;
 				bufferTestThreadStruct_->evbNumDestNodes_ =
 				    inEVBMode ? getDTC()->ReadEVBNumberOfDestinationNodes() : 1;
 				bufferTestThreadStruct_->activeMatch_ = activeMatch;

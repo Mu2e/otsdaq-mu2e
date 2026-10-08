@@ -209,13 +209,13 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		// EVB3 stall-time counters (0x9210-0x9228) sampled when traffic starts and on the first
 		// idle iteration after the last subevent (re-armed when data resumes); the difference
 		// gives the run's own stall shares, free of the pre-start idle time and the ~17 s wrap
-		std::atomic<bool>                    evbStallAtStartValid_{false};
-		std::atomic<bool>                    evbStallAtEndValid_{false};
+		std::atomic<bool>                     evbStallAtStartValid_{false};
+		std::atomic<bool>                     evbStallAtEndValid_{false};
 		std::array<std::atomic<uint32_t>, 15> evbStallAtStart_{};  // most recent snapshot (start, then every ~8 s)
 		std::array<std::atomic<uint32_t>, 15> evbStallAtEnd_{};
 		// 32-bit counters wrap after ~17 s, so the thread re-snapshots every ~8 s and sums the
 		// deltas here; the report prints accumulated + (end - last snapshot)
-		std::array<std::atomic<uint64_t>, 15>             evbStallAccumulated_{};
+		std::array<std::atomic<uint64_t>, 15>              evbStallAccumulated_{};
 		std::chrono::time_point<std::chrono::steady_clock> evbStallLastSnapshotTime_;
 
 		uint64_t                                           totalSubeventBytesTransferred_;
