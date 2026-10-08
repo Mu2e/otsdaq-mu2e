@@ -200,6 +200,13 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		std::atomic<uint64_t> evbCreditThrottlePolls_{0};   // bit 18: window has data, destination has no credit
 		std::atomic<uint64_t> evbRxBufferHighPolls_{0};     // bit 22: an RX source buffer >= 3/4 full (peer data piling up)
 		std::atomic<uint64_t> evbStatusPolls_{0};
+		// Software time profile of the EVB loop (steady_clock ns, accumulated per iteration):
+		// where the host spends its time between DMA buffers.  DTCLib keeps the per-step split
+		// inside GetEVBDataAsEvents (DTC::GetEVBReadProfile).
+		std::atomic<uint64_t> evbLoopReaderNs_{0};      // GetEVBDataAsEvents call(s), incl. the 1 ms idle wait
+		std::atomic<uint64_t> evbLoopStatusPollNs_{0};  // 0x9370 read + checks + stall snapshots
+		std::atomic<uint64_t> evbLoopHandlingNs_{0};    // merge + handleDetachedSubevent per returned event
+		std::atomic<uint64_t> evbLoopIterations_{0};
 		// 0x9370 sampled on the first idle iteration after the last subevent arrived (~1 loop
 		// iteration late, vs ~2 s late for the timeout snapshot); re-armed whenever data resumes
 		std::atomic<bool>                                  evbErrAtStallOnsetValid_{false};

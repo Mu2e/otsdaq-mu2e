@@ -6040,91 +6040,82 @@ void DTCFrontEndInterface::SetupROCs(__ARGS__)
 	    "Target ROC or Mask (Default = -1 := all configured ROCs, or 0x111111 := all)",
 	    uint32_t,
 	    -1 /* all configured ROCs */);
-	bool usingRocMask = false;
-	if(rocLinkIndexVal != uint32_t(-1) && rocLinkIndexVal > 5)
-	{
-		usingRocMask = true;
-		__FE_COUT__ << "Using ROC Link Mask value: 0x" << std::hex
-		            << (unsigned int)rocLinkIndexVal << std::dec << __E__;
-	}
-
-	DTCLib::DTC_Link_ID rocLinkIndex =
-	    DTCLib::DTC_Link_ID(usingRocMask ? -1 : rocLinkIndexVal);
 	__FE_COUT__ << "rocLinkIndexVal = 0x" << std::hex << rocLinkIndexVal << __E__;
-	__FE_COUTV__(usingRocMask);
-	__FE_COUTV__(rocLinkIndex);
 	__FE_COUTV__(rocs_.size());
 
-	bool        found          = false;
+	// ROC Setup only writes DTC link registers, so an explicit link or mask acts on the
+	// DTC link whether or not a ROC is configured there; only -1 uses the configured ROCs.
+	std::set<DTCLib::DTC_Link_ID> targetLinks;
+	if(rocLinkIndexVal == uint32_t(-1))
+	{
+		for(auto& roc : rocs_)
+			targetLinks.insert(roc.second->getLinkID());
+		if(targetLinks.empty())
+		{
+			__FE_SS__ << "Target -1 selects the links of configured ROCs, but this DTC has "
+			             "no ROCs configured. Give an explicit ROC link 0-5 or a mask."
+			          << __E__;
+			__FE_SS_THROW__;
+		}
+	}
+	else if(rocLinkIndexVal > 5)  //use ROC mask
+	{
+		__FE_COUT__ << "Using ROC Link Mask value: 0x" << std::hex
+		            << (unsigned int)rocLinkIndexVal << std::dec << __E__;
+		for(auto link : DTCLib::DTC_ROC_Links)
+			if((1 << (int(link) * 4)) & rocLinkIndexVal)
+				targetLinks.insert(link);
+		if(targetLinks.empty())
+		{
+			__FE_SS__ << "Target ROC Mask 0x" << std::hex << rocLinkIndexVal
+			          << " selects no ROC link (use bits 0, 4, 8, 12, 16, 20 for links 0-5)!"
+			          << __E__;
+			__FE_SS_THROW__;
+		}
+	}
+	else  //use ROC index
+		targetLinks.insert(DTCLib::DTC_Link_ID(rocLinkIndexVal));
+
+	bool reportLinkNumbers = rocLinkIndexVal == uint32_t(-1) || rocLinkIndexVal > 5;
+
 	std::string result         = "";
 	std::string setupRocResult = "";
-	for(auto& roc : rocs_)
+	for(auto link : targetLinks)
 	{
-		if(usingRocMask)
-			__FE_COUTT__ << "0x" << std::hex << (1 << (int(roc.second->getLinkID()) * 4))
-			             << " vs rocLinkIndexVal = 0x" << std::hex << rocLinkIndexVal
-			             << __E__;
-		else
-			__FE_COUTT__ << "Found link ID " << roc.second->getLinkID() << " looking for "
-			             << rocLinkIndex << __E__;
+		__FE_COUTT__ << "Doing " << link << __E__;
 
-		if((!usingRocMask &&  //use ROC index
-		    (rocLinkIndex == DTCLib::DTC_Link_ID::DTC_Link_ALL ||
-		     roc.second->getLinkID() == rocLinkIndex)) ||
-		   (usingRocMask &&  //use ROC mask
-		    ((1 << (int(roc.second->getLinkID()) * 4)) & rocLinkIndexVal)))
-		{
-			found = true;
-			__FE_COUTT__ << "Doing " << roc.second->getLinkID() << __E__;
+		setupRocResult = SetupROCs(
+		    link,
+		    __GET_ARG_IN__("Set Link RX/TX Enable (Default := false)", bool, false),
+		    __GET_ARG_IN__("Set Link Timing Enable (Default := false)", bool, false),
+		    __GET_ARG_IN__("Set ROC Emulation Enable (Default := false)", bool, false),
+		    DTCLib::DTC_ROC_Emulation_Type(
+		        __GET_ARG_IN__("ROC Emulation Type (Default = 0: Internal, 1: "
+		                       "Fiber-Loopback, 2: External)",
+		                       uint8_t,
+		                       0 /* internal */)),
+		    __GET_ARG_IN__(
+		        "ROC generated Data Payload fragment packet count (11-bits, "
+		        "Default := 16)",
+		        uint32_t,
+		        16),
+		    __GET_ARG_IN__(
+		        "Block Null Heartbeats to ALL ROCs (Default := false)", bool, false),
+		    __GET_ARG_IN__(
+		        "Resequence Non-null Events for ALL ROCs (Default := false)", bool, false),
+		    __GET_ARG_IN__("Set Auto-Gen DRP per ROC (Default := false)", bool, false));
 
-			setupRocResult = SetupROCs(
-			    roc.second->getLinkID(),
-			    __GET_ARG_IN__("Set Link RX/TX Enable (Default := false)", bool, false),
-			    __GET_ARG_IN__("Set Link Timing Enable (Default := false)", bool, false),
-			    __GET_ARG_IN__(
-			        "Set ROC Emulation Enable (Default := false)", bool, false),
-			    DTCLib::DTC_ROC_Emulation_Type(
-			        __GET_ARG_IN__("ROC Emulation Type (Default = 0: Internal, 1: "
-			                       "Fiber-Loopback, 2: External)",
-			                       uint8_t,
-			                       0 /* internal */)),
-			    __GET_ARG_IN__(
-			        "ROC generated Data Payload fragment packet count (11-bits, "
-			        "Default := 16)",
-			        uint32_t,
-			        16),
-			    __GET_ARG_IN__(
-			        "Block Null Heartbeats to ALL ROCs (Default := false)", bool, false),
-			    __GET_ARG_IN__(
-			        "Resequence Non-null Events for ALL ROCs (Default := false)",
-			        bool,
-			        false),
-			    __GET_ARG_IN__(
-			        "Set Auto-Gen DRP per ROC (Default := false)", bool, false));
+		if(result.size())
+			result += ", ";
+		if(reportLinkNumbers)
+			result += "(" + std::to_string(static_cast<uint8_t>(link)) + ")";
+		__FE_COUTV__(setupRocResult);
+	}  //end link exec loop
 
-			if(result.size())
-				result += ", ";
-			if(rocLinkIndex == DTC_Link_ALL || usingRocMask)
-				result += "(" +
-				          std::to_string(static_cast<uint8_t>(roc.second->getLinkID())) +
-				          ")";
-			// result = setupRocResult; // not +=, always overwrite with last result;
-			__FE_COUTV__(setupRocResult);
-		}
-	}  //end roc exec loop
+	result += "\n" + setupRocResult;  // always overwrite with last result
 
-	result += "\n" + setupRocResult;  // not +=, always overwrite with last result;
-
-	if(found)
-	{
-		__SET_ARG_OUT__("Result", result);
-		return;
-	}
-
-	__FE_SS__ << "Target ROC or Mask 0x" << std::hex << rocLinkIndexVal << " not found!"
-	          << __E__;
-	__FE_SS_THROW__;
-}  // end SetEmulatedROCEventFragmentSize()
+	__SET_ARG_OUT__("Result", result);
+}  // end SetupROCs()
 
 //========================================================================
 std::string DTCFrontEndInterface::SetupROCs(
@@ -9885,6 +9876,31 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 		            ? threadStruct->thisDTC_->GetEVBSplitSubeventsJoined()
 		            : 0)
 		    << __E__;
+		{
+			// Software time profile: where the host thread spent its time per loop iteration,
+			// then the per-step split inside GetEVBDataAsEvents (DTCLib).  Compare against the
+			// drain-only run: everything in Step 4/5 and in event handling is the assembly cost.
+			const uint64_t readerNs   = threadStruct->evbLoopReaderNs_.load();
+			const uint64_t pollNs     = threadStruct->evbLoopStatusPollNs_.load();
+			const uint64_t handlingNs = threadStruct->evbLoopHandlingNs_.load();
+			const uint64_t loopNs     = readerNs + pollNs + handlingNs;
+			const uint64_t iterations = threadStruct->evbLoopIterations_.load();
+			statusSs << "Software EVB loop time profile (" << iterations << " iterations, "
+			         << std::fixed << std::setprecision(1) << loopNs / 1e6 << " ms in loop)..." << __E__;
+			auto loopRow = [&statusSs, loopNs, iterations](const char* label, uint64_t ns) {
+				statusSs << "\t " << std::left << std::setw(36) << label << std::right << std::setw(10)
+				         << std::fixed << std::setprecision(1) << ns / 1e6 << " ms " << std::setw(6)
+				         << std::setprecision(1) << (loopNs ? 100.0 * ns / loopNs : 0.0) << " %"
+				         << "   " << std::setw(8) << std::setprecision(2)
+				         << (iterations ? ns / 1e3 / iterations : 0.0) << " us/iteration" << __E__;
+			};
+			loopRow("GetEVBDataAsEvents (DTCLib)", readerNs);
+			loopRow("0x9370 poll + checks + snapshots", pollNs);
+			loopRow("event handling (merge + handle)", handlingNs);
+			statusSs << "\t Inside GetEVBDataAsEvents (DTC cumulative): "
+			         << (threadStruct->thisDTC_ ? threadStruct->thisDTC_->FormatEVBReadProfile()
+			                                    : std::string("n/a\n"));
+		}
 		const bool mergingStatus =
 		    threadStruct->mergeMode_ != DetachedMergeMode::Off && threadStruct->otherDTC_;
 		if(threadStruct->thisDTC_)
@@ -10596,6 +10612,10 @@ try
 		threadStruct->evbCreditThrottlePolls_  = 0;
 		threadStruct->evbRxBufferHighPolls_    = 0;
 		threadStruct->evbStatusPolls_          = 0;
+		threadStruct->evbLoopReaderNs_         = 0;
+		threadStruct->evbLoopStatusPollNs_     = 0;
+		threadStruct->evbLoopHandlingNs_       = 0;
+		threadStruct->evbLoopIterations_       = 0;
 		threadStruct->evbRocFragmentsBySource_.clear();
 		threadStruct->evbRocPayloadBytesBySource_.clear();
 		if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
@@ -10765,6 +10785,10 @@ try
 						threadStruct->evbCreditThrottlePolls_  = 0;
 						threadStruct->evbRxBufferHighPolls_    = 0;
 						threadStruct->evbStatusPolls_          = 0;
+						threadStruct->evbLoopReaderNs_         = 0;
+						threadStruct->evbLoopStatusPollNs_     = 0;
+						threadStruct->evbLoopHandlingNs_       = 0;
+						threadStruct->evbLoopIterations_       = 0;
 						threadStruct->evbRocFragmentsBySource_.clear();
 						threadStruct->evbRocPayloadBytesBySource_.clear();
 						if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
@@ -10872,6 +10896,13 @@ try
 				__GEN_COUT_INFO__ << "exitThread received in Buffer Test" << __E__;
 				break;
 			}
+			auto loopLapStart = std::chrono::steady_clock::now();
+			auto loopLap      = [&loopLapStart](std::atomic<uint64_t>& accumulator) {
+				const auto now = std::chrono::steady_clock::now();
+				accumulator += std::chrono::duration_cast<std::chrono::nanoseconds>(now - loopLapStart).count();
+				loopLapStart = now;
+			};
+			++threadStruct->evbLoopIterations_;
 			auto events = threadStruct->thisDTC_->GetEVBDataAsEvents(
 			    DTCLib::DTC_EventWindowTag(threadStruct->nextEventWindowTag_),
 			    false /* EWT match */);
@@ -10883,6 +10914,7 @@ try
 			if(merging)
 				events1 = threadStruct->otherDTC_->GetEVBDataAsEvents(
 				    DTCLib::DTC_EventWindowTag(), false /* EWT match */);
+			loopLap(threadStruct->evbLoopReaderNs_);
 
 			// Drain-only mode: no events are produced, so the data-rate bookkeeping that
 			// handleDetachedSubevent() normally does is driven by the chunk bytes the reader saw.
@@ -11067,12 +11099,17 @@ try
 				lastStatusReadFailed = true;
 			}
 
+			loopLap(threadStruct->evbLoopStatusPollNs_);
+
 			std::vector<MergedDetachedEvent> merged;
 			if(merging)  // also runs the pair-timeout scan when nothing arrived
 				mergeDetachedEvents(threadStruct, events, events1, merged);
 
 			if(merging ? merged.empty() : events.empty())
+			{
+				loopLap(threadStruct->evbLoopHandlingNs_);
 				continue;
+			}
 
 			if(!merging)
 				for(auto& eventPtr : events)
