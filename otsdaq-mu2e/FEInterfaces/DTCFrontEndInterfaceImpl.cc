@@ -1153,14 +1153,16 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    "Enable/Disable DTC Link",
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::EnableDTCLink),
-	    std::vector<std::string>{"Target Link (Default = -1 := all configured ROC links)",
-	                             "Set Link Tx Enable (Default := false)",
-	                             "Set Link Rx Enable (Default := false)"},
+	    std::vector<std::string>{
+	        "Target Link or Mask (Default = -1 := all configured ROC links, or 0x11111111 := all)",
+	        "Set Link Tx Enable (Default := false)",
+	        "Set Link Rx Enable (Default := false)"},
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
 	    "This FE Macro independently sets Tx and Rx enable for a target DTC Link 0-7 "
-	    "(i.e., 0-5 ROCs, 6 CFO, 7 EVB), or the links of all configured ROCs with -1. "
+	    "(i.e., 0-5 ROCs, 6 CFO, 7 EVB), the links of all configured ROCs with -1, or a "
+	    "link mask with one nibble per link (e.g. 0x100 := link 2, 0x11111111 := all). "
 	    "Both settings are applied; false disables the corresponding direction.");
 
 	registerFEMacroFunction(
@@ -7024,32 +7026,52 @@ void DTCFrontEndInterface::DTCInstantiate()
 //========================================================================
 void DTCFrontEndInterface::EnableDTCLink(__ARGS__)
 {
-	DTCLib::DTC_Link_ID linkIndex = DTCLib::DTC_Link_ID(
-	    __GET_ARG_IN__("Target Link (Default = -1 := all configured ROC links)",
-	                   uint8_t,
-	                   -1 /* all configured ROC links */));
+	uint32_t linkIndexVal = __GET_ARG_IN__(
+	    "Target Link or Mask (Default = -1 := all configured ROC links, or 0x11111111 := all)",
+	    uint32_t,
+	    -1 /* all configured ROC links */);
 	bool enableTx = __GET_ARG_IN__("Set Link Tx Enable (Default := false)", bool, false);
 	bool enableRx = __GET_ARG_IN__("Set Link Rx Enable (Default := false)", bool, false);
 
-	__FE_COUTV__(linkIndex);
+	__FE_COUT__ << "linkIndexVal = 0x" << std::hex << linkIndexVal << std::dec << __E__;
 	__FE_COUTV__(enableTx);
 	__FE_COUTV__(enableRx);
 
-	if(linkIndex == DTC_Link_ID(-1))
+	std::set<DTCLib::DTC_Link_ID> targetLinks;
+	if(linkIndexVal == uint32_t(-1))
 	{
-		if(rocs_.empty())
+		for(auto& roc : rocs_)
+			targetLinks.insert(roc.second->getLinkID());
+		if(targetLinks.empty())
 		{
-			__FE_SS__ << "Target Link -1 selects the links of configured ROCs, but this "
-			             "DTC has no ROCs configured. Give an explicit link 0-7."
+			__FE_SS__ << "Target -1 selects the links of configured ROCs, but this DTC has "
+			             "no ROCs configured. Give an explicit link 0-7 or a mask."
 			          << __E__;
 			__FE_SS_THROW__;
 		}
-		for(auto& roc : rocs_)
-			getDTC()->EnableLink(roc.second->getLinkID(),
-			                     DTCLib::DTC_LinkEnableMode(enableTx, enableRx));
 	}
-	else
-		getDTC()->EnableLink(linkIndex, DTCLib::DTC_LinkEnableMode(enableTx, enableRx));
+	else if(linkIndexVal > 7)  //use link mask, one nibble per link
+	{
+		for(unsigned int link = 0; link < 8; ++link)
+			if((1 << (link * 4)) & linkIndexVal)
+				targetLinks.insert(DTCLib::DTC_Link_ID(link));
+		if(targetLinks.empty())
+		{
+			__FE_SS__ << "Target Link Mask 0x" << std::hex << linkIndexVal
+			          << " selects no link (use bits 0, 4, 8, ... 28 for links 0-7)!"
+			          << __E__;
+			__FE_SS_THROW__;
+		}
+	}
+	else  //use link index
+		targetLinks.insert(DTCLib::DTC_Link_ID(linkIndexVal));
+
+	for(auto link : targetLinks)
+	{
+		__FE_COUT__ << "Setting link " << link << " Tx=" << enableTx << " Rx=" << enableRx
+		            << __E__;
+		getDTC()->EnableLink(link, DTCLib::DTC_LinkEnableMode(enableTx, enableRx));
+	}
 
 	__SET_ARG_OUT__("Result", getDTC()->FormatLinkEnable());
 }  //end EnableDTCLink()
