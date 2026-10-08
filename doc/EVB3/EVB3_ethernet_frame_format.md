@@ -110,6 +110,10 @@ header word 3), bits `[2:0]` are `010` for the seq and flags bytes. The field th
 the number of bytes that follow it up to the FCS, which is exactly the IEEE 802.3 length
 definition. Payload words `N = (byte_count >> 3) - 1`.
 
+The sending firmware checks this field on the wire (2026-10-06): at every terminate block the TX
+wire monitor compares the data words the SERDES actually took with `2 + (byte_count >> 3)` plus the
+pad rule of Section 5 and sets 0x9370 bit 11 on any difference (exact, not a range).
+
 ### 3.3 Flags byte (offset 15)
 
 | bits | name | meaning |

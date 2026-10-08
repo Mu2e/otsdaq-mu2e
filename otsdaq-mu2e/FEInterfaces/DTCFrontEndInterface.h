@@ -160,6 +160,17 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		bool                  saveSubeventHeadersToBinaryData_ = false;
 		bool                  doNotResetCounters_              = false;
 		bool                  skipBy32_                        = false;
+		// "Check ROC Emulator Data": every non-empty block is checked against the emulator
+		// pattern seen on the bench (16-bit pairs [constant, counter], counter +2 per pair and
+		// continuous per source DTC and link across events) and against the packet count of
+		// the first block seen.  Counters are per link; the expected next counter is keyed by
+		// (source DTC id << 3 | link) so EVB-mode streams from two DTCs do not mix.
+		bool                         checkROCEmulatorData_       = false;
+		bool                         evbDrainOnly_               = false;  // EVB mode without event assembly (throughput ceiling of the software sink)
+		int                          rocEmulatorExpectedPackets_ = -1;
+		std::vector<uint64_t>        rocEmulatorDataErrorsCount_, rocEmulatorPacketCountErrorsCount_;
+		std::map<uint16_t, uint16_t> rocEmulatorNextCounter_;
+		std::vector<std::string>     rocEmulatorFirstErrors_;
 
 		std::atomic<uint64_t>                      eventsCount_;
 		std::atomic<uint64_t>                      subeventsCount_;
@@ -185,6 +196,9 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		// ahead of its slowest peer) set.  hw agent 2026-09-24: this is the register that
 		// tells a run that stalled on the throttle from one that completed.
 		std::atomic<uint64_t> evbSelfThrottlePolls_{0};
+		std::atomic<uint64_t> evbDMABackpressurePolls_{0};  // bit 23: PCIe DMA not ready, software reading too slowly
+		std::atomic<uint64_t> evbCreditThrottlePolls_{0};   // bit 18: window has data, destination has no credit
+		std::atomic<uint64_t> evbRxBufferHighPolls_{0};     // bit 22: an RX source buffer >= 3/4 full (peer data piling up)
 		std::atomic<uint64_t> evbStatusPolls_{0};
 		// 0x9370 sampled on the first idle iteration after the last subevent arrived (~1 loop
 		// iteration late, vs ~2 s late for the timeout snapshot); re-armed whenever data resumes
@@ -197,8 +211,12 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		// gives the run's own stall shares, free of the pre-start idle time and the ~17 s wrap
 		std::atomic<bool>                    evbStallAtStartValid_{false};
 		std::atomic<bool>                    evbStallAtEndValid_{false};
-		std::array<std::atomic<uint32_t>, 7> evbStallAtStart_{};
-		std::array<std::atomic<uint32_t>, 7> evbStallAtEnd_{};
+		std::array<std::atomic<uint32_t>, 15> evbStallAtStart_{};  // most recent snapshot (start, then every ~8 s)
+		std::array<std::atomic<uint32_t>, 15> evbStallAtEnd_{};
+		// 32-bit counters wrap after ~17 s, so the thread re-snapshots every ~8 s and sums the
+		// deltas here; the report prints accumulated + (end - last snapshot)
+		std::array<std::atomic<uint64_t>, 15>             evbStallAccumulated_{};
+		std::chrono::time_point<std::chrono::steady_clock> evbStallLastSnapshotTime_;
 
 		uint64_t                                           totalSubeventBytesTransferred_;
 		std::chrono::time_point<std::chrono::steady_clock> transferStartTime_,
@@ -274,6 +292,8 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	// this session only (FE Macro "EVB Start-Gate Ignore Mask").  OR-ed with the per-build
 	// known-defect list; cleared on otsdaq restart.  The bits stay visible in every report.
 	uint32_t              evbOperatorIgnoreMask_ = 0;
+	bool                  checkROCEmulatorData_  = false;  // Buffer Test Detached input, copied into the thread struct at Start
+	bool                  evbDrainOnly_          = false;  // Buffer Test Detached input, copied into the thread struct at Start
 	DTCFrontEndInterface* findPeerDTCFrontEnd(int deviceIndex, std::string& visibleList);
 	void                  requireNoMergeReaderOnThisDTC(void);
 
@@ -379,6 +399,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void EVBStatus(__ARGS__);
 	void ExerciseLink7Reset(__ARGS__);
 	void SetEVBStartGateIgnoreMask(__ARGS__);
+	void SetupEVBIdlePackets(__ARGS__);
 
 	// void 								ResetEVBLinkRx						(__ARGS__);
 	// void 								ResetEVBLinkTx						(__ARGS__);
