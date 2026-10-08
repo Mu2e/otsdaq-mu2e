@@ -2133,7 +2133,8 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 			{
 				std::vector<FEVInterface::frontEndMacroArg_t> argsIn, argsOut;
 				argsIn.emplace_back(
-				    "Target Link or Mask (Default = -1 := all configured ROC links, or 0x11111111 := all)",
+				    "Target Link or Mask (Default = -1 := all configured ROC links, or "
+				    "0x11111111 := all)",
 				    "6");
 				argsIn.emplace_back("Set Link Tx Enable (Default := false)", "1");
 				argsIn.emplace_back("Set Link Rx Enable (Default := false)", "1");

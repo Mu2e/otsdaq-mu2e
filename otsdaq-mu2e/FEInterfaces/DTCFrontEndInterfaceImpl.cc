@@ -1153,10 +1153,10 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    "Enable/Disable DTC Link",
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::EnableDTCLink),
-	    std::vector<std::string>{
-	        "Target Link or Mask (Default = -1 := all configured ROC links, or 0x11111111 := all)",
-	        "Set Link Tx Enable (Default := false)",
-	        "Set Link Rx Enable (Default := false)"},
+	    std::vector<std::string>{"Target Link or Mask (Default = -1 := all configured "
+	                             "ROC links, or 0x11111111 := all)",
+	                             "Set Link Tx Enable (Default := false)",
+	                             "Set Link Rx Enable (Default := false)"},
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
@@ -6054,9 +6054,10 @@ void DTCFrontEndInterface::SetupROCs(__ARGS__)
 			targetLinks.insert(roc.second->getLinkID());
 		if(targetLinks.empty())
 		{
-			__FE_SS__ << "Target -1 selects the links of configured ROCs, but this DTC has "
-			             "no ROCs configured. Give an explicit ROC link 0-5 or a mask."
-			          << __E__;
+			__FE_SS__
+			    << "Target -1 selects the links of configured ROCs, but this DTC has "
+			       "no ROCs configured. Give an explicit ROC link 0-5 or a mask."
+			    << __E__;
 			__FE_SS_THROW__;
 		}
 	}
@@ -6069,9 +6070,10 @@ void DTCFrontEndInterface::SetupROCs(__ARGS__)
 				targetLinks.insert(link);
 		if(targetLinks.empty())
 		{
-			__FE_SS__ << "Target ROC Mask 0x" << std::hex << rocLinkIndexVal
-			          << " selects no ROC link (use bits 0, 4, 8, 12, 16, 20 for links 0-5)!"
-			          << __E__;
+			__FE_SS__
+			    << "Target ROC Mask 0x" << std::hex << rocLinkIndexVal
+			    << " selects no ROC link (use bits 0, 4, 8, 12, 16, 20 for links 0-5)!"
+			    << __E__;
 			__FE_SS_THROW__;
 		}
 	}
@@ -6096,15 +6098,15 @@ void DTCFrontEndInterface::SetupROCs(__ARGS__)
 		                       "Fiber-Loopback, 2: External)",
 		                       uint8_t,
 		                       0 /* internal */)),
-		    __GET_ARG_IN__(
-		        "ROC generated Data Payload fragment packet count (11-bits, "
-		        "Default := 16)",
-		        uint32_t,
-		        16),
+		    __GET_ARG_IN__("ROC generated Data Payload fragment packet count (11-bits, "
+		                   "Default := 16)",
+		                   uint32_t,
+		                   16),
 		    __GET_ARG_IN__(
 		        "Block Null Heartbeats to ALL ROCs (Default := false)", bool, false),
-		    __GET_ARG_IN__(
-		        "Resequence Non-null Events for ALL ROCs (Default := false)", bool, false),
+		    __GET_ARG_IN__("Resequence Non-null Events for ALL ROCs (Default := false)",
+		                   bool,
+		                   false),
 		    __GET_ARG_IN__("Set Auto-Gen DRP per ROC (Default := false)", bool, false));
 
 		if(result.size())
@@ -7027,7 +7029,8 @@ void DTCFrontEndInterface::DTCInstantiate()
 void DTCFrontEndInterface::EnableDTCLink(__ARGS__)
 {
 	uint32_t linkIndexVal = __GET_ARG_IN__(
-	    "Target Link or Mask (Default = -1 := all configured ROC links, or 0x11111111 := all)",
+	    "Target Link or Mask (Default = -1 := all configured ROC links, or 0x11111111 := "
+	    "all)",
 	    uint32_t,
 	    -1 /* all configured ROC links */);
 	bool enableTx = __GET_ARG_IN__("Set Link Tx Enable (Default := false)", bool, false);
@@ -7044,9 +7047,10 @@ void DTCFrontEndInterface::EnableDTCLink(__ARGS__)
 			targetLinks.insert(roc.second->getLinkID());
 		if(targetLinks.empty())
 		{
-			__FE_SS__ << "Target -1 selects the links of configured ROCs, but this DTC has "
-			             "no ROCs configured. Give an explicit link 0-7 or a mask."
-			          << __E__;
+			__FE_SS__
+			    << "Target -1 selects the links of configured ROCs, but this DTC has "
+			       "no ROCs configured. Give an explicit link 0-7 or a mask."
+			    << __E__;
 			__FE_SS_THROW__;
 		}
 	}
@@ -9907,21 +9911,26 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			const uint64_t handlingNs = threadStruct->evbLoopHandlingNs_.load();
 			const uint64_t loopNs     = readerNs + pollNs + handlingNs;
 			const uint64_t iterations = threadStruct->evbLoopIterations_.load();
-			statusSs << "Software EVB loop time profile (" << iterations << " iterations, "
-			         << std::fixed << std::setprecision(1) << loopNs / 1e6 << " ms in loop)..." << __E__;
-			auto loopRow = [&statusSs, loopNs, iterations](const char* label, uint64_t ns) {
-				statusSs << "\t " << std::left << std::setw(36) << label << std::right << std::setw(10)
-				         << std::fixed << std::setprecision(1) << ns / 1e6 << " ms " << std::setw(6)
-				         << std::setprecision(1) << (loopNs ? 100.0 * ns / loopNs : 0.0) << " %"
+			statusSs << "Software EVB loop time profile (" << iterations
+			         << " iterations, " << std::fixed << std::setprecision(1)
+			         << loopNs / 1e6 << " ms in loop)..." << __E__;
+			auto loopRow = [&statusSs, loopNs, iterations](const char* label,
+			                                               uint64_t    ns) {
+				statusSs << "\t " << std::left << std::setw(36) << label << std::right
+				         << std::setw(10) << std::fixed << std::setprecision(1)
+				         << ns / 1e6 << " ms " << std::setw(6) << std::setprecision(1)
+				         << (loopNs ? 100.0 * ns / loopNs : 0.0) << " %"
 				         << "   " << std::setw(8) << std::setprecision(2)
-				         << (iterations ? ns / 1e3 / iterations : 0.0) << " us/iteration" << __E__;
+				         << (iterations ? ns / 1e3 / iterations : 0.0) << " us/iteration"
+				         << __E__;
 			};
 			loopRow("GetEVBDataAsEvents (DTCLib)", readerNs);
 			loopRow("0x9370 poll + checks + snapshots", pollNs);
 			loopRow("event handling (merge + handle)", handlingNs);
 			statusSs << "\t Inside GetEVBDataAsEvents (DTC cumulative): "
-			         << (threadStruct->thisDTC_ ? threadStruct->thisDTC_->FormatEVBReadProfile()
-			                                    : std::string("n/a\n"));
+			         << (threadStruct->thisDTC_
+			                 ? threadStruct->thisDTC_->FormatEVBReadProfile()
+			                 : std::string("n/a\n"));
 		}
 		const bool mergingStatus =
 		    threadStruct->mergeMode_ != DetachedMergeMode::Off && threadStruct->otherDTC_;
@@ -10920,9 +10929,11 @@ try
 			}
 			auto loopLapStart = std::chrono::steady_clock::now();
 			auto loopLap      = [&loopLapStart](std::atomic<uint64_t>& accumulator) {
-				const auto now = std::chrono::steady_clock::now();
-				accumulator += std::chrono::duration_cast<std::chrono::nanoseconds>(now - loopLapStart).count();
-				loopLapStart = now;
+                const auto now = std::chrono::steady_clock::now();
+                accumulator += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   now - loopLapStart)
+                                   .count();
+                loopLapStart = now;
 			};
 			++threadStruct->evbLoopIterations_;
 			auto events = threadStruct->thisDTC_->GetEVBDataAsEvents(
