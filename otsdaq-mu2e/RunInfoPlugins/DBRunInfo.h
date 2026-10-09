@@ -80,19 +80,19 @@ class DBRunInfo : public RunInfoVInterface
 	    const std::string& queryFilter = "",
 	    const std::string& runType     = "");
 
+	/// For Mu2e the condition ID is the run number. Returns one row per subsystem:
+	///   [subsystem, create_time, settings as compact JSON text]
 	virtual std::vector<std::vector<std::string>> getRunConditionByID(
-	    uint64_t /* conditionID*/)
-	{
-		__SS__ << "getRunConditionByID() Not implemented by DBRunInfo." << __E__;
-		__SS_THROW__;
-	};
+	    uint64_t /* runNumber */);
 
+	/// For Mu2e the config ID is the run number. Returns one row per subsystem:
+	///   [subsystem, Configuration_alias,
+	///    Configuration_group_name, Configuration_group_key,
+	///    Context_group_name, Context_group_key,
+	///    Backbone_group_name, Backbone_group_key,
+	///    Iterate_group_name, Iterate_group_key, create_time]
 	virtual std::vector<std::vector<std::string>> getRunConfigSubsystemInfo(
-	    uint64_t /* configID */)
-	{
-		__SS__ << "getRunConfigSubsystemInfo() Not implemented by DBRunInfo." << __E__;
-		__SS_THROW__;
-	};
+	    uint64_t /* runNumber */);
 
   private:
 	const char* dbname_;
