@@ -332,7 +332,7 @@ if [[ ${opt_develop:-0} -eq 1 ]];then
         checkout_package $pkg
     done
     if [[ ${opt_all_packages:-0} -eq 1 ]]; then
-        for pkg in mu2e-trig-config otsdaq-mu2e-calorimeter otsdaq-mu2e-crv otsdaq-mu2e-dqm otsdaq-mu2e-extmon otsdaq-mu2e-stm otsdaq-mu2e-tracker otsdaq-mu2e-trigger mu2e-tdaq-suite;do
+        for pkg in mu2e-trig-config otsdaq-mu2e-calorimeter otsdaq-mu2e-crv otsdaq-mu2e-dqm otsdaq-mu2e-extmon otsdaq-mu2e-stm otsdaq-mu2e-sync otsdaq-mu2e-tracker otsdaq-mu2e-trigger mu2e-tdaq-suite;do
             checkout_package $pkg
         done
         if ! [ -d Offline ];then
@@ -354,7 +354,7 @@ if [[ ${opt_develop:-0} -eq 1 ]];then
         done
     fi
     if [[ ${opt_artdaq:-0} -eq 1 ]] ; then
-        for pkg in artdaq artdaq-core artdaq-database artdaq-epics-plugin artdaq-mfextensions artdaq-utilities artdaq-daqinterface trace artdaq-suite;do
+        for pkg in artdaq artdaq-core artdaq-core-demo artdaq-database artdaq-epics-plugin artdaq-mfextensions artdaq-utilities artdaq-daqinterface trace artdaq-suite;do
             checkout_package $pkg art-daq
         done
     fi
