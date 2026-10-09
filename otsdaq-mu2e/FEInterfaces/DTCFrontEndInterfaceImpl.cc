@@ -10160,7 +10160,31 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 				statusSs << " (" << std::fixed << std::setprecision(1)
 				         << (100.0 * rxBufferHigh / polls) << "%)";
 			statusSs << __E__;
+			// all live bits in one row, so bits 19/20/21 are visible without a code change each time
+			kv("HW EVB live bits 16..23 poll shares");
+			for(unsigned int liveBit = 16; liveBit < 24; ++liveBit)
+			{
+				const uint64_t bitPolls = threadStruct->evbLiveBitPolls_[liveBit - 16].load();
+				statusSs << (liveBit == 16 ? "" : "  ") << "b" << liveBit << "=" << std::fixed
+				         << std::setprecision(1) << (polls ? 100.0 * bitPolls / polls : 0.0) << "%";
+			}
+			statusSs << "  (16 ROC held, 17 self-throttle, 18 credit, 19 DDR almost full, 20, 21, "
+			            "22 RX buffer high, 23 DMA back-pressure)"
+			         << __E__;
 		}
+		if(threadStruct->evbFirstStickyValid_)
+		{
+			const int64_t afterUs = threadStruct->evbFirstStickyAfterTrafficUs_.load();
+			kv("HW EVB first sticky latch")
+			    << "0x" << std::hex << std::setw(4) << std::setfill('0')
+			    << threadStruct->evbFirstStickyMask_.load() << std::dec << std::setfill(' ')
+			    << (afterUs >= 0 ? " at " + std::to_string(afterUs / 1000.0) + " ms after traffic start"
+			                     : std::string(" before traffic was seen"))
+			    << ", iteration #" << threadStruct->evbFirstStickyIteration_.load()
+			    << ", SubEvents so far " << threadStruct->evbFirstStickySubevents_.load() << __E__;
+		}
+		else
+			kv("HW EVB first sticky latch") << "none during this run" << __E__;
 		if(threadStruct->evbStickyErrorsSeen_)
 			kv("HW EVB run validity")
 			    << "INVALID: sticky errors observed during this test: 0x" << std::hex
@@ -10643,6 +10667,10 @@ try
 		threadStruct->evbCreditThrottlePolls_  = 0;
 		threadStruct->evbRxBufferHighPolls_    = 0;
 		threadStruct->evbStatusPolls_          = 0;
+		for(auto& liveBitPolls : threadStruct->evbLiveBitPolls_)
+			liveBitPolls = 0;
+		threadStruct->evbFirstStickyValid_     = false;
+		threadStruct->evbFirstStickyMask_      = 0;
 		threadStruct->evbLoopReaderNs_         = 0;
 		threadStruct->evbLoopStatusPollNs_     = 0;
 		threadStruct->evbLoopHandlingNs_       = 0;
@@ -10816,6 +10844,10 @@ try
 						threadStruct->evbCreditThrottlePolls_  = 0;
 						threadStruct->evbRxBufferHighPolls_    = 0;
 						threadStruct->evbStatusPolls_          = 0;
+						for(auto& liveBitPolls : threadStruct->evbLiveBitPolls_)
+							liveBitPolls = 0;
+						threadStruct->evbFirstStickyValid_     = false;
+						threadStruct->evbFirstStickyMask_      = 0;
 						threadStruct->evbLoopReaderNs_         = 0;
 						threadStruct->evbLoopStatusPollNs_     = 0;
 						threadStruct->evbLoopHandlingNs_       = 0;
@@ -11003,6 +11035,9 @@ try
 					++threadStruct->evbCreditThrottlePolls_;
 				if(evbErr & (1u << 22))
 					++threadStruct->evbRxBufferHighPolls_;
+				for(unsigned int liveBit = 16; liveBit < 24; ++liveBit)
+					if(evbErr & (1u << liveBit))
+						++threadStruct->evbLiveBitPolls_[liveBit - 16];
 				if(!threadStruct->evbTrafficStarted_)
 				{
 					// Do not wait for a complete event: a missing peer may prevent any
@@ -11010,7 +11045,36 @@ try
 					if(dataThisIteration ||
 					   threadStruct->thisDTC_->ReadEVBROCInputWords() != 0 ||
 					   threadStruct->thisDTC_->ReadEVBGBERXWords() != 0)
-						threadStruct->evbTrafficStarted_ = true;
+					{
+						threadStruct->evbTrafficStarted_   = true;
+						threadStruct->evbTrafficStartTime_ = std::chrono::steady_clock::now();
+					}
+				}
+				{
+					const uint32_t stickyNow = evbErr & DTCLib::EVBDefinedErrorMask &
+					                           ~threadStruct->evbStickyIgnoreMask_;
+					if(stickyNow && !threadStruct->evbFirstStickyValid_)
+					{
+						threadStruct->evbFirstStickyMask_ = stickyNow;
+						threadStruct->evbFirstStickyAfterTrafficUs_ =
+						    threadStruct->evbTrafficStarted_
+						        ? std::chrono::duration_cast<std::chrono::microseconds>(
+						              std::chrono::steady_clock::now() -
+						              threadStruct->evbTrafficStartTime_)
+						              .count()
+						        : -1;
+						threadStruct->evbFirstStickyIteration_ = ii;
+						threadStruct->evbFirstStickySubevents_ = threadStruct->subeventsCount_.load();
+						threadStruct->evbFirstStickyValid_     = true;
+						__GEN_COUT_WARN__ << "EVB first sticky error latch: 0x" << std::hex << std::setw(4)
+						                  << std::setfill('0') << stickyNow << std::dec << std::setfill(' ')
+						                  << " at iteration #" << ii << ", SubEvents received so far = "
+						                  << threadStruct->subeventsCount_ << ", "
+						                  << (threadStruct->evbTrafficStarted_
+						                          ? std::to_string(threadStruct->evbFirstStickyAfterTrafficUs_ / 1000.0) + " ms after traffic start"
+						                          : std::string("before traffic was seen"))
+						                  << __E__;
+					}
 				}
 				if(threadStruct->evbTrafficStarted_ &&
 				   !threadStruct->evbStallAtStartValid_)
