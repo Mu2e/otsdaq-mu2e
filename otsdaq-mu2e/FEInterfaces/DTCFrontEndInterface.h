@@ -206,11 +206,11 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		std::array<std::atomic<uint64_t>, 8> evbLiveBitPolls_{};
 		// First time a sticky error bit [15:0] latched during this run: the mask seen on that
 		// poll and the delay from traffic start (the "time to first latch" the hw agent asked for).
-		std::atomic<bool>     evbFirstStickyValid_{false};
-		std::atomic<uint32_t> evbFirstStickyMask_{0};
-		std::atomic<int64_t>  evbFirstStickyAfterTrafficUs_{0};
-		std::atomic<uint64_t> evbFirstStickyIteration_{0};
-		std::atomic<uint64_t> evbFirstStickySubevents_{0};
+		std::atomic<bool>                     evbFirstStickyValid_{false};
+		std::atomic<uint32_t>                 evbFirstStickyMask_{0};
+		std::atomic<int64_t>                  evbFirstStickyAfterTrafficUs_{0};
+		std::atomic<uint64_t>                 evbFirstStickyIteration_{0};
+		std::atomic<uint64_t>                 evbFirstStickySubevents_{0};
 		std::chrono::steady_clock::time_point evbTrafficStartTime_;
 		// Software time profile of the EVB loop (steady_clock ns, accumulated per iteration):
 		// where the host spends its time between DMA buffers.  DTCLib keeps the per-step split
