@@ -1,0 +1,542 @@
+# EVB3 Software Status Registers
+
+How to read event-building counters and per-DTC 10GbE statistics from the DTC.
+
+## Configuration registers
+
+| Address  | Field     | Purpose                                           |
+|----------|-----------|---------------------------------------------------|
+| `0x9154` | `[7:0]`   | This DTC's node ID (`SelfDTC_ip`)                 |
+| `0x9158` | `[15:8]`  | `EVBStartNode` — base node for per-DTC offset math|
+| `0x9158` | `[7:0]`   | `EVBNumNodes` (clamped 1–128)                     |
+| `0x9158` | `[31:16]` | `EVB_TxDeadTime` — txgbeclk clocks at each destination switch |
+| `0x915C` | `[31:16]` | `EVB_IdlePacketWords` — idle packet payload, 8-byte words (frame = 20 + 8 x words bytes). Keep >= 12: data packets are padded to 12 words (2026-09-17) so the shortest frame is 16 beats and two frame starts through a gap-compressing switch are never closer than the 12-beat RX stats pass; a shorter idle frame would re-open that collision |
+| `0x915C` | `[15:8]`  | `EVB_InterpacketGap` — txgbeclk clocks between frames (protocol min 12 = 0x0c) |
+| `0x9170` | `[15:0]`  | `EVB_IdleBurstCount` (2026-09-17) — idle packets per destination window when there is no data; 0/1 = one (legacy, reset value), N = up to N gap-spaced idles until the window closes. Link-test knob, see "Pure-idle link test" below |
+| `0x9174` | `[31:16]` / `[15:0]` | (2026-09-28, read-only) `EVBResendCount`: resends SERVED by this DTC's TX (rewinds performed) / resends REQUESTED by this DTC's RX (gaps that entered discard). SoftReset clear, 16-bit wrap. Non-zero = the link recovered from switch drops during the run; served on DTC A should equal requested on the DTCs A sends to RESET SCOPE (HW 2026-10-02): the served half lives in the TX FSM and clears on SoftReset OR a link-7 TX disable (`0x9114` bit 7 clear, like every TX-side counter); the requested half lives in the RX and clears on SoftReset OR RX disable (bit 15). A scripted TX-disable step therefore zeroes served while requested stays -- read `0x9174` BEFORE that step. |
+| `0x9178` | `[15:0]`  | (2026-10-06, RW) `EVB_LocalChunkCap` — longest SELF chunk to the DMA in 8-byte words; 0 = whole record (old behavior), reset 1024 (0x0400), 1..31 act as 32. Why: a whole-record self chunk (up to 8189 words at 0x9104 = 0xFFF8) held the buffer manager ~33 us while no remote FIFO drained, so the peer stopped on credit for most of every self record (2-DTC HW: ~770 MB/s per DTC vs 1.73 GB/s direct). A self record longer than the cap arrives as several self chunks, same FAFA framing, src = self: reassemble self by source as before. Survives SoftReset. |
+| `0x917C` | `[15:0]` / `[31:16]` | (2026-10-07, RW) `EVB_RemoteChunkMin`: fewest words a REMOTE source FIFO must hold to be granted a DMA chunk (0 = any, old behavior) / clocks (4 ns) it may wait for that before it is granted anyway. Reset 0x0400_0080 = 128 words, 1024 clocks (~4 us, longer than 128 words take to arrive at ~385 MB/s). Effect for the reader: remote FAFA chunks become ~128-992 words instead of a few words each, far fewer chunks per record; the layout (FAFA header, words, reassemble by source) is unchanged. Survives SoftReset. |
+
+`DTC_offset = node_MAC − EVBStartNode`, range 0–31.
+
+---
+
+## A. Global pipeline word counters (direct read)
+
+16-bit WRAP-AROUND counters (since 2026-09-10; saturating before, which broke the zero-sum past ~1285 events of 51 words), packed two per 32-bit register. Software must compare them modulo 2^16: `(output - self - bufmgr) & 0xFFFF == 0`, `(ddr_to_tx - gbe_rx) & 0xFFFF == 0`, etc. The BRAM per-DTC stats are NOT changed and still saturate. Reset on soft/hard
+reset. These are aggregate totals — not per-DTC.
+
+| Address  | `[31:16]`          | `[15:0]`            | Notes |
+|----------|--------------------|---------------------|-------|
+| `0x9200` | `wc_self_transfer` | `wc_roc_input`      | self-transfer = local data words through buffer-manager output; roc_input excludes every tlast terminator word (reset close filler AND the mux's undeclared per-subevent extra word) |
+| `0x9204` | `wc_ddr_to_tx`     | `wc_gbe_ddr_fifo`   | ddr_to_tx is in txgbeclk domain; pad-free (DDR burst padding is stripped before TX and never transmitted) |
+| `0x9208` | `wc_output_stream` | `wc_bufmgr_output`  | output_stream = self_transfer + bufmgr_output |
+| `0x920C` | *(zero)*           | `wc_gbe_rx`         | in rxgbeclk domain |
+
+All counters exclude FAFA protocol headers and terminator/filler words, and count
+subevents at exactly their declared size (the count word's `{agg,4'h8}` byte count):
+the mux's undeclared extra tlast word is dropped at EVB ingest under HEB, and DDR
+burst pad words are stripped before the 10GbE TX (2026-08-30).
+
+**Zero-sum checks (all exact, run after run):**
+- `wc_roc_input = wc_self_transfer + wc_gbe_ddr_fifo`
+- `wc_gbe_ddr_fifo = wc_ddr_to_tx`
+- On the receiving DTC: `wc_gbe_rx = sender's wc_ddr_to_tx` (= `wc_bufmgr_output`)
+- `wc_output_stream = wc_self_transfer + wc_bufmgr_output` (= `wc_roc_input` with symmetric DTCs)
+
+---
+
+## A2. Stall-time counters `0x9210`–`0x9228` (2026-10-06, read-only, direct read)
+
+Where the time goes inside EVB3. Each counter is the number of `user_clk` clocks (4 ns) its condition
+was true since SoftReset; 32-bit, wrap (17 s), SoftReset clear. Read all seven close together and divide
+by `0x9228` for a duty ratio; for a rate over a run, take the difference of two reads. Levels from the
+10GbE and DDR clock domains are resynchronized, so each counter is exact to within a few clocks.
+
+| Address  | Name                     | Clocks where...                                                                 |
+|----------|--------------------------|---------------------------------------------------------------------------------|
+| `0x9210` | `EVB_STALL_TX_CREDIT`    | the TX sat idle with words for the current destination but no RX credit from it (bit 18 level) |
+| `0x9214` | `EVB_STALL_TX_WIRE`      | a frame was on the 10GbE wire (TX wire monitor). `0x9214 / 0x9228` = wire use    |
+| `0x9218` | `EVB_STALL_BM_LOCAL`     | the buffer manager was streaming a SELF chunk to the DMA (no remote FIFO drained meanwhile) |
+| `0x921C` | `EVB_STALL_BM_REMOTE_WAIT` | some remote source FIFO held words while no remote chunk was being served     |
+| `0x9220` | `EVB_STALL_DDR_READ`     | a DDR read burst was in flight on the TX side (one at a time today)             |
+| `0x9224` | `EVB_STALL_ROC_HELD`     | the ROC input into EVB3 was valid and not ready (bit 16 level): back-pressure into the ring mux |
+| `0x9228` | `EVB_STALL_TIMEBASE`     | always (the denominator)                                                        |
+| `0x922C` | `EVB_STALL_ROC_HELD_SELF` | (2026-10-07) the ROC input was held WHILE a self subevent streamed to the buffer manager (the DMA side held it) |
+| `0x9230` | `EVB_STALL_ROC_HELD_REMOTE` | (2026-10-07) the ROC input was held WHILE a remote subevent streamed to the DDR write path (the DDR write held it) |
+| `0x9234` | `EVB_STALL_ROC_HELD_DRAIN` | (2026-10-07) the ROC input was held BETWEEN subevents, waiting for the DDR write path to drain the previous one |
+| `0x9238` | `EVB_STALL_ROC_HELD_OTHER` | (2026-10-07) the ROC input was held for any other reason (destination not yet decoded, self throttle, idle beat) |
+| `0x923C` | `EVB_STALL_DDR_WRITE`    | (2026-10-07) a DDR write burst was in flight on the TX side                      |
+| `0x9240` | `EVB_STALL_DMA_BP`       | (2026-10-07 late) EVB3's output held a word the PCIe DMA engine would not take: the EXACT share behind bit 23, which is only polled |
+| `0x9244` | `EVB_STALL_DMA_BP_MAX`   | (2026-10-07 late) the longest single such hold since SoftReset, in clocks of 4 ns (>= 65536 = a hold of 262 us or more happened) |
+| `0x9248` | `EVB_DMA_WORDS_OUT`      | (2026-10-07 late) words the engine accepted (all words); delivered rate = delta(0x9248) x 8 B / (delta(0x9228) x 4 ns) |
+
+`0x922C + 0x9230 + 0x9234 + 0x9238 = 0x9224` exactly (same clock, same held beat, split by the arbiter state). Added after the
+first HW sweep on build 26_10_06_16 (2026-10-07): the ROC input was held 57-66% of the time from 600 packets up while the wire
+ran 31-35% busy and DDR reads 54-61%; `0x9224` alone could not say which input path was holding. Read all fifteen together; the
+timebase wraps every 17.18 s, so for a run longer than that take a mid-run snapshot (the software agent's note of 2026-10-07).
+
+What to expect on the 2-DTC stand before the 2026-10-06 cap (0x9178 = 0, old firmware): `0x9218` high
+(the buffer manager spends most of its time inside self chunks), `0x9210` and `0x921C` high (the peer is
+out of credit and its words wait), `0x9214` low (~35%). After the cap (0x9178 = 1024): `0x9218` the same
+share of DMA time but in short pieces, `0x9210` and `0x921C` much lower, `0x9214` up with the output rate.
+If `0x9220` sits near 100% while `0x9214` stays below ~80%, the DDR read path is the next limit. First HW numbers (build 26_10_06_16, 2026-10-07, 6 ROCs x 1000 packets): 805 MB/s per DTC, TX credit stall 2-3%, wire 33%, self chunk 22-24%, remote waiting 28-29%, DDR read 57%, ROC held 59%: the self-chunk cap gave +10%, and the holder of the ROC input is what the 0x922C-0x9238 split is for.
+
+---
+
+## B. Per-DTC counters (indirect via `0x9160`)
+
+A dual-port BRAM stores 7 counter types × up to 32 DTC entries, accessed
+through write-then-read on a single register.
+
+### Read procedure
+
+1. **Write** the 9-bit BRAM address to `0x9160`:
+   - bits `[8:5]` = `BRAM_TYPE` (see table below)
+   - bits `[4:0]` = `DTC_offset` (0–31)
+2. **Wait** a few PCIe clock cycles. The BRAM read port is shared with the TX
+   FSM: an address mux hands the port to software whenever the TX FSM is not
+   actively using it (most cycles, even mid-packet), and a capture gate ensures
+   only software-address data is latched — never TX-address data. If the TX FSM
+   holds the port continuously (back-to-back BRAM operations), the returned value
+   is the last correctly captured one (stale but valid, never garbage).
+3. **Read** `0x9160` — returns the 32-bit BRAM value.
+
+> **Read-freshness note (corrected 2026-09-05).** The BRAM port used for these
+> reads is shared with the EVB transmit FSM. The value returned is always a
+> genuine BRAM word, never a mix, but it is the word for the address the host
+> wrote *only after the port has been free for ~26 ns since that write*. Until
+> firmware 26.09.05, the transmit header state held the port for the whole
+> time it waited for a data packet to be staged from DDR (microseconds), so a
+> host read landing in that window returned the value of the **previously**
+> read address (software observed this on every cell of a sweep taken during
+> data traffic; idle-only sweeps were clean because idle packets never wait).
+> Firmware now releases the port during that wait; the remaining holds are a
+> few tens of ns. Software's "write address, read twice, keep the second"
+> (`DTC_Registers.cpp:2461`) is a sound belt-and-braces and stays.
+
+### BRAM_TYPE encoding
+
+| Type                  | Value | Organized by    | What it stores                                    |
+|-----------------------|:-----:|:---------------:|---------------------------------------------------|
+| `RECV_COUNT`          | `0x0` | source          | RX packet count from that DTC                     |
+| `RXSEQ_AND_RXSPACE`   | `0x1` | source          | `{time, drained[4:0], rx_seq[7:0]}` -- drained = cumulative words THAT source has drained of this DTC's data from its 1024-word RX FIFO, 32-word units mod 32 (send credit; TX free = (31 - (sent - drained)) x 32 words) |
+| `DROP_COUNT`          | `0x2` | source          | Dropped packets (detected via RX sequence gaps)   |
+| `BYTE_COUNT`          | `0x3` | source          | Cumulative RX payload bytes from that DTC         |
+| `LAST_TIME`           | `0x4` | source          | Last-activity timestamp (`rx_clkMarker_count`)    |
+| `TXSEQ`               | `0x5` | **destination** | Last TX sequence number to that DTC               |
+| `TRAVEL_TIME`         | `0x6` | source          | Packet travel time through the switch             |
+| `TX_IDLE_COUNT`       | `0x7` | **destination** | Idle/empty packets sent to that DTC               |
+| `RX_IDLE_COUNT`       | `0x8` | source          | Idle/empty packets received from that DTC         |
+| `TX_COUNT`            | `0x9` | **total** (one value, any offset) | EVERY frame this DTC sent on its 10GbE port, all destinations, idle + data, 32-bit; added 2026-09-15. A single register (the twin of the switch's per-port ingress packet counter), not a BRAM row; read through 0x9160 like the others (`(0x9 << 5) | 0`, the offset is ignored). Cleared by SoftReset only (TX disable does not clear it). Wire-loss check: sender `TxCount` == switch ingress packets on its port == switch egress packets on the peer's port == sum of the peer's `RxCount` rows (one row per source); the link that differs is where frames vanish |
+| `RX_ACKPOS`           | `0xA` | source          | (2026-09-28; stream offsets since 2026-10-01) `{resend_req[31], 3'b0, last_seq_seen[27:20], ack_pos[19:0]}` -- the PEER's feedback about our stream to it, as carried in its last header (last_seq_seen = the seq of the last frame it had received from us when it built that header; the TX uses it to tell a request repeated after our answer reached it from the same request read again): ack_pos = stream offset (payload words we sent to it before that point, mod 2^20) of the first word it has NOT stored from us; resend_req = it is discarding until our packet at ack_pos arrives. The TX FSM reads it by destination before every window |
+
+### Examples
+
+Read RX packet count from DTC offset 3:
+```
+write 0x9160 = (0x0 << 5) | 3 = 0x003
+wait
+read  0x9160  → 32-bit receive count
+```
+
+Read drop count from DTC offset 5:
+```
+write 0x9160 = (0x2 << 5) | 5 = 0x045
+wait
+read  0x9160  → 32-bit drop count
+```
+
+Read TX sequence number to destination offset 10:
+```
+write 0x9160 = (0x5 << 5) | 10 = 0x0AA
+wait
+read  0x9160  → 32-bit TX seq
+```
+
+Read TX idle packets sent to destination offset 2:
+```
+write 0x9160 = (0x7 << 5) | 2 = 0x0E2
+wait
+read  0x9160  → 32-bit TX idle count
+```
+
+Read RX idle packets received from source offset 4:
+```
+write 0x9160 = (0x8 << 5) | 4 = 0x104
+wait
+read  0x9160  → 32-bit RX idle count
+```
+
+### Sweep pattern
+
+To read all RX packet counts for N DTCs:
+```
+for offset in 0 .. N-1:
+    write 0x9160 = (BRAM_TYPE << 5) | offset
+    wait
+    count[offset] = read 0x9160
+```
+
+---
+
+## B2. EVB error / status register `0x9370` (EVBERROR)
+
+Added 2026-09-08 (before that the EVB3 error output was unconnected in the
+EVB3 build and the register latch was commented out, so 0x9370 always read 0).
+
+`[15:0]` are **sticky error flags, cleared only by SoftReset** (a write to
+0x9370 has no effect; toggling the EVB link Rx/Tx enable also clears the
+RX/TX-side flags because their domain resets include it). Every one of them
+means data was lost or corrupted, or the protocol state is untrustworthy:
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 0 | RX_BUF_WRITE_FULL | RX source buffer written while full -- words lost (should never happen with the drained-credit throttle) |
+| 1 | RX_SEQ_GAP | RX sequence gap -- a packet was lost on the wire (count per source in RxMissingPktCnt). CAVEAT: on bitfiles built 2026-09-15 (14:00 through the evening) this bit and every Rx-type BRAM row are garbage regardless of bit 7 -- the re-ordered stats pass froze on gearbox bubbles while the BRAM read pipeline did not, shifting every readback by one row (fixed 2026-09-15 evening: the pass now runs through bubbles). On earlier bitfiles the same rows were corrupted only when bit 7 was set (frame overlap). Word-count parity (sender DDR->TX words vs receiver GBE Rx words) remains the authoritative loss check on every bitfile RETRANSMISSION (2026-09-28): a gap no longer loses data -- the receiver discards until the sender re-sends from the lost packet (0x9174 counts requests/served, status bit 27 is live while it happens). Bit 1 stays as the record that a loss occurred; a run with bit 1 set but exact zero-sum, whole records and 0x9174 != 0 is a RECOVERED run, not a bad one |
+| 2 | RX_PKT_REJECTED | An EVB frame addressed to THIS DTC was not stored because its source offset (source MAC byte - start node) is > 31: a peer is misconfigured or the start node is wrong. Frames not addressed to this DTC (another DTC, another partition, non-EVB start) are status bit 26, not an error (changed 2026-09-09: HW showed switch-flooded idle packets from a partition-0x01 DTC to MAC 0x00 on both DTCs) |
+| 3 | DDR_WR_UNDERFLOW | DDR write CDC FIFO went empty inside a burst (corrupt burst), or (2026-09-23) a word was written into the CDC FIFO while it was full and the FIFO dropped it. The second case was the 60-word loss of 2026-09-23 (record keeps its declared length, next record's head fills the tail, receiver sets bit 8); fixed in the build after 0xd60922a0, this bit is the tripwire that it stays fixed |
+| 4 | TX_FSM_FAULT | TX FSM undefined state / destination offset > 31; since 2026-09-19 also TX WINDOW OVERRUN: one of this DTC's frames was still on the wire when its destination window closed, so it overlapped the next sender's window to that receiver. Through a switch the two frames collide at the output port and one is dropped uncounted (TxCount == switch-in, switch-out == in - 1, 0 switch errors). Sender-side flag: look for it on the DTC whose frame vanished, not the receiver. The TX now measures the remaining window in clocks (not words sent) before starting a frame, so this must stay clear **2026-09-22 (HW iladata_6, seen on calo-14 through the switch AND calo-12 direct cable):** on builds through 0xd60922a0 this bit sets for real when a multi-frame burst's SECOND frame starts near the end of the window: the continuation loop skipped the fit check, and the fit check counted payload words, not wire time (a 139-word frame holds the wire 145 clocks; header/terminate blocks, pads, the 1-in-33 gearbox stretch and the 12-clock gap). With 2 DTCs no data is lost (the next window is the self window, nothing on the wire), so a set bit on a 2-node run is a flag only; with 3 or more DTCs it is a real collision at the switch. Fixed in the build after 0xd60922a0 (continuation re-checks the fit; both checks use wire time). |
+| 5 | CREDIT_VIOLATION | sent/drained credit counters disagree by more than the credit (one-sided reset) |
+| 6 | LOCAL_BAD_HEADER | the local (self) stream was misaligned: the word at a record boundary was not a count quadword (low nibble 8, non-zero words). Nothing is dropped -- the word goes out as a 1-word chunk and framing re-syncs at the next real header -- but a word was lost or duplicated upstream of the buffer manager, so the affected local record is corrupt. Never observed so far. (Until 2026-09-08 this bit meant chunk > DMA_max_size; it fired on both DTCs in every HW run before 2026-09-09 only because DMA_max_size was unconnected in the HW EVB3 instance and synthesized to 0, not because of any misalignment) |
+| 7 | RX_STATS_COLLISION | RX stats pipeline collision -- per-source stats may be wrong, data was stored. HW-proven 2026-09-15: the switch re-spaces queued frames to the minimum Ethernet gap, so a short frame followed immediately by another frame overlapped the old 23-beat bookkeeping pass. FIXED the same day by re-ordering the pass to 12 beats, shorter than the 17-beat physical minimum between frame starts; the detector stays as the guard. If it sets on a bitfile built after 2026-09-15, the spacing assumption is broken and the stats rows plus bit 1 are untrustworthy for that run; data path unaffected either way |
+| 8 | DDR_RD_BAD_COUNT | DDR read stream desync: a non-count word arrived where a subevent count quadword was due; it was dropped and the stream re-synced at the next valid count |
+| 9 | STAGING_WRITE_FULL | DDR->TX staging FIFO written while full -- words lost, TX then under-runs the declared packet |
+| 10 | TX_PAYLOAD_UNDERFLOW | staging FIFO went empty inside a packet payload -- the wire repeated a word |
+| 11 | TX_FRAME_MALFORMED | the TX wire monitor saw a frame leave without a legal shape (start not followed by terminate, terminate without start, idle inside a frame, data outside a frame, or more than 200 blocks). Added 2026-09-15 for the lost-first-fragment hunt: the sender-side twin of the receiver's sequence-gap bit **2026-10-06:** also set when a frame left with a number of data words on the wire that does not match its header byte count (2 + byte_count[14:3], or 15 for a data frame under 12 payload words, which is padded), or with a byte-count field of the wrong shape (bit 15 set, low bits not 010). The sender-side twin of bit 12, exact instead of a range; added for the network team's claim that the switch drops frames whose declared size and words sent differ. ILA: `evb_tx_ila` trigger `tx_frame_length_mismatch == 1` (probe0[52]); probe0[51] is the separate sticky `tx_frame_length_err`, probe0[60:53] the wire word count `tx_mon_words`. Decode the export with `python3 DTC/parse_ila.py frames <csv>`. |
+| 12 | RX_FRAME_SIZE | an accepted EVB frame's data words on the wire did not match its header byte count: fewer than declared (truncated on the wire, split by the switch, corrupt length) or more than the declared count plus legal min-frame padding (merged frames, corrupt length). Added 2026-09-16; 4-byte-shifted (0x33) frames are held to exactly one more data beat than 0x78 frames. The store already stops at the declared count, so a long frame loses nothing; a short frame is real loss and this is the flag for it. Not yet run in hardware (first bitfile pending the 2026-09-16 sim run 12). ILA: `evb_rx_ila` trigger `rx_frame_size_mismatch == 1` |
+| 13 | RX_FCS_BAD | an accepted 0x78-framed EVB frame arrived with an FCS that does not match the CRC-32 of its words (same span the sender covers: destination word through the last payload/pad word). Added 2026-09-16 (the RX CRC engine had been commented out for years; 0x9590 is dead in EVB3 builds). The frame was already stored when this fires, so it flags corruption after the fact. 4-byte-shifted (0x33) frames are not checked. Not yet run in hardware (first bitfile pending the 2026-09-16 sim run 12). ILA: `evb_rx_ila` trigger `rx_fcs_bad == 1` | **2026-09-22:** on builds 0xd6091797 through 0xd6092293 this bit is a false alarm: when a frame's last data word lands on a 10GbE gearbox bubble, the checker missed that frame's terminate block, clocked it as data and never cleared, so the NEXT frame compared wrong (the wire FCS was correct in every ILA capture). About 1 frame in 33 poisons the next one. Build 0xd60922a0 fixed that but exposed the mirror case (a bubble on the beat right AFTER the terminate block made the compare look at the last data word instead of the FCS), so bit 13 fires on it too, wire FCS still correct. Both fixed in the build after 0xd60922a0. Software keeps 0xd6091797, 0xd60919a0, 0xd6092192, 0xd6092291, 0xd6092293 and 0xd60922a0 on its exception list; from the build after 0xd60922a0 on, bit 13 means a real FCS mismatch. ROOT CAUSE 2026-09-24 (iladata_7): a receiver compare bug, not bad data: when a frame's last data word sat on a gearbox bubble the checker closed one beat early (the control flag leads the data by one beat on a repeat beat), skipped that word, and blamed the NEXT frame. Fires ~1 frame in 33 -> first poll of every run on builds 0xd6092293..0xd6092496.  First fix (build 0xd60924a0) judged control blocks by the data byte and misfired on payload words with a 0x1E/0xCC top byte on a bubble ([31:27] saturated during clean data). Real fix 2026-09-25 (flag re-paired with its word at the parser input): the build after 0xd60924a0 is the first where bit 13 is real; exclusion list = 0xd6092293 .. 0xd60924a0 (direct cable). **2026-09-27, FOURTH false cause, switch only (calo-14 2026-09-25 report, build 0xd6092589):** after every compare the checker cleared its engine for two clocks; a store-and-forward switch delivers the next queued frame one idle beat later, so the second clear clock landed on that frame's first word and every 0x78 frame that followed a checked 0x78 frame by one idle was judged bad ([31:27] saturates within a few dozen frames, both directions, wire counts exact, RxMissingPktCnt unaffected). A direct cable never shows it (the sender's own gap is >= 12 beats), which is why the same build was clean on calo-12. Fixed in the build after 0xd6092589 (one clear clock). **Same day, iladata_7 #3 (calo-14, 0xd6092589, trigger rx_fcs_bad): a SECOND switch-only cause, confirmed by ILA** -- a switch floods broadcasts (ARP/LLDP/STP) onto every port; those 0x78 frames are not EVB frames, the receiver rejects them (bit 26), but the checker still clocked their words and, because they end in a T0 block instead of the EVB 0xCC T, never compared and never cleared; the next EVB frame was judged from that residue (capture: engine dirty through 490+ idle beats, a correct 14-word frame clocked word for word from it, wire FCS matched its own words). Fixed in the same build: a window that closes on anything but 0xCC, or a frame the parser rejects, erases the engine. Confirmed a second time mid-run on 0xd6092788 (2026-09-27 08:36, one-clock clear only): the SWITCH's own DHCP client broadcast (src MAC 64:9d:99:04:5f:dd, hostname option `switch-649d.9904.5fdd`, 347 bytes, dest ff, T3-ended) arrived, was rejected silently, and the next EVB frame -- correct on the wire -- was flagged. With the 1-idle cause gone this fires only when a flooded frame happens to arrive (a DHCP request now and then), so short runs read 0 while an armed ILA catches it. The check NEVER drops or alters a frame on any build: a bad FCS is flagged after the frame is stored (the decode text "corrupt data already stored" is right). A frame that never reached the parser at all (bit 1 + RxMissingPktCnt + wire deficit with bit 13 clear) was lost before this DTC. Software: BEHIND A SWITCH treat bit 13 and [31:27] as false through 0xd6092788; from the build after 0xd6092788 they are real on any cabling. The lost 186-word packet in the same calo-14 run is the separate, known "frame vanishes inside the switch" issue (seq gap bit 1 + RxMissingPktCnt), not an FCS matter |
+| 14 | ROC_TAG_SLIP | at EVB3's ROC input (the AXI stream from the AXIMux, before the self/remote split) a single-record subevent's header word 0 carried an EWT[15:0] different from the EWT[15:0] in ANY of its ROC blocks' Data Header words (since 2026-10-05: every block, up to 6, walked from the packet count in each Data Header; until then only the FIRST block, beat 7 -- which is why the 2026-10-03 uneven-links fault, ROC 0 at tag N over links 1-5 at N-2 on 0xd6100291, never set it). Added 2026-09-16 for the header/data one-window slip seen on calo-12 (header N+1 over data N, 8 slips in 15 100k runs, both DTCs, both gaps): if this bit is set on the DTC whose record software rejected, the slip was already present when the record left the RingController/AXIMux; if it is clear there, the slip happened inside EVB3. Not checked for split (multi-record) subevents. ILA: `evb_user_axi_ila` trigger `roc_chk_tag_slip == 1` |
+| 15 | ROC_RECORD_SHAPE | at EVB3's ROC input a record's accepted beats (excluding the DMA-close word) did not equal its count quadword, or its header word 0 declared fewer bytes than the count quadword. Added 2026-09-16 for the 64-word deficit that accompanied 6 of the 8 slips (wc_roc_input / wc_self_transfer ending exactly 64 words short of whole records). Not yet run in hardware. ILA: `evb_user_axi_ila` triggers `roc_chk_len_bad == 1` / `roc_chk_hdr_bad == 1` |
+
+Bits 14 and 15 are EVB-mode checks: since 2026-10-06 the ROC record checker runs only while event building is on (0x9114 bit 7 = 1). In direct mode the ring mux stacks several records into one DMA with no close word between them, which the checker read as a wrong-length record and set bit 15 on every DMA (calo-12 2026-10-06: 0x9370 = 0x02008000 with the EVB link off). On older firmware ignore bit 15 in direct mode.
+
+`[31:16]` are **live status levels**, with one exception: bit 26 is sticky
+since SoftReset (informational). Status bits are back-pressure points, not errors --
+back-pressure propagates upstream and is flagged there):
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 16 | ROC_HELD | ROC input tvalid && !tready |
+| 17 | SELF_THROTTLE | self-subevent throttle holding a subevent |
+| 18 | CREDIT_THROTTLE | current window has data but the destination has no credit |
+| 19 | DDR_ALMOST_FULL | DDR channel almost-full back-pressure |
+| 20 | DDR_CDC_FULL | DDR write CDC FIFO full |
+| 21 | STAGING_NO_SLOT | HEADER waiting: the TX has data for this destination but neither staging FIFO is its own. Normal cause = both FIFOs hold other destinations' prefetched words; since 2026-10-01 that wait is bounded: after ~410 ns the TX takes back a slot (the other destination's unsent words are simply re-read later), so the bit flickers for well under a microsecond. With only 2 DTCs there is one remote destination, so the take-back can never apply: a long bit 21 there means the DDR read arbiter is not issuing this channel's first read. HW calo-14 2026-10-04 19:32 (0xd6100488, 1 of 4 runs): bit 21 set for a whole run from the first header after the reset, 4 idles sent, no data, no sticky bit -- the rewind server was left waiting outside its idle state by a TX reset (0x9114 bit 7 cleared, or a SoftReset reaching the TX and DDR clocks at different times) that landed inside a rewind or an eviction; it is reset only by the DDR-side reset, so the next run never read. Fixed 2026-10-05: the server abandons a pass whose TX-side request has disappeared (TX disabled, or both request levels low for 320 ns inside a pass). If bit 21 is still long: read bit 27 (RESEND_ACTIVE) alongside it, and 0x9160 type 0x9 (TX_COUNT) -- idles only = the arbiter is not reading |
+| 22 | RX_BUF_HIGH | any RX source buffer >= 3/4 full |
+| 23 | DMA_BACKPRESSURE | m_axis_tvalid && !axi_str_c2s0_tready |
+| 24 | FRONTIER_VALID | peer frontier known (self-throttle armed) |
+| 25 | DDR_CALIB_DONE | DDR calibration complete |
+| 26 | FOREIGN_FRAME | sticky since SoftReset (informational): a frame not for this DTC arrived and was ignored -- unknown start alignment (switch LLDP/STP and the like), OR destination MAC not ours: DTC byte (byte 5) != our MAC byte or partition byte (byte 2, 0x9154[15:8]) != our partition, and not broadcast 0xFF (switch flooding of unknown-unicast, other partitions sharing the switch). A frame is accepted only when BOTH bytes match (partition check added 2026-09-09). Expected on shared switches; nothing of ours is lost. Note (2026-09-27): a broadcast (dest ff) is ignored SILENTLY and does not set this bit, so a switch-flooded ARP broadcast leaves no trace here -- on 0xd6092589 its only symptom was the false bit 13 that followed it |
+| 27 | RESEND_ACTIVE | (2026-09-28, live) a source is in DISCARD (a sequence gap was seen and this DTC is waiting for the resend) or this DTC's TX is serving a rewind. Normal for a few rotations after a switch drop; a level that stays on means the peer never re-sent (see 0x9174) |
+| 28-31 | RX_FCS_BAD_COUNT | (2026-09-24; moved from [31:27] to [31:28] on 2026-09-28) number of RX frames that failed the FCS check (the events that set bit 13) since the last SoftReset or RX enable, saturating at 15. Live count, not a level. Read together with bit 13: 1 = one bad frame; 15 = 15 or more, the check is failing continuously. Builds 0xd6092293 .. 0xd60924a0 had a receiver compare bug (bit 13 false, count saturated on data); from 0xd6092589 (2026-09-25) bit 13 and this count read 0 on every clean run -- a non-zero value there is a real bad frame |
+
+Software: read after every run; any nonzero `[15:0]` invalidates the run's
+data. Do not attempt to clear by writing.
+
+### B3. EVB Status check -- what software should test (2026-09-16)
+
+One read of `0x9370` per DTC, at run start (after SoftReset) and after every run
+or on a periodic poll. Three classes of bit:
+
+**1. ERROR -- run is bad. `0x9370[15:0] != 0`** (mask `0x0000_FFFF`; was
+`0x3FFF` until bits 14-15 were added 2026-09-16). Report the DTC, the hex value
+and the set bit names; mark the run's data invalid. Every bit means loss,
+corruption or an untrustworthy protocol state; none is recoverable without a
+SoftReset on all DTCs. Bits 0-15 as tabled above. Suggested severity grouping
+for the message:
+
+| Group | Bits | What it tells the operator |
+|-------|------|----------------------------|
+| Data lost | 0, 1, 9, 12 | words or a whole packet are missing from a subevent |
+| Data corrupt | 3, 6, 8, 10, 11, 13, 14, 15 | a subevent's words are wrong or mis-framed (14: header tag != first ROC fragment tag; 15: record length or header byte count wrong) |
+| Protocol / config | 2, 4, 5, 7 | peer misconfigured, credit counters desynced, FSM fault, stats rows untrustworthy (bit 7: bit 1 and the Rx BRAM rows must be ignored for that run) |
+
+**2. MUST-BE-SET status -- readiness. Check before starting a run:**
+
+| Bit | Name | Expected | If not |
+|-----|------|----------|--------|
+| 25 | DDR_CALIB_DONE | 1 | DDR not calibrated: nothing can be buffered; do not start |
+| 24 | FRONTIER_VALID | 1 once the first peer packet has arrived (0 is normal before traffic) | after traffic started, 0 means no peer frame has ever been accepted: link, MAC, partition or start-node misconfiguration -- see bit 26 |
+
+**3. INFORMATIONAL status -- log, never fail on.** Live back-pressure levels;
+they flicker under load and only matter if one is stuck high while the event
+counters stop advancing (then it names the blocked stage):
+
+| Bit | Name | Stuck-high meaning |
+|-----|------|--------------------|
+| 16 | ROC_HELD | ROC input held: EVB back-pressuring the ring controller (downstream is one of 17-23) |
+| 17 | SELF_THROTTLE | this DTC is more than 1024 tags ahead of its slowest peer -- a peer is not sending, or (2-DTC bench, 300 pkt at 1.7 us) the peer's ROC emulator is simply slower: DTC_0 runs ~3% faster and shows bit 17 for 14-20% of polls, DTC_1 never, in every enable order; the run still completes. Count it per DTC per run; a level on ONE DTC with the other at 0 is a speed difference, not a fault |
+| 18 | CREDIT_THROTTLE | destination has no RX credit -- the peer's DMA (software) is not draining |
+| 19 | DDR_ALMOST_FULL | DDR channel almost full |
+| 20 | DDR_CDC_FULL | DDR write CDC FIFO full |
+| 21 | STAGING_NO_SLOT | both staging FIFOs owned by other destinations |
+| 22 | RX_BUF_HIGH | an RX source buffer >= 3/4 full -- THIS DTC's DMA is not draining |
+| 23 | DMA_BACKPRESSURE | PCIe DMA not ready -- software is not reading fast enough |
+| 26 | FOREIGN_FRAME | sticky: frames not for us were seen (shared switch, other partition) -- normal on a shared switch; suspicious on a direct cable |
+
+Complement the register with the word-count zero-sum (section A) at the end of
+each run: sender `ddr_to_tx` summed over DTCs must equal receiver `gbe_rx`
+summed over DTCs, and per DTC `roc_input == self + gbe_ddr_fifo` and
+`output == self + bufmgr`. Parity is the authoritative loss check; `0x9370`
+tells which stage. Both are exact only with all DTCs SoftReset together before
+the first event (counters wrap at 2^16 since 2026-09-10, compare mod 65536).
+
+Pseudo-code:
+
+```
+v = read(0x9370)
+if (v & 0xFFFF)            -> ERROR: run invalid, print bit names, require SoftReset
+if !(v & (1<<25))          -> ERROR: DDR not calibrated, do not start
+if running && !(v & (1<<24)) -> WARN: no peer traffic ever accepted
+log((v >> 16) & 0x7FF)     -> informational levels (bits 16-26)
+```
+
+## B4. Retransmission on hardware: what a good run looks like (2026-10-03, bitfile 0xd6100291)
+
+calo-14 behind the FS S5850 switch, 2 DTCs, 6 ROCs, 1.7 us windows, 100k events, packet sweep 1 to 410
+packets per ROC: every run delivered complete data while the switch lost up to ~190 frames per direction
+per run. Read these at the end of every run, in this order, and judge:
+
+1. `0x9370[15:0] == 0x0002`: bit 1 (RX_SEQ_GAP) alone means frames were lost AND recovered. Any other
+   sticky bit = bad run. Status bit 27 (RESEND_ACTIVE) must be 0 at the end (a resend still pending).
+2. `0x9174`: served on DTC A `[31:16]` must equal requested on DTC B `[15:0]`, and both equal B's
+   RxMissingPktCnt from A (DROP_COUNT row). Equal on both pairs = every loss answered.
+3. RX_ACKPOS row (type 0xA) for each peer: bit 31 (resend_req) must be 0.
+4. Zero-sum (section A) exact and the wire check 0 words both ways: the re-sent words are counted once
+   on each side (the sender's wire counter is corrected at the rewind).
+5. Records whole (0 open tags, 0 framing errors).
+
+Readout order matters: take the EVB Status AFTER the TX disable (`0x9114` bit 7 clear) and BEFORE the
+SoftReset. A read at a fixed delay after the CFO start catches long runs mid-flight (zero-sum MISMATCH
+and a wire DIFF of a few hundred words still in the pipeline: not loss); a read after the SoftReset is
+all zeros. The served half of `0x9174` clears with the TX disable, so read `0x9174` before that write.
+
+Throughput on this bench: total data rate ~1.55 GB/s at 310 packets/ROC (~775 MB/s per DTC), flat
+1.45-1.55 GB/s above; event rate 130k/s at 1 packet down to 19k/s at 410. Losses per run grow with
+frame volume (0 at 1 packet, ~190 per direction at 410), all recovered. Self-throttle (bit 17) up to 24%
+of polls on the slower DTC is normal.
+
+## C. 10GbE RX packet error count
+
+| Address  | Width  | Counter                                                |
+|----------|--------|--------------------------------------------------------|
+| `0x9590` | 32-bit | Global 10GbE RX CRC/FCS mismatch errors (not per-DTC). **DEAD in EVB3 builds** (2026-09-14): the counter is driven only by the legacy EVB instance; in the EVB3 branch the wire is undriven and the register always reads 0. EVB3 does not verify the FCS of received frames at all (its RX CRC block is commented out), so a 0 here is not evidence of a clean link. Software should display it as N/A for EVB3 firmware |
+
+Not clearable by software in the current RTL — resets only on hard/soft reset.
+
+---
+
+## D. BRAM debug signals (simulation / ILA)
+
+Debug registers that latch BRAM access signals for observability.
+Transaction-level signals are always present; `EVBSimMode`-only signals
+are marked below.
+
+### Port A — write side (`rxgbeclk`)
+
+| Signal                       | Width | Description                                   |
+|------------------------------|:-----:|-----------------------------------------------|
+| `dbg_stats_bram_wr_we`      |   1   | Latched `statsBRAM_we` — pulses on each write |
+| `dbg_stats_bram_wr_addr`    |   9   | Full BRAM address of last write               |
+| `dbg_stats_bram_wr_data`    |  32   | Lower 32 bits of data written                 |
+| `dbg_stats_bram_wr_type`    |   4   | `BRAM_TYPE` field extracted from address       |
+| `dbg_stats_bram_wr_node`    |   5   | Node-offset field extracted from address       |
+
+### Persistent per-node stat latches (always present — chipscope-visible)
+
+Updated on every BRAM write that targets the matching type+node.
+
+| Signal                       | Clock      | Indexed by   | Description                                    |
+|------------------------------|------------|:------------:|------------------------------------------------|
+| `dbg_rxIdleCnt[node]`       | `rxgbeclk` | source node  | RX idle packet count (from `BRAM_TYPE_RX_IDLE_COUNT`) |
+| `dbg_rxCount[node]`         | `rxgbeclk` | source node  | RX packet count (from `BRAM_TYPE_RECV_COUNT`)  |
+| `dbg_txIdleCnt[node]`       | `txgbeclk` | dest node    | TX idle packet count (from `BRAM_TYPE_TX_IDLE_COUNT`) |
+| `dbg_txSeq[node]`           | `txgbeclk` | dest node    | TX sequence (from `BRAM_TYPE_TXSEQ`)           |
+
+Arrays are `[MAX_NUM_OF_DTCS-1:0]` (32 entries). With 2 DTCs (base=0x80),
+node offsets are 0 and 1.
+
+### Chipscope ILAs for idle counts
+
+| ILA instance             | Clock      | probe0 (64-bit)                         | probe4 (64-bit)                     |
+|--------------------------|------------|----------------------------------------|-------------------------------------|
+| `evb_tx_idle_cnt_ila`   | `txgbeclk` | `{txIdleCnt[1], txIdleCnt[0]}`         | `{txSeq[1], txSeq[0]}`             |
+| `evb_rx_idle_cnt_ila`   | `rxgbeclk` | `{rxIdleCnt[1], rxIdleCnt[0]}`         | `{rxCount[1], rxCount[0]}`         |
+
+In chipscope, add these ILAs and set the radix to unsigned decimal. The
+values update live as the TX/RX FSMs write to the BRAM.
+
+### Port B — TX write side (`txgbeclk`, `EVBSimMode`)
+
+| Signal                          | Width | Description                                    |
+|---------------------------------|:-----:|------------------------------------------------|
+| `dbg_stats_bram_tx_wr_we`      |   1   | Latched `statsBRAM_tx_we`                      |
+| `dbg_stats_bram_tx_wr_addr`    |   9   | Full BRAM address of last TX-side write        |
+| `dbg_stats_bram_tx_wr_data`    |  32   | Lower 32 bits of TX-side data written          |
+| `dbg_stats_bram_tx_wr_type`    |   4   | `BRAM_TYPE` field from TX write address        |
+
+### Port B — software read side (`txgbeclk`, `EVBSimMode`)
+
+| Signal                       | Width | Description                                       |
+|------------------------------|:-----:|---------------------------------------------------|
+| `dbg_stats_bram_rd_valid`    |   1   | High when read data is from user address (not TX FSM) |
+| `dbg_stats_bram_rd_addr`     |   9   | Latched `EVBSourceStats_raddr_reg`                |
+| `dbg_stats_bram_rd_data`     |  32   | Latched `statsBRAM_rdata` when valid              |
+| `dbg_stats_bram_rd_type`     |   4   | `BRAM_TYPE` field from read address               |
+
+---
+
+## Pure-idle link test (2026-09-17)
+
+Idle packets exercise exactly the hops under study (TX FSM, 10GbE, optional
+switch, RX parser, stats BRAM) with nothing else in the loop: no ROC
+emulator, RingController, AXIMux, DDR, buffer manager, DMA or software
+parser. Every field is predictable (destination, source, length, per-
+destination sequence, fixed payload) and the receiver already checks size
+(bit 12), FCS (bit 13) and sequence (bit 1, RxMissingPktCnt). It does NOT
+exercise the credit protocol, the RX source buffer or the header/data slip.
+
+Knobs (all `0x91xx`): `0x9170` idle packets per window, `0x915C[31:16]`
+idle payload words, `0x915C[15:8]` inter-packet gap, `0x9158[31:16]` dead
+time, TX window length in CFO markers (build constant `EVB_TX_WINDOW_N`),
+CFO-emulator marker period.
+
+Procedure:
+1. SoftReset both DTCs (clears `0x9370`, counters, sequence numbers). EVB
+   link and HEB enabled; start no run. Idle packets flow on their own.
+2. Write the point (`0x9170`, `0x915C`, `0x9158`) and clear the switch
+   counters at the same time.
+3. Run for a fixed time (at ~1 Mpps a minute is ~60 M frames per direction).
+4. Freeze with TX disable only (`0x9114` bit 7 clear) on both DTCs. Never
+   RX disable (bit 15 sweeps the stats BRAM).
+5. Read per DTC: TxCount (type 0x9), TxIdleCount[dest], TxLastSeqTag[dest],
+   RxCount[src], RxIdleCount[src], RxMissingPktCnt[src], RxByteCount[src],
+   `0x9370`. Read the switch per-port in/out frames, CRC and discards.
+6. Parity chain per direction; each equality localizes a hop:
+   TxCount(A) = TxIdleCount(A->B) = switch in (A's port) = switch out (B's
+   port) = RxCount(B<-A) = RxIdleCount(B<-A), RxMissingPktCnt = 0, bits
+   1/7/11/12/13 clear. RxCount/RxByteCount must be read RAW, not in K.
+7. Sweeps: payload words at fixed rate (length selectivity; the calo-14
+   loss was 186-word frames), then rate at fixed size (`0x9170`, gap, dead
+   time, marker period) for the maximum clean packet and byte rate. Repeat
+   each point through the switch and on the direct cable.
+
+Rate arithmetic: one idle frame occupies (2 + words + 2) beats + gap
+beats of txgbeclk (156.25 MHz). With 186 words and gap 12: ~202 beats ->
+~0.77 Mpps -> 1.19 GB/s of frame; a window of N markers holds
+N x marker_period / 202 frames, so set `0x9170` at or above that to run the
+whole window back-to-back.
+
+## Switch length test: MAX_PACKET_BYTES 1492 -> 1024 (2026-09-28)
+
+Background: through the EVB switch (FS S5850-32S2Q, FSOS 7.4.5) ~1 in 2000-5000 of the
+largest EVB frames vanish inside the switch with no counter charged -- switch ingress count =
+sender TxCount, switch egress = ingress - N, 0 CRC / errors / discards / queue drops, no
+policer, no storm-control, no EFD, cut-through off, static MAC entries made no difference.
+Only the 1492-byte first fragments (186 words, 1508 B on the wire) are ever lost; idle frames
+and the shorter tail fragments never. The direct-cable pair (calo-12) is clean on the same
+bitfile. The receiver sees it as 0x9370 bit 1 + RxMissingPktCnt + a wire deficit of N x 186
+words; the record then reaches software without its header (corrupt-record abort).
+
+Test: the build after 0xd6092788 caps a fragment at **1024 bytes = 128 words** (frame 1044 B
+on the wire). A 6 x 300 subevent (3618 words) is now 28 fragments of 128 words + a 34-word
+tail instead of 19 x 186 + 84.
+
+What to look for on calo-14 (behind the switch):
+- Loss stops (bit 1 clear, RxMissingPktCnt 0, in == out on both switch ports, 100k runs
+  complete): the switch has a length-dependent fault; 1024 is the workaround (about 3% more
+  header overhead on the link) and the switch goes to FS support / replacement.
+- Loss continues: the wire deficit will now be N x **128** words (a lost first fragment) --
+  length was not the cause; the fault is timing/burst related and the switch is still the
+  suspect, with frame size ruled out.
+- Either way calo-12 must stay clean (regression check).
+
+What changes for software: nothing structural. FAFA chunks and per-source reassembly are
+unchanged; a subevent simply arrives in more, smaller fragments. Any wire-deficit arithmetic
+that assumed 186 words per lost packet must use 128 on this build (the deficit is always a
+multiple of the first-fragment size on the build in use). Idle frames are still 12 words.
+
+**Result (2026-09-28 10:15, calo-14, `0x9004` = `0xd6092888`): loss continues at 1024 B.**
+One run: DTC_0 -> DTC_1 switch in 2,337,314 = DTC_0 TxCount, switch out 2,337,312 (2 lost,
+2,128 B = 2 x 1,064 B = two 1,044 B first fragments + 20 B each); DTC_1 -> DTC_0 exact.
+DTC_1: bit 1, RxMissingPktCnt 2, wire deficit 256 = 2 x 128 words, bit 7 clear. Switch:
+0 CRC / errors / discards. So the drop follows the LARGEST frame whatever its size; frame
+length is ruled out; the switch drops uncounted on burst shape or timing. Firmware path
+forward is packet retransmission (`EVB_retransmission_plan.md`), not a size workaround.
+Whether 1024 stays or 1492 returns is Ryan's call; the deficit arithmetic follows the build.
+DTC_0 also showed sticky bit 9 (staging FIFO overrun) at the end: aftermath of the receiver's
+abort, same pattern as 2026-09-15; bit 9 on a run with zero wire deficit would be a real
+firmware fault and must be reported.
+
+**2026-10-01 11:04 run (this same bitfile, 2-node, 1-packet 248-byte records at 1.7 us): that
+case happened.** Both DTCs stopped at ~57k events with the wire exact both ways (RxMissingPktCnt 0,
+bit 1 clear, ddr_to_tx == gbe_rx on both pairs, Tx packets == peer RxCount): DTC_1 sticky bit 9,
+DTC_0 sticky bit 8, and DTC_0's zero-sum broken before the wire (ROC input 19808 != self 35314 +
+DDR FIFO write 65403). Firmware item, under investigation: the sender's DDR-to-staging path at a
+high rate of records much smaller than one 32-word DDR burst. Software did nothing wrong; the
+readers' 2 s assembly timeout waiting for the peer half is the correct reaction. Suggested
+separating test from the software side stands: same records at 3.4 us.
+
+For software, from the 10:13 report on this run:
+- The report's DTC_0 row (bit 1, RxMissingPktCnt 1 from 0x81, 128 words short DTC_1 -> DTC_0)
+  contradicts the 10:15 EVB Status (DTC_0 sticky = bit 9 only, RxMissingPktCnt 0, wire
+  DTC_1 -> DTC_0 OK 0) and the switch counters (in = out that way). Sticky bits do not clear
+  without a SoftReset and none happened after `clear counters`. Please re-check which log that
+  row came from. If DTC_0 truly aborted on a headerless record with nothing lost toward it,
+  send the record dump: that would be a separate firmware item.
+- The "N full 186-word TX packet(s)" hint: a full data packet is **128 words on 0xd6092888 and
+  later**, 186 before. No register exposes it (the MaxEnetPayloadSize register feeds only the
+  legacy EVB); key it on `0x9004 >= 0xd6092888`, or print both candidates.
+- Load: 6 x 300 at 1.7 us is past the link and is not what caused the loss (earlier losses were
+  at 1 ROC x 150 pkt x 3.4 us). One light-load run on this bitfile is still useful for the
+  per-frame rate at 1024 B; the 09-16 notes' gap-0xff / bit-7 conditions apply at 6 x 300.
+
+**Reverted the same day (Ryan, 2026-09-28): MAX_PACKET_BYTES is 1492 again in the source.** Build
+`0xd6092888` is the ONLY bitfile with 1024-byte fragments (128 words). Every build before it and
+every build after it uses 1492 (186 words). Wire-deficit hint: 128 words on `0xd6092888`, 186 on
+all others. Nothing else changes for software.
+
+## RTL source references
+
+| File | What to find there |
+|------|--------------------|
+| `EVB3.v:261–268`        | `BRAM_TYPE` localparams                          |
+| `EVB3.v:306–317`        | Word counter declarations and `EVBWordCount` assigns |
+| `EVB3.v:590–605`        | BRAM port-B readback gating (TX FSM sharing)     |
+| `EVB3.v:830–982`        | RX FSM per-source BRAM writes                    |
+| `EVB3.v:1151–1221`      | Word counter increment logic                     |
+| `EVB3.v:1340–1604`      | TX FSM per-destination BRAM access               |
+| `register_map.v:2140`   | `EVB_STATS` write decode (address latch)         |
+| `register_map.v:~3380`  | `EVB_STATS` read decode                          |
+| `register_map.v:~3437, ~3790` | `EVB_WORD_COUNT_0..3` read decode           |
+| `EVB.v:1478–1505`       | `rxPacketErrorCount` logic                       |
+| `register_map.v:3612`   | `TENGBERXPACKETERRORCOUNT` read decode           |
+
+## Self-subevent throttle (2026-09-04)
+
+Firmware bounds how far the local (self) subevent stream can run ahead of the
+peers: a self subevent whose EWT[15:0] leads the slowest peer's latest received
+tag by more than 1024 is held (ROC tready low) until the peers catch up. Software
+staging memory per DTC is therefore bounded by 1024 x max subevent (192 KB) =
+192 MB regardless of the number of DTCs. No register; fixed window. A dead peer
+stalls this DTC after 1024 events by design (counters freeze). Details in
+[EVB3_counters_and_protocol.md](EVB3_counters_and_protocol.md), "Self-Subevent
+Throttle".
+
+## EVB link 7 reset and lock status (2026-09-24)
+
+Builds after 26_09_24_13 (`0x9004` later than `0xd6092493`): `0x9118` bit 7 is a real
+link reset for the EVB 10GbE link. It is a level (software writes 1, then 0; a
+SoftReset, `0x9100` bit 31, also zeroes the whole `0x9118` register). While held,
+`0x9138` bits 15 and 31 (TX/RX start-up sequencers) read 0 and bits 7/23 plus
+`0x9128` bit 7 stay 1; block sync and the lock counters clear; this DTC's TX stops
+for the restart so the peer loses `0x9140` bit 7 and regains it within one poll
+after release. Never issue it during a run. Bench-verified on `0xd6092496`
+(2026-09-24 21:24) and `0xd60924a0` (2026-09-25 09:53), both DTCs, all steps.
+`0x9140` bit 7 (`CDR LOCKED` in `EVB Init`) is the link's own check: 64b/66b block
+lock plus 255 idle words in a row from the peer, not the transceiver's CDR pin.
+Health bits: `0x9138` [7,15,23,31] and `0x9128` bit 7 (transceiver up), `0x9108`
+[23:21] = 0 (no loopback), `0x93A0` bit 25 (Firefly 1 present). Software steps,
+register dump list and the verification plan:
+[EVB3_link7_reset_software_handoff.md](EVB3_link7_reset_software_handoff.md).

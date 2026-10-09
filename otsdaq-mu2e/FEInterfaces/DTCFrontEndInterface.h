@@ -1,6 +1,7 @@
 #ifndef _ots_DTCFrontEndInterface_h_
 #define _ots_DTCFrontEndInterface_h_
 
+#include <array>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -95,6 +96,23 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 
 	DTCLib::DTC* thisDTC_;
 
+	// Buffer Test merge modes: the DTC_0 FE reads DTC_1's DMA through a borrowed
+	// handle and joins each pair of halves into one DTC_Event (final-topology emulation).
+	enum class DetachedMergeMode : uint8_t
+	{
+		Off      = 0,
+		EvenOdd  = 1,  // DTC_1 tag T+1 pairs with DTC_0 tag T (2-node EVB routing)
+		Matching = 2,  // DTC_1 tag T pairs with DTC_0 tag T
+	};
+	static const char* detachedMergeModeName(DetachedMergeMode m);
+
+	struct MergedDetachedEvent
+	{
+		std::shared_ptr<DTCLib::DTC_Event> event;                 // self-contained copy
+		size_t                             numSubeventsFromDTC0;  // subevents [0,n0) came from DTC_0
+		uint64_t                           baseTag;               // == DTC_0 tag
+	};
+
 	struct DetachedBufferTestThreadStruct
 	{
 		std::mutex        lock_;
@@ -105,19 +123,54 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 
 		DTCLib::DTC* thisDTC_;
 
-		bool                                                       inSubeventMode_  = false;
-		bool                                                       inEVBMode_       = false;
-		uint8_t                                                    evbNumDestNodes_ = 1;
-		std::set<uint8_t>                                          evbSourcesSeenForTag_;        // EVB mode: source DTC IDs that have delivered the current expected tag
-		bool                                                       evbTagSynced_ = false;        // EVB mode: expected tag has been synced to the first subevent seen after (re)start
-		std::map<uint8_t /*source_dtc_id*/, std::vector<uint64_t>> evbRocFragmentsBySource_;     // EVB mode: ROC fragment counts per source DTC, per link
-		std::map<uint8_t /*source_dtc_id*/, std::vector<uint64_t>> evbRocPayloadBytesBySource_;  // EVB mode: ROC payload bytes per source DTC, per link
-		bool                                                       activeMatch_      = false;
-		std::atomic<uint64_t>                                      expectedEventTag_ = -1, nextEventWindowTag_ = -1;
-		bool                                                       saveBinaryData_                  = false;
-		bool                                                       saveSubeventHeadersToBinaryData_ = false;
-		bool                                                       doNotResetCounters_              = false;
-		bool                                                       skipBy32_                        = false;
+		bool    inSubeventMode_  = false;
+		bool    inEVBMode_       = false;
+		uint8_t evbNumDestNodes_ = 1;
+		// source key = (sourceGroup << 8) | source_dtc_id; group 1 = subevent arrived via the
+		// DTC_1 half of a merged event.  Non-merge runs use group 0 only (key == source_dtc_id).
+		std::set<uint16_t>                                       evbSourcesSeenForTag_;        // source keys that have delivered the current expected tag
+		bool                                                     evbTagSynced_ = false;        // EVB mode: expected tag has been synced to the first subevent seen after (re)start
+		std::map<uint16_t /*source key*/, std::vector<uint64_t>> evbRocFragmentsBySource_;     // ROC fragment counts per source, per link
+		std::map<uint16_t /*source key*/, std::vector<uint64_t>> evbRocPayloadBytesBySource_;  // ROC payload bytes per source, per link
+
+		// ---- merge modes ----
+		DetachedMergeMode mergeMode_ = DetachedMergeMode::Off;
+		DTCLib::DTC*      otherDTC_  = nullptr;  // DTC_1 FE's thisDTC_, borrowed; never deleted here
+		std::string       otherDTCUID_;
+		uint8_t           evbNumDestNodesOther_ = 1;
+		uint32_t          pairTimeoutMs_        = 2000;  // from thisDTC_->GetEVBEventTimeout() at Start
+		size_t            pairMaxPending_       = 1024;
+		struct PendingHalf
+		{
+			std::shared_ptr<DTCLib::DTC_Event>                 event;
+			std::chrono::time_point<std::chrono::steady_clock> arrival;
+		};
+		std::map<uint64_t /*baseTag*/, PendingHalf> pendingDTC0_, pendingDTC1_;  // thread-private
+		bool                                        haveMergedTag_     = false;
+		uint64_t                                    lastMergedBaseTag_ = 0;
+		// read lock-free by the status functions
+		std::atomic<uint64_t> mergedEventsCount_{0};
+		std::atomic<uint64_t> unmatchedDTC0Count_{0}, unmatchedDTC1Count_{0};
+		std::atomic<uint64_t> mergeTimeTotalNs_{0}, mergeTimeMaxNs_{0}, mergedBytesTotal_{0};
+		std::atomic<size_t>   pendingDTC0Count_{0}, pendingDTC1Count_{0};
+		std::atomic<uint64_t> oldestPendingDTC0Tag_{UINT64_MAX}, oldestPendingDTC1Tag_{UINT64_MAX};
+		bool                  activeMatch_      = false;
+		std::atomic<uint64_t> expectedEventTag_ = -1, nextEventWindowTag_ = -1;
+		bool                  saveBinaryData_                  = false;
+		bool                  saveSubeventHeadersToBinaryData_ = false;
+		bool                  doNotResetCounters_              = false;
+		bool                  skipBy32_                        = false;
+		// "Check ROC Emulator Data": every non-empty block is checked against the emulator
+		// pattern seen on the bench (16-bit pairs [constant, counter], counter +2 per pair and
+		// continuous per source DTC and link across events) and against the packet count of
+		// the first block seen.  Counters are per link; the expected next counter is keyed by
+		// (source DTC id << 3 | link) so EVB-mode streams from two DTCs do not mix.
+		bool                         checkROCEmulatorData_       = false;
+		bool                         evbDrainOnly_               = false;  // EVB mode without event assembly (throughput ceiling of the software sink)
+		int                          rocEmulatorExpectedPackets_ = -1;
+		std::vector<uint64_t>        rocEmulatorDataErrorsCount_, rocEmulatorPacketCountErrorsCount_;
+		std::map<uint16_t, uint16_t> rocEmulatorNextCounter_;
+		std::vector<std::string>     rocEmulatorFirstErrors_;
 
 		std::atomic<uint64_t>                      eventsCount_;
 		std::atomic<uint64_t>                      subeventsCount_;
@@ -135,15 +188,54 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		std::atomic<uint64_t> evbCloseFillersCount_{0};
 		std::atomic<uint64_t> evbFramingErrors_{0};
 		std::atomic<uint32_t> evbStickyErrorsSeen_{0};
-		uint32_t              evbStickyIgnoreMask_{0};
+		uint32_t              evbStickyIgnoreMask_{0};    // per-build known defects (set by thread)
+		uint32_t              evbOperatorIgnoreMask_{0};  // copied from the FE at Start; session-only
 		std::atomic<bool>     evbTrafficStarted_{false};
 		std::atomic<bool>     evbStatusReadFailed_{false};
+		// Per-run count of 0x9370 polls with bit 17 (self-throttle: this DTC is >1024 tags
+		// ahead of its slowest peer) set.  hw agent 2026-09-24: this is the register that
+		// tells a run that stalled on the throttle from one that completed.
+		std::atomic<uint64_t> evbSelfThrottlePolls_{0};
+		std::atomic<uint64_t> evbDMABackpressurePolls_{0};  // bit 23: PCIe DMA not ready, software reading too slowly
+		std::atomic<uint64_t> evbCreditThrottlePolls_{0};   // bit 18: window has data, destination has no credit
+		std::atomic<uint64_t> evbRxBufferHighPolls_{0};     // bit 22: an RX source buffer >= 3/4 full (peer data piling up)
+		std::atomic<uint64_t> evbStatusPolls_{0};
+		// Per-poll share of every live back-pressure bit 16..23 (index = bit - 16); the four
+		// named counters above stay for the existing report rows.  hw agent 2026-10-09 asked
+		// for bits 19 (DDR almost full), 20 and 21 as well.
+		std::array<std::atomic<uint64_t>, 8> evbLiveBitPolls_{};
+		// First time a sticky error bit [15:0] latched during this run: the mask seen on that
+		// poll and the delay from traffic start (the "time to first latch" the hw agent asked for).
+		std::atomic<bool>                     evbFirstStickyValid_{false};
+		std::atomic<uint32_t>                 evbFirstStickyMask_{0};
+		std::atomic<int64_t>                  evbFirstStickyAfterTrafficUs_{0};
+		std::atomic<uint64_t>                 evbFirstStickyIteration_{0};
+		std::atomic<uint64_t>                 evbFirstStickySubevents_{0};
+		std::chrono::steady_clock::time_point evbTrafficStartTime_;
+		// Software time profile of the EVB loop (steady_clock ns, accumulated per iteration):
+		// where the host spends its time between DMA buffers.  DTCLib keeps the per-step split
+		// inside GetEVBDataAsEvents (DTC::GetEVBReadProfile).
+		std::atomic<uint64_t> evbLoopReaderNs_{0};      // GetEVBDataAsEvents call(s), incl. the 1 ms idle wait
+		std::atomic<uint64_t> evbLoopStatusPollNs_{0};  // 0x9370 read + checks + stall snapshots
+		std::atomic<uint64_t> evbLoopHandlingNs_{0};    // merge + handleDetachedSubevent per returned event
+		std::atomic<uint64_t> evbLoopIterations_{0};
 		// 0x9370 sampled on the first idle iteration after the last subevent arrived (~1 loop
 		// iteration late, vs ~2 s late for the timeout snapshot); re-armed whenever data resumes
 		std::atomic<bool>                                  evbErrAtStallOnsetValid_{false};
 		std::atomic<uint32_t>                              evbErrAtStallOnset_{0};
 		std::atomic<uint64_t>                              evbErrAtStallOnsetIter_{0};
 		std::chrono::time_point<std::chrono::steady_clock> evbErrAtStallOnsetTime_;
+		// EVB3 stall-time counters (0x9210-0x9228) sampled when traffic starts and on the first
+		// idle iteration after the last subevent (re-armed when data resumes); the difference
+		// gives the run's own stall shares, free of the pre-start idle time and the ~17 s wrap
+		std::atomic<bool>                     evbStallAtStartValid_{false};
+		std::atomic<bool>                     evbStallAtEndValid_{false};
+		std::array<std::atomic<uint32_t>, 15> evbStallAtStart_{};  // most recent snapshot (start, then every ~8 s)
+		std::array<std::atomic<uint32_t>, 15> evbStallAtEnd_{};
+		// 32-bit counters wrap after ~17 s, so the thread re-snapshots every ~8 s and sums the
+		// deltas here; the report prints accumulated + (end - last snapshot)
+		std::array<std::atomic<uint64_t>, 15>              evbStallAccumulated_{};
+		std::chrono::time_point<std::chrono::steady_clock> evbStallLastSnapshotTime_;
 
 		uint64_t                                           totalSubeventBytesTransferred_;
 		std::chrono::time_point<std::chrono::steady_clock> transferStartTime_,
@@ -173,7 +265,30 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	static void handleDetachedSubevent(
 	    const DTCLib::DTC_SubEvent& subevent,
 	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct>
-	        threadStruct);
+	             threadStruct,
+	    uint64_t tagOffset   = 0,  // subtracted from the subevent tag before the expected-tag check
+	    uint8_t  sourceGroup = 0);  // 0 = DTC_0 half / non-merge, 1 = DTC_1 half
+
+	static std::shared_ptr<DTCLib::DTC_Event> buildMergedDetachedEvent(
+	    const DTCLib::DTC_Event& half0, const DTCLib::DTC_Event& half1, uint64_t baseTag);
+	static void stageDetachedHalf(
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct,
+	    std::shared_ptr<DTCLib::DTC_Event>                                    half,
+	    bool                                                                  fromDTC1,
+	    std::vector<MergedDetachedEvent>&                                     mergedOut);
+	static void mergeDetachedEvents(
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct,
+	    std::vector<std::shared_ptr<DTCLib::DTC_Event>>&                      eventsFromDTC0,
+	    std::vector<std::shared_ptr<DTCLib::DTC_Event>>&                      eventsFromDTC1,
+	    std::vector<MergedDetachedEvent>&                                     mergedOut);
+	static std::string getDetachedMergeStatus(
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct,
+	    int                                                                   labelWidth);
+	static void resetDetachedMergeState(
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct);
+	static void handleMergedDetachedEvents(
+	    std::vector<MergedDetachedEvent>&                                     merged,
+	    std::shared_ptr<DTCFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct);
 
 	void initDetachedBufferTest(uint64_t           initialEventWindowTag,
 	                            bool               saveBinaryDataToFile,
@@ -192,8 +307,18 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void        registerFEMacros(void);
 	std::string getEVBWireParity(void);
 
-	int                     timing_chain_first_substep_ = -1;
-	bool                    rtfPhaseEdgeRetried_        = false;
+	// Operator-set 0x9370 bits to ignore in the EVB start gate and run-validity check for
+	// this session only (FE Macro "EVB Start-Gate Ignore Mask").  OR-ed with the per-build
+	// known-defect list; cleared on otsdaq restart.  The bits stay visible in every report.
+	uint32_t              evbOperatorIgnoreMask_ = 0;
+	bool                  checkROCEmulatorData_  = false;  // Buffer Test Detached input, copied into the thread struct at Start
+	bool                  evbDrainOnly_          = false;  // Buffer Test Detached input, copied into the thread struct at Start
+	DTCFrontEndInterface* findPeerDTCFrontEnd(int deviceIndex, std::string& visibleList);
+	void                  requireNoMergeReaderOnThisDTC(void);
+
+	int                     timing_chain_first_substep_   = -1;
+	unsigned int            configSubsystemIterationTurn_ = (unsigned int)-1;  // which subsystem-iteration this DTC configures in; -1 = not yet decided
+	bool                    rtfPhaseEdgeRetried_          = false;
 	std::string             rtfPhaseEdgeRetryDetail_;  // populated when edge-flip retry runs, included in error if verify still fails
 	int                     dtc_location_in_chain_ = -1;
 	unsigned int            runningCallCount_      = 0;
@@ -250,7 +375,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void RunROCFEMacro(__ARGS__);
 	void DTCSendHeartbeatAndDataRequest(__ARGS__);
 	void ResetLossOfLockCounter(__ARGS__);
-	void ReadLossOfLockCounter(__ARGS__);
+	void GetDTCErrors(__ARGS__);
 	void SpyBuffer(__ARGS__);
 	void ReleaseAllDAQBuffers(__ARGS__);
 	void GetLinkLockStatus(__ARGS__);
@@ -268,7 +393,6 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void DTCCounters(__ARGS__);
 	void readRxDiagFIFO(__ARGS__);
 	void readTxDiagFIFO(__ARGS__);
-	void GetLinkErrors(__ARGS__);
 	void GetRTFInterfaceStatus(__ARGS__);
 	void RTFMarkerOffsetApply(__ARGS__);
 	void FixCFOClockEdge(__ARGS__);
@@ -292,6 +416,9 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void SetDTCIdAndEVBInfo(__ARGS__);
 	void EVBInit(__ARGS__);
 	void EVBStatus(__ARGS__);
+	void ExerciseLink7Reset(__ARGS__);
+	void SetEVBStartGateIgnoreMask(__ARGS__);
+	void SetupEVBIdlePackets(__ARGS__);
 
 	// void 								ResetEVBLinkRx						(__ARGS__);
 	// void 								ResetEVBLinkTx						(__ARGS__);

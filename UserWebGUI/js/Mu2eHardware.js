@@ -446,7 +446,7 @@ var Mu2eHardware = Mu2eHardware || {};
 	//   supply the rest by prefix.
 	//
 	//   macroObj: entry from getMacrosForDevice(dtcUID)[macroName]
-	//   link:     ROC link ID (0-5), or -1 for every ROC on the DTC
+	//   link:     ROC link ID (0-5), or -1 for every ROC configured on the DTC
 	//   port:     port number, -1 for all; undefined leaves any port input unset
 	//   extra:    { "name prefix": value } — case-insensitive prefix match on the
 	//             remaining input names, longest prefix wins
