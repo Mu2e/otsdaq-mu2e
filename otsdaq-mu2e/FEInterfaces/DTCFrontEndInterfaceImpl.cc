@@ -417,6 +417,17 @@ DTCFrontEndInterface::DTCFrontEndInterface(
 		emulate_cfo_ = getSelfNode().getNode("EmulateCFO").getValue<bool>();
 	__FE_COUTV__(emulate_cfo_);
 
+	try
+	{
+		enable_software_drp_ =
+		    getSelfNode().getNode("EnableSoftwareDataRequestMode").getValue<bool>();
+	}
+	catch(...)
+	{
+		enable_software_drp_ = false;
+	}  //ignore missing column, default to auto-gen DRP
+	__FE_COUTV__(enable_software_drp_);
+
 	DTCInstantiate();
 
 }  // end constructor()
@@ -3747,7 +3758,7 @@ void DTCFrontEndInterface::resume(void)
 		    0,                           //uint64_t initialEventWindowTag,
 		    1,                           //uint64_t eventWindowMode,
 		    0,                           //bool enableClockMarkers,
-		    1,                           //bool enableAutogenDRP,
+		    !enable_software_drp_,      //bool enableAutogenDRP,
 		    0,                           //bool saveBinaryDataToFile,
 		    "Default",                   //filename
 		    0,                           //bool saveSubeventHeadersToDataFile,
@@ -3833,7 +3844,7 @@ void DTCFrontEndInterface::start(std::string runNumber)
 			    0,                           //uint64_t initialEventWindowTag,
 			    1,                           //uint64_t eventWindowMode,
 			    0,                           //bool enableClockMarkers,
-			    1,                           //bool enableAutogenDRP,
+			    !enable_software_drp_,      //bool enableAutogenDRP,
 			    0,                           //bool saveBinaryDataToFile,
 			    "Default",                   //filename
 			    0,                           //bool saveSubeventHeadersToDataFile,
