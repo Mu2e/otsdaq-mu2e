@@ -332,10 +332,13 @@ bytes. Bit positions in the word (bit 63 first on the wire):
 | 43:41 | 0 | |
 | 40 | `resend_req` | receiver-side feedback for THIS peer: "I am discarding your stream from `ack_pos`; resend" (level, in every header until cleared) |
 | 39:20 | `ack_pos[19:0]` | receiver-side feedback: stream offset of the first word of the peer's stream not yet stored (= last stored packet's `pkt_pos` + its words) |
-| 19:0 | 0 | |
+| 19:12 | `last_seq_seen[7:0]` | the seq of the last frame received from this destination at the window start (2026-10-01) |
+| 11:0 | `payload_words[11:0]` | the REAL payload word count (2026-10-14). The byte-count field covers the runt pad, so a receiver stores this many words and drops the rest. |
 
-The byte-count field (offsets 12-13) is `8 x (payload words + 1) + 2`; a receiver takes `field[15:3] - 1`
-payload words after stripping word 3.
+The byte-count field (offsets 12-13) is `8 x (wire words + 1) + 2`, where wire words = the payload padded to
+12 for a data frame (2026-10-14; before that the field held the real count and the pad went out past the
+declared end, which Wireshark showed as a "Trailer" and which is outside the 802.3 pad rule). A receiver
+takes `field[15:3] - 1` as the exact number of words after word 3 and stores `word3[11:0]` of them.
 
 The MAC bytes the switch keys on (dest node, partition, source node) are unchanged. The 8-bit
 sequence number stays the gap detector; the 20-bit position is the resume key (a sequence

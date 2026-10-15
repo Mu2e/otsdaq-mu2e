@@ -51,9 +51,24 @@ running count:
   and the remainder follows as continuation chunks with the same FAFA framing
   (src = self). A local chunk is therefore no longer guaranteed to start with
   a record header; reassemble the self source exactly like a remote one.
+  Since 2026-10-06 a local chunk is ALSO cut at register `0x9178` words
+  (`EVB_LocalChunkCap`, reset 1024; 0 = whole record as before):
+  `chunk_wc = min(record_words_remaining, 0x9178, DMA_max_words - 2)`, the
+  rest follows as continuation chunks exactly as above. So in normal running a
+  96 kB self record arrives as ~12 self chunks of 1024 words instead of one of
+  8189 and one of 3829. Same framing, same reassembly rule, nothing else to
+  change in software. Why: while one self chunk streams, no remote source FIFO
+  is drained; a 33 us self chunk made the peer run out of credit for most of
+  every self record (2-DTC stand: ~770 MB/s per DTC vs 1.73 GB/s direct mode).
 - **Remote chunk**: a snapshot of the source FIFO's read-side word count at
   service time, capped at `DMA_max_words - 2`. Exactly that many words are
   sent — whatever remains becomes a *new* chunk with its own FAFA header.
+  Since 2026-10-07 a remote source is granted only once its FIFO holds at
+  least register `0x917C[15:0]` words (reset 128), or it has waited
+  `0x917C[31:16]` clocks (reset 1024 = ~4 us) with words in it; so remote
+  chunks are normally 128 words or more
+  instead of whatever had arrived (11-19 words on average before). Same
+  framing, same reassembly; just fewer, larger chunks.
 - **Record size bound**: a record is one AXIMux DMA transfer. The AXIMux
   splits any aggregate larger than `DMA_max_packetcount = DMA_max_size[15:4]
   - 1` packets into several transfers, each with its own count quadword

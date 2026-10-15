@@ -104,11 +104,23 @@ offset  len  field                          firmware word / byte
 | 14 | 1 | `seq`, 8-bit sequence number, one counter per (source, destination) pair |
 | 15 | 0 | flags, Section 3.3 |
 
-**Byte count** (offsets 12-13, big-endian) = `8 * (N + 1) + 2`. The firmware value is
-`{0, N+1, 010}`: bit 15 is 0, bits `[14:3]` are the payload word count plus one (the one is
-header word 3), bits `[2:0]` are `010` for the seq and flags bytes. The field therefore equals
-the number of bytes that follow it up to the FCS, which is exactly the IEEE 802.3 length
-definition. Payload words `N = (byte_count >> 3) - 1`.
+**Byte count** (offsets 12-13, big-endian) = `8 * (W + 1) + 2`, where W is the number of
+payload words **on the wire**, pad included (2026-10-14). The firmware value is `{0, W+1, 010}`:
+bit 15 is 0, bits `[14:3]` are the wire word count plus one (the one is header word 3), bits
+`[2:0]` are `010` for the seq and flags bytes. The field equals the number of bytes that follow
+it up to the FCS, exactly the IEEE 802.3 length definition, and nothing follows the declared
+end but the FCS. The real payload word count N is in header word 3 bits `[11:0]` (Section 3.4);
+for a data frame `W = max(N, 12)`, for an idle `W = N`.
+
+> Before 2026-10-14 the field held `8 * (N + 1) + 2` (the real count) and the runt pad went
+> out past the declared end. Wireshark showed those bytes as a "Trailer" on every frame under
+> 120 bytes. Padding past the 60-byte minimum is outside the 802.3 rule and was a suspect for
+> the switch drops, so the field now covers the pad.
+
+The sending firmware checks this field on the wire (2026-10-06): at every terminate block the TX
+wire monitor compares the data words the SERDES actually took with `2 + (byte_count >> 3)` and
+sets 0x9370 bit 11 on any difference (exact). It also flags a data frame declaring fewer than 12
+words, or a header word 3 count that does not match the field under the pad rule.
 
 ### 3.3 Flags byte (offset 15)
 
@@ -130,7 +142,7 @@ One 64-bit word, big-endian on the wire (bit 63 = first bit of offset 16):
 | 40 | 18 bit 0 | `resend_req` | feedback about the *reverse* stream: "I am discarding your frames and want you to resend from `ack_pos`". Repeated in every frame until cleared. |
 | 39:20 | 19, 20, 21 high nibble | `ack_pos` (20) | feedback: stream offset of the first word of *your* stream I have not stored (= the last stored frame's `pkt_pos` + its payload words). |
 | 19:12 | 21 low nibble, 22 high nibble | `last_seq_seen` (8) | feedback: the `seq` of the last frame I had received from *you* when this window started (2026-10-01). Lets you tell whether a repeated `resend_req` was written after your answer reached me. |
-| 11:0 | 22 low nibble, 23 | 0 | |
+| 11:0 | 22 low nibble, 23 | `payload_words` (12) | the real payload word count N (2026-10-14; was 0). The byte-count field covers the runt pad, so this is the count the receiver stores. Data: byte-count words = max(N, 12) + 1. Idle: = N + 1. |
 
 `pkt_pos` describes the frame's own contents. `resend_req` and `ack_pos` describe the reverse
 direction (what the sender of this frame has received from the frame's destination); label
@@ -175,9 +187,10 @@ Only the first word matters; the copies pad the frame to the minimum size.
 
 ## 5. Data frame body (`has_data` = 1)
 
-N words of subevent data, copied verbatim from the sender's DDR ring, N from the byte-count
-field. If N < 12, zero words follow up to 12 (runt avoidance); those pad words are not in
-the byte count and the receiver does not store them. Then FCS.
+N words of subevent data, copied verbatim from the sender's DDR ring, N from header word 3
+bits `[11:0]`. If N < 12, zero words follow up to 12 (runt avoidance); since 2026-10-14 those
+pad words ARE in the byte-count field (the frame is exactly as long as it declares) and the
+receiver does not store them. Then FCS.
 
 The payload is a byte-exact slice of the sender's stream of **subevent records** for this
 destination. A record may span several frames (`first`/`last` flags) and a frame may hold
@@ -255,7 +268,8 @@ evb.dst_node        uint8    offset 5
 evb.src_partition   uint8    offset 8
 evb.src_node        uint8    offset 11
 evb.byte_count      uint16   offsets 12-13, big-endian
-evb.payload_words   computed (byte_count >> 3) - 1        (header word 3 is counted in the field)
+evb.wire_words      computed (byte_count >> 3) - 1        (header word 3 is counted in the field; pad included since 2026-10-14)
+evb.payload_words   uint12   W & 0xFFF                    (header word 3 low 12 bits = real payload words; W defined below)
 evb.seq             uint8    offset 14
 evb.credit          uint5    offset 15 bits 7:3
 evb.has_data        bool     offset 15 bit 2
@@ -279,7 +293,8 @@ Expert infos worth adding: partition byte differs between source and destination
 destination node outside the configured range; `seq` gap per (source, destination) pair
 (a lost frame); nonzero bytes at offsets 0-1, 3-4, 6-7, 9-10 (a mis-addressed frame; a
 switch would flood it); `resend_req` set (informational: the peer is asking for a resend);
-frame length not `24 + 8N`; N > 186; FCS bad; `pkt_pos` not equal to the previous data
+frame length not `24 + 8W` (W from the byte-count field; since 2026-10-14 nothing but the FCS
+may follow the declared end); W not `max(N, 12)` on a data frame; N > 186; FCS bad; `pkt_pos` not equal to the previous data
 frame's `pkt_pos` + payload words in the same conversation (a resend or a lost frame).
 
 Conversation key: `(src_node, dst_node)`. Sequence numbers, credit and positions are all
@@ -294,11 +309,12 @@ per pair; the reverse pair is a separate conversation.
 - The link uses two 64b/66b start-block alignments (0x78 and 0x33) that shift the frame by
   4 bytes inside the 66-bit blocks. This is below the PHY; a NIC capture shows ordinary
   frames either way.
-- Header word 3 exists only on the retransmission development branch (2026-09-30; sim PASS
-  2026-10-01, run 30) and has not been on hardware yet. Every bitfile on the bench so far has no word 3: payload at
-  offset 16, byte count `8N + 2`. Both layouts put `010` in the field's low bits, so tell them
-  apart by a dissector preference or by the frame length: `16 + 8N` old, `24 + 8N` new, with
-  N from the byte-count field.
+- Header word 3 has been on hardware since bitfile 0xd6100291 (2026-10-03). Bitfiles before
+  that have no word 3: payload at offset 16, byte count `8N + 2`. Both layouts put `010` in the
+  field's low bits, so tell them apart by a dissector preference or by the frame length:
+  `16 + 8N` old, `24 + 8W` new, with W from the byte-count field. The 2026-10-14 pad change
+  (Section 3.2) is not on hardware yet: on bitfiles between 0xd6100291 and that build, word 3
+  bits [11:0] read 0 and the real count is `(byte_count >> 3) - 1` with the pad past the end.
 - The receiving firmware's `txTime` read (Section 4) does not match the sender's field
   placement; the "TravelTime" statistic it feeds is informational and this is being
   reported to the firmware team separately.

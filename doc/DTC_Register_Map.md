@@ -28,12 +28,12 @@ Source: `register_map.v`
 | Address | Register Name | Purpose |
 |---------|---------------|---------|
 | 0x9100 | RAWDATA_CONTROL | DTC Control Register (see bit field table below) |
-| 0x9104 | RAWDATA_DMA_SIZE | DMA size limits: [31:16] max size, [15:0] min size |
+| 0x9104 | RAWDATA_DMA_SIZE | DMA size limits in bytes: [31:16] max size, [15:0] min size. Reset value 0x8000_0040; cleared by a HARD reset (0x9100 bit 0) or a bitfile load only, NOT by SoftReset -- the last value written stays (calo-14 2026-10-04/05 ran on a test program's 0xFFF8). Firmware guards: a max <= min + 16 is replaced by 0x8000; a min < 0x40, or >= max - 16, is replaced by 0x40. The max is a hard cap on every DMA transfer: the ring mux splits a subevent larger than it into several records, each with its own count quadword (first record = ((max >> 4) - 1) x 16 + 8 bytes), and EVB3 caps a chunk at (max >> 3) - 2 words (8189 with 0xFFF8); since 2026-10-05 the bundled ring mux (no-EVB build) closes a DMA before adding a subevent that would not fit, close word included. Before that fix two subevents that each fit could land in one DMA of almost 2 x the max |
 | 0x9108 | RAWDATA_ENABLE_LB_CHECKER0 | SERDES loopback enable per link [23:0] |
 | 0x910C | RAWDATA_CHECKER_STATUS0 | IIC error/init status for SERDES and DDR oscillator |
 | 0x9110 | RAWDATA_ROC_EMULATION_ENABLE | ROC emulation enables: [17:12] external, [11:6] receive behavior, [5:0] internal |
-| 0x9114 | RAWDATA_RING_ENABLE | Link interface enables: [25] resequence non-null events, [24] block null HBs to ROC (the first null HB after non-null HBs is still sent, with its EWM, to close the ROC's last event; 2026-09-25), [21:16] per-ROC DRP auto-generate enable, [15:8] RX enable, [7:0] TX enable |
-| 0x9118 | RAWDATA_SERDES_RESET | SERDES reset controls: [31:16] TX/RX reset, [15:8] PLL reset, [7:0] SERDES reset |
+| 0x9114 | RAWDATA_RING_ENABLE | Link interface enables: [25] resequence non-null events, [24] block null HBs to ROC, [15:8] RX enable, [7:0] TX enable. Bit 7 (EVB 10GbE TX) also selects hardware event building AND, since 2026-10-05, the DMA format on the PCIe data channel: bit 7 = 0 -> the ring mux stacks subevents into one DMA transfer closed by an all-ones tlast word (on the 0x9104 max, or 200 us idle), exactly the non-EVB build's format; bit 7 = 1 -> one DMA transfer + one undeclared tlast word per subevent into EVB3, which repacks them as FAFA chunks. Change bit 7 only with data requests stopped and the data path idle for more than 200 us, or follow it with a SoftReset (0x9100 bit 31): an open DMA at the flip would otherwise carry both formats. Clearing it is graceful since 2026-09-15: a frame in progress is finished (FCS + terminate) before the TX idles, so a stop never leaves a bad-FCS frame on the switch. Clearing bit 15 (EVB RX) sweeps the per-source RX stats BRAM and RX sticky latches -- to freeze traffic for a counter read, clear bit 7 only |
+| 0x9118 | RAWDATA_SERDES_RESET | SERDES reset controls: [31:16] TX/RX reset, [15:8] PLL reset, [7:0] SERDES reset. Bit 7 = EVB 10GbE link (link 7) reset, connected 2026-09-24 (was a dead input before: EVB Init "link reset attempted" did nothing). Level, not self-clearing by itself: write 1 then 0; a SoftReset (0x9100 bit 31) also zeroes this whole register (bench 2026-09-24). Scope (bench 21:24 on 0xd6092496): restarts the wizard TX+RX start-up FSMs (0x9138 bits 15/31 drop while held), block sync and lock counters; the GT resetdone bits (0x9138 bits 7/23) and the PLL bit (0x9128 bit 7) stay 1 to a register read. TX stops for the FSM sequence, the peer loses 0x9140 bit 7 and regains it within one poll after release, so only between runs. Bits [31:16] and [15:8] do nothing for link 7 |
 | 0x911C | RAWDATA_RX_DISP_ERROR | RX disparity error flags (latched); write to clear |
 | 0x9120 | RAWDATA_RX_NOTINTABLE | RX not-in-table error flags (latched); write to clear |
 | 0x9124 | RAWDATA_SERDES_UNLOCK | SERDES unlock/PLL unlock flags (latched); write to clear |
@@ -46,13 +46,18 @@ Source: `register_map.v`
 | 0x9140 | RAWDATA_RXCDRLOCK | RX CDR lock status [7:0] |
 | 0x9144 | RAWDATA_OUTPUTFIFOTIMERPRESET | Output FIFO timer preset value |
 | 0x9148 | RAWDATA_DATA_HEADER_TO_ROC_DATA_DONE_PRESET | Data header to ROC data-done timer preset |
-| 0x914C | RAWDATA_DATA_HEADER_TO_ROC_DATA_DONE_TIMEOUT | Data header to ROC data-done timeout flags (latched); write to clear |
+| ~~0x914C~~ | ~~RAWDATA_DATA_HEADER_TO_ROC_DATA_DONE_TIMEOUT~~ | ~~Removed — errorlatch was commented out, flag never latched. Use RECEIVE_DHTIMEOUT_COUNTn (0xA420–0xA434) instead~~ |
 | 0x9150 | RAWDATA_PKT_SIZE | Ring packet length [15:0] |
 | 0x9154 | RAWDATA_PART_ID_LOCAL_MAC | Partition ID / Local MAC / DTC ID |
 | 0x9158 | RAWDATA_NUM_EVB_NODES | EVB config: [31:16] TX dead time, [15:8] start node, [7:0] number of nodes |
 | 0x915C | EVB_PACKET_CONTROL | EVB packet control: [31:16] idle packet words, [15:8] inter-packet gap, [7:0] delay offset |
-| 0x9160 | EVB_STATS | EVB source statistics readback (write address [8:0] to select, read data [31:0]) |
+| 0x9160 | EVB_STATS | EVB source statistics readback (write address [8:0] = {type[3:0], node offset[4:0]} to select, read data [31:0]). Types 0x0-0x8 are stats-BRAM rows; type 0x9 TX_COUNT (total frames sent on the port, all destinations, 2026-09-15) is a single register read the same way (offset ignored) |
 | 0x9164 | RAWDATA_SERDESREFCLKCONT | SERDES oscillator control: [31] reset |
+| 0x9170 | EVB_IDLE_BURST | EVB idle-packet burst (2026-09-17): [15:0] idle packets sent per destination window when the DTC has no data for that destination. 0 or 1 = one idle packet per window (legacy). N = up to N, each spaced by the 0x915C inter-packet gap and sized by 0x915C[31:16]; the burst stops early when the dead-time window closes. A burst only continues a window that began with an idle: a window that sent data never appends idles (legacy behavior), so with data flowing the knob is inert. Reset value 1. Pure-idle link test knob: with N large the link runs idle frames back-to-back for the whole window (known contents, per-destination sequence, TxCount/RxCount/RxMissingPktCnt parity). |
+| 0x9174 | EVB_RESEND_COUNT | (2026-09-28, read-only) EVB3 retransmission counters: [31:16] resends served by this DTC's TX (rewinds), [15:0] resends requested by this DTC's RX (sequence gaps that entered discard). SoftReset clear, 16-bit wrap. addr[2]=1 -> hi bank 0 (< 0x91D4) |
+| 0x9178 | EVB_LOCAL_CHUNK_CAP | (2026-10-06, RW) EVB3 longest SELF chunk to the DMA, in 8-byte words: [15:0]. 0 = whole record (the pre-2026-10-06 behavior: one self chunk of up to DMA max - 2 words = 8189 at 0x9104 = 0xFFF8, during which no remote source FIFO is drained, so the peer stops on credit for most of every self record); values 1..31 act as 32. HardReset 0x0400 (1024 words = ~4 us of DMA), survives SoftReset like 0x9170. A self record larger than the cap arrives as several self chunks with the same FAFA framing (src = self); software already reassembles self by source (EVB3_DMA_FAFA_protocol.md). |
+| 0x917C | EVB_REMOTE_CHUNK_MIN | (2026-10-07, RW) EVB3 buffer manager: [15:0] fewest 8-byte words a REMOTE source FIFO must hold before it is granted a DMA chunk (0 = any words, the pre-2026-10-07 behavior); [31:16] user_clk clocks (4 ns) a non-empty remote FIFO may wait for that minimum before it is granted anyway (so a record's tail never waits). HardReset 0x0400_0080 (1024 clocks = 4 us, 128 words), survives SoftReset. Why: under a steady 10GbE stream a remote chunk was whatever the FIFO held at the grant (11-19 words on average, 90% under 16), each costing 4 clocks + 1 FAFA word on the DMA, and the self stream parked between every two of them; on the 4G-link stand that turned the 0x9178 cap into a 30% loss (0xd6100794). |
+| 0x9180 | EVB_RX_ILLEGAL_DEST_COUNT | (2026-10-13, read-only) [15:0] count of 10GbE RX frames whose destination MAC did not match this DTC's address (non-broadcast only; broadcast is silently ignored). These are frames the switch forwarded to us that belong to another DTC or another partition. SoftReset clear, saturates at 0xFFFF. The sticky flag for the same condition is 0x9370 status bit 26. |
 | 0x9168 | RAWDATA_SERDESREFCLKCONFLOW | SERDES oscillator IIC: [31:16] address, [15:8] write data, [7:0] read data |
 | 0x916C | RAWDATA_SERDESREFCLKCONFHIGH | SERDES oscillator IIC CSR: [1] read enable, [0] write enable |
 | 0x9184 | CFOEM_LOOPBACK_DELAYMEASURE | CFO emulator loopback delay measurement: [31] done, [30:0] measured value |
@@ -82,6 +87,7 @@ Source: `register_map.v`
 | 0x91E4 | DETECTOR_EMULATION_END | Detector emulation end address |
 | 0x91E8 | CFOEMDRPDELAYTIME | CFO emulator DRP delay time |
 | 0x91EC | MAXENETPAYLOADSIZE | Max Ethernet payload size [13:0] |
+| 0x91F0 | EVB_TX_HIST_READ | (2026-10-13, read-only) TX packet history BRAM readback. Each read returns one entry and advances the pointer. Returns 0xFFFFFFFF when all entries have been read. Bit layout: [28] first packet of subevent, [27] last packet, [26] has data (vs null), [25:21] destination (5-bit), [20:13] sequence number, [12:0] packet size in 64-bit words. Read 0x925C first to check frozen + count, then read this register count+1 times (first read loads the output, subsequent reads return entries 0..count-1). **Walk once per run:** the read pointer resets only on SoftReset, so a second walk returns 0xFFFFFFFF until the next SoftReset. **Ring:** after 1024 packets the count holds at 1023 and entry 0 is the oldest surviving packet, not the first packet of the run; the entry just before the freeze is the LAST one read, so walk to the end and look backwards from there. If frozen = 0 at the end of a run, no retransmission was requested and the log holds the most recent packets. |
 | 0x91F4 | CFOEMCLOCK40MHZINTERVAL | CFO emulator 40 MHz clock marker interval |
 | 0x91F8 | CFOMarkerEnables | CFO 40 MHz clock marker enables [5:0] |
 | 0x91FC | ROCFINISHTHRESHOLD | ROC finish threshold [7:0] |
@@ -152,6 +158,26 @@ Note: Per-ROC DRP auto-generate enable bits [21:16] are OR'd with the global DTC
 
 | Address | Register Name | Purpose |
 |---------|---------------|---------|
+| 0x9200 | EVB_WORD_COUNT_0 | EVB debug word counters (data words only, excl. FAFA headers): [31:16] wc_self_transfer, [15:0] wc_roc_input |
+| 0x9204 | EVB_WORD_COUNT_1 | EVB debug word counters: [31:16] wc_ddr_to_tx, [15:0] wc_gbe_ddr_fifo |
+| 0x9208 | EVB_WORD_COUNT_2 | EVB debug word counters: [31:16] wc_output_stream, [15:0] wc_bufmgr_output |
+| 0x920C | EVB_WORD_COUNT_3 | EVB debug word counters: [15:0] wc_gbe_rx (10GbE RX data words into buffer manager) |
+| 0x9210 | EVB_STALL_TX_CREDIT | (2026-10-06, read-only) EVB3 stall-time counter: user_clk clocks (4 ns) the 10GbE TX sat idle with words for the current destination but no RX credit from it (0x9370 bit 18 level). 32-bit wrap, SoftReset clear. Ratio = this / 0x9228. |
+| 0x9214 | EVB_STALL_TX_WIRE | (2026-10-06, read-only) EVB3 stall-time counter: user_clk clocks a frame was on the 10GbE wire (TX wire monitor). Wire use = this / 0x9228. |
+| 0x9218 | EVB_STALL_BM_LOCAL | (2026-10-06, read-only) EVB3 stall-time counter: user_clk clocks the buffer manager was streaming a SELF chunk to the DMA (no remote source FIFO is drained meanwhile). |
+| 0x921C | EVB_STALL_BM_REMOTE_WAIT | (2026-10-06, read-only) EVB3 stall-time counter: user_clk clocks some remote source FIFO held words while no remote chunk was being served (remote data waiting behind a self chunk or the arbiter). |
+| 0x9220 | EVB_STALL_DDR_READ | (2026-10-06, read-only) EVB3 stall-time counter: user_clk clocks a DDR read burst was in flight (the TX side's DDR read path; one burst at a time today). |
+| 0x9224 | EVB_STALL_ROC_HELD | (2026-10-06, read-only) EVB3 stall-time counter: user_clk clocks the ROC input stream into EVB3 was valid and not ready (0x9370 bit 16 level): back-pressure into the ring mux. |
+| 0x9228 | EVB_STALL_TIMEBASE | (2026-10-06, read-only) EVB3 stall-time counters' time base: user_clk clocks (4 ns) since SoftReset, 32-bit wrap (17 s). Divide the six counters above by this for duty ratios; read all seven close together. |
+| 0x922C | EVB_STALL_ROC_HELD_SELF | (2026-10-07, read-only) EVB3 stall-time counter: user_clk clocks the ROC input was held WHILE A SELF subevent was streaming to the buffer manager (the DMA side is the holder). 0x922C + 0x9230 + 0x9234 + 0x9238 = 0x9224. |
+| 0x9230 | EVB_STALL_ROC_HELD_REMOTE | (2026-10-07, read-only) EVB3 stall-time counter: user_clk clocks the ROC input was held WHILE A REMOTE subevent was streaming to the DDR write path (the CDC FIFO / DDR write is the holder). |
+| 0x9234 | EVB_STALL_ROC_HELD_DRAIN | (2026-10-07, read-only) EVB3 stall-time counter: user_clk clocks the ROC input was held BETWEEN subevents waiting for the DDR write path to drain the previous remote subevent. |
+| 0x9238 | EVB_STALL_ROC_HELD_OTHER | (2026-10-07, read-only) EVB3 stall-time counter: user_clk clocks the ROC input was held for any other reason (destination not yet decoded, self throttle bit 17, the idle beat between subevents). |
+| 0x923C | EVB_STALL_DDR_WRITE | (2026-10-07, read-only) EVB3 stall-time counter: user_clk clocks a DDR write burst was in flight (the subevent-to-DDR write state machine inside a 32-word burst). |
+| 0x9240 | EVB_STALL_DMA_BP | (2026-10-07, read-only) EVB3 stall-time counter: user_clk clocks EVB3's output register held a word the PCIe DMA engine would not take (m_axis_tvalid and not axi_str_c2s0_tready) = the exact share behind 0x9370 bit 23, which is only polled. 32-bit wrap, SoftReset clear; share = this / 0x9228. |
+| 0x9244 | EVB_STALL_DMA_BP_MAX | (2026-10-07, read-only) longest single DMA hold since SoftReset, in user_clk clocks (4 ns): a value of 65536 or more means the engine refused for 262 us or longer at least once. |
+| 0x9248 | EVB_DMA_WORDS_OUT | (2026-10-07, read-only) 64-bit words the PCIe engine accepted from EVB3 (every word: data, FAFA headers, DMA-close fillers), 32-bit wrap. Delivered rate = delta(0x9248) x 8 B / (delta(0x9228) x 4 ns). |
+| 0x925C | EVB_TX_HIST_STATUS | (2026-10-13, read-only) TX packet history status. [31] frozen (1 = a retransmission was requested, log is frozen), [30:26] destination of the first retransmission request, [25:18] peer's last-acknowledged sequence number (the packet before the drop), [17:10] reserved (0), [9:0] number of entries written (0–1023). Check this before reading 0x91F0. SoftReset clears. |
 | 0x9280 | RAWDATA_FF0FREQ | Firefly 0 reference clock frequency |
 | 0x9284 | RAWDATA_FF0CONT | Firefly 0 oscillator control: [31] reset |
 | 0x9288 | RAWDATA_FF0CONFLOW | Firefly 0 IIC: [31:16] address, [15:8] write data, [7:0] read data |
@@ -196,7 +222,7 @@ Note: Per-ROC DRP auto-generate enable bits [21:16] are OR'd with the global DTC
 | 0x9360 | LOCAL_EVENT_DROP_COUNT | Local event drop count; write to clear |
 | 0x9364 | SUB_EVENT_RECEIVE_TIMER_PRESET | Sub-event receive timer preset |
 | 0x9368 | EVBPRBS | EVB PRBS control/status: [31] error latched (write to clear), [14:12] and [10:8] PRBS select, [1:0] enable |
-| 0x9370 | EVBERROR | EVB error flags (latched); write to clear |
+| 0x9370 | EVBERROR | EVB3 error/status: [15:0] sticky error flags, cleared ONLY by SoftReset (write has no effect); [31:16] live status. Bits: [0] RX buffer write-while-full (words lost) [1] RX seq gap (packet lost) [2] EVB frame addressed to us rejected (source offset > 31) [3] DDR write CDC underflow (corrupt burst) [4] TX FSM fault, or (2026-09-19) a TX frame still on the wire after its destination window closed (overlaps the next sender at the switch) [5] credit violation [6] local stream misaligned (non-header at record boundary; passed as 1-word chunk) [7] RX stats collision [8] DDR read stream desync (bad count quadword dropped) [9] staging FIFO write-while-full [10] TX payload underflow; [11] TX frame malformed on the wire (sender-side monitor, 2026-09-15), or (2026-10-06) wire data words != header byte count / bad byte-count field; [12] RX frame wire length != declared byte count (2026-09-16); [13] RX FCS mismatch on a 0x78-framed frame (2026-09-16; 0x33 frames not checked); [14] ROC-input record: subevent header tag != first ROC fragment tag (2026-09-16); [15] ROC-input record: beats != count quadword or header bytes < count (2026-09-16); [16] ROC held [17] self-throttle [18] credit throttle [19] DDR almost full [20] DDR CDC FIFO full [21] staging no slot [22] RX buffer >= 3/4 [23] DMA backpressure [24] frontier valid [25] DDR calib done [26] frame not for us seen (non-EVB start, or dest MAC DTC byte / partition byte != ours and not broadcast: switch flooding, other partition), sticky informational (2026-09-09). Was unconnected + latch commented out before 2026-09-08. [31:27] (2026-09-24) RX FCS-bad frame count since SoftReset / RX enable, saturating at 31 (was reserved 0): tells whether bit 13 fired once at startup or keeps firing; 2026-09-28: status bit 27 = RESEND_ACTIVE (live), FCS-bad count moved to [31:28] (4 bits) |
 | 0x9374 | VFIFOSERDESERROR | VFIFO SERDES error flags (latched); write to clear |
 | 0x9378 | VFIFOPCIERROR | VFIFO PCI error flags (latched); write to clear |
 | 0x9380 | RINGERROR0 | Ring status and errors, link 0 (see bit map below) |
@@ -234,8 +260,11 @@ Layout: `[31:16] = status` (bit 20 = external ROC emulator error since 2026-10-0
 | 20 | ext_emulator_error | External ROC emulator error (moved from bit 14 on 2026-10-02) |
 | [31:21] | — | Reserved (zero) |
 
-Bits [14:0] are latched `_ever` flags, cleared by link reset.
-| 0x93A0 | FFCSR | Firefly CSR: read [15:13] present, [10:8] interrupt, write [10:8] select, [2:0] reset |
+Bits [13:0] are latched `_ever` flags, cleared by link reset.
+
+| Address | Register Name | Purpose |
+|---------|---------------|---------|
+| 0x93A0 | FFCSR | Firefly CSR: read {5'b0, present[2:0], 5'b0, interrupt[2:0], 5'b0, select[2:0], 5'b0, reset[2:0]} = present at [26:24] (bit 25 = Firefly 1 = EVB link RX), interrupt [18:16], select [10:8], reset [2:0]; write [10:8] select, [2:0] reset (read layout corrected 2026-09-24 from register_map.v, HW read 0x03030000) |
 | 0x93A4 | SFPCSR | SFP CSR: read [31] present, [30:16] status, write [15:0] control |
 | 0x93B0 | RXCDRUNLOCKCOUNT0 | RX CDR unlock counter, link 0; write to clear |
 | 0x93B4 | RXCDRUNLOCKCOUNT1 | RX CDR unlock counter, link 1; write to clear |
@@ -289,7 +318,7 @@ RTF punched clock histogram bins and IDELAY tap readback.
 | 0x942C | SEQUENCEERRORINDUCEPACKET5 | Sequence error induce packet, ROC 5 |
 | 0x9490 | DATAPENDINGDIAGNOSTICTIMER0 | Data pending diagnostic timer FIFO, ROC 0; read pops FIFO, write resets |
 | 0x9494 | DATAPENDINGDIAGNOSTICTIMER1 | Data pending diagnostic timer FIFO, ROC 1; read pops FIFO, write resets |
-| 0x9495 | DATAPENDINGDIAGNOSTICTIMER2 | Data pending diagnostic timer FIFO, ROC 2; read pops FIFO, write resets |
+| 0x9498 | DATAPENDINGDIAGNOSTICTIMER2 | Data pending diagnostic timer FIFO, ROC 2; read pops FIFO, write resets (2026-10-14: the RTL had 0x9495, unaligned and never decoded, so ROC 2's timer was unreadable on every bitfile before this fix) |
 | 0x949C | DATAPENDINGDIAGNOSTICTIMER3 | Data pending diagnostic timer FIFO, ROC 3; read pops FIFO, write resets |
 | 0x94A0 | DATAPENDINGDIAGNOSTICTIMER4 | Data pending diagnostic timer FIFO, ROC 4; read pops FIFO, write resets |
 | 0x94A4 | DATAPENDINGDIAGNOSTICTIMER5 | Data pending diagnostic timer FIFO, ROC 5; read pops FIFO, write resets |
@@ -307,7 +336,7 @@ RTF punched clock histogram bins and IDELAY tap readback.
 | 0x9510 | RXNOTINTABLEERRORCOUNT4 | RX not-in-table error count, link 4 |
 | 0x9514 | RXNOTINTABLEERRORCOUNT5 | RX not-in-table error count, link 5 |
 | 0x9518 | RXNOTINTABLEERRORCOUNT6 | RX not-in-table error count, link 6 (CFO) |
-| 0x9590 | TENGBERXPACKETERRORCOUNT | 10 GbE RX packet error count |
+| 0x9590 | TENGBERXPACKETERRORCOUNT | 10 GbE RX packet error count. Legacy EVB only: in EVB3 builds the source wire is undriven (always reads 0; EVB3 has no RX FCS check) |
 | 0x95A0 | JA_LOSCOUNT_0 | Jitter attenuator loss-of-signal count 0; write to clear |
 | 0x95A4 | JA_LOSCOUNT_1 | Jitter attenuator loss-of-signal count 1; write to clear |
 
@@ -473,7 +502,7 @@ These registers have parameter declarations but are commented out in the RTL and
 | 0x9014 | MON_TX_PCIE_PAYLOAD_COUNT | Deprecated — PCIe TX payload count |
 | 0x9018 | MON_RX_PCIE_PAYLOAD_COUNT | Deprecated — PCIe RX payload count |
 | 0x901C–0x9030 | MON_INIT_FC_* | Deprecated — PCIe flow control initial credits |
-| 0x9200–0x9278 | RECEIVE/TRANSMIT_BYTE/PACKET_COUNT_0–6 | Deprecated — Per-link byte/packet counters |
+| 0x924C–0x9278 | RECEIVE/TRANSMIT_BYTE/PACKET_COUNT_* | Deprecated — Per-link byte/packet counters (0x9200–0x920C reused for EVB_WORD_COUNT_0–3 on 2026-08-27, 0x9210–0x9248 for the EVB stall-time counters on 2026-10-06/07) |
 | 0x9280–0x92A4 | RAWDATA_M/S_AXIS_T* | Deprecated — AXI stream destination/ID registers |
 | 0x9300–0x933C | START/END_ADDR/BURST_SIZE_P0–P3 | Deprecated — Virtual FIFO controller partition addresses |
 | 0x9430–0x948C | DDR_GAS_GAUGE0/1_0–11 | Deprecated — DDR gas gauge registers |
@@ -489,3 +518,27 @@ These registers have parameter declarations but are commented out in the RTL and
 ## Reserved Address Gaps
 
 Addresses within the 0x9000–0xB0FF range that are not listed above return 0x00000000 on read and generate a write error flag on write.
+
+---
+
+## RTL note: adding a read decode (register_map.v banks)
+
+Invisible to software, but critical when **editing register_map.v**: the read
+path is split for timing into 8 parallel case blocks, and a new register's
+decode entry MUST go in the one block the output mux actually selects — an
+entry in any other block silently reads 0 (no error).
+
+1. **lo/hi half:** `addr[2]=0` → a `reg_rd_data_pre_lo[n]` case (drives read
+   data [31:0]); `addr[2]=1` → a `reg_rd_data_pre_hi[n]` case (drives [63:32]).
+2. **Bank by address range** (selection mux at register_map.v:~3314):
+
+   | Bank | lo case (`reg_rd_addr_lo[n]`) | hi case (`reg_rd_addr_hi[n]`) |
+   |:----:|-------------------------------|-------------------------------|
+   | 0 | addr < 0x91D0 | addr < 0x91D4 |
+   | 1 | 0x91D0 ≤ addr < 0x9408 | 0x91D4 ≤ addr < 0x93B4 |
+   | 2 | 0x9408 ≤ addr < 0x9690 | 0x93B4 ≤ addr < 0x9674 |
+   | 3 | addr ≥ 0x9690 | addr ≥ 0x9674 |
+
+Example: 0x9200/0x9208 → lo bank 1; 0x9204/0x920C → hi bank 1. Found the hard
+way 2026-08-27: EVB_WORD_COUNT_0..3 were decoded in lo bank 0 and always read
+as 0 while the counters counted fine in ILA.

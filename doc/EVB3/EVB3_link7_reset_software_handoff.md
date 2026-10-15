@@ -49,7 +49,7 @@ Bit numbers are from the firmware read-back code, not older docs.
 | 0x9108 | [23:21] | link-7 transceiver loopback select | 000 |
 | 0x93A0 | [26:24] | Firefly present bits; bit 25 = Firefly 1 = the EVB link. If 0 the lock logic is held in reset | bit 25 = 1 (read `0x03030000` on calo-12) |
 | 0x9114 | bit 7 / bit 15 | EVB link TX enable (also turns on hardware event building) / RX enable | as configured |
-| 0x9370 | [31:16] status, [15:0] sticky errors | EVB3 status/error word (see EVB3_software_status_registers.md). Builds after 0xd6092496: [31:27] = count of RX FCS-bad frames (the bit-13 events) since SoftReset, saturating at 31 | errors 0 |
+| 0x9370 | [31:16] status, [15:0] sticky errors | EVB3 status/error word (see EVB3_software_status_registers.md). Builds after 0xd6092496: [31:27] = count of RX FCS-bad frames (the bit-13 events) since SoftReset, saturating at 31; builds from 2026-09-28 on (retransmission): [31:28] = that count saturating at 15, bit 27 = RESEND_ACTIVE (a source in discard or a rewind being served), so mask [31:28] only | errors 0 |
 
 ## Required changes to `EVB Init` (the link-reset path)
 1. Only run the link-7 reset with the run stopped (0x9114 bit 7 clear on this DTC is the safe sign).
