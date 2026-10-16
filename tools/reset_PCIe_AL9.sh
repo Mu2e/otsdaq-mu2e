@@ -2,8 +2,10 @@
 # Note to setup vivado lab:
 #   source /home/xilinx/Vivado_Lab/2021.2/settings64.sh
 
+echo "$(date '+%Y-%m-%d %H:%M:%S') 2021.2 $(whoami) $GIT_AUTHOR_EMAIL ${HOSTNAME} reset_PCIe_AL9 $*" >> /home/mu2ehwdev/.Xil/vivado_user_log.txt
+
 NO_OTS_KILL=0
-if [[ "x$1" == "xNOKILL" ]]; then
+if [[ "x$1" == "xNOKILL" || "x$1" == "x--NOKILL" ]]; then
     echo -e "$(date +%d%b%y.%T) reset_PCIe_AL9.sh:${LINENO} |  \t No-ots-kill specified."
     NO_OTS_KILL=1
     shift
