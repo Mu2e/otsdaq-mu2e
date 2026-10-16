@@ -436,6 +436,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void ManualLoopbackSetup(__ARGS__);
 
 	void ProgramROCs(__ARGS__);
+	void ProgramROCsSafe(__ARGS__);  // segmented, verified, retried upload; IAP only of a verified image
 
 	void ValidateDTCControlRegisters(__ARGS__);
 };
