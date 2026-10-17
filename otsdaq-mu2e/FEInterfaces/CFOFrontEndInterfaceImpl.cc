@@ -2132,7 +2132,10 @@ void CFOFrontEndInterface::configureEventBuildingMode(int step)
 			for(const auto& dtcUID : dtcUIDs)
 			{
 				std::vector<FEVInterface::frontEndMacroArg_t> argsIn, argsOut;
-				argsIn.emplace_back("Target Link (Default = -1 := all links)", "6");
+				argsIn.emplace_back(
+				    "Target Link or Mask (Default = -1 := all configured ROC links, or "
+				    "0x11111111 := all)",
+				    "6");
 				argsIn.emplace_back("Set Link Tx Enable (Default := false)", "1");
 				argsIn.emplace_back("Set Link Rx Enable (Default := false)", "1");
 				try
@@ -2802,15 +2805,24 @@ void CFOFrontEndInterface::start(std::string runNumber)  // runNumber)
 			__FE_SS_THROW__;
 		}
 
-		// Start steps are ordered across subsystems (DTC SoftReset -> artdaq -> DTC final
+		// Start steps are ordered across subsystems (DTC SoftReset -> artdaq -> DTC/CFO final
 		// SoftReset -> CFO run plan): subsystem-iterations under a top-level, plain
 		// iterations when standalone.
 		const unsigned int startIteration = getSubsystemSyncStepIndex();
-		if(startIteration < systemMinReady)
+		if(startIteration < systemMinReady - 1)
 		{
 			__FE_COUT_INFO__ << "Delaying CFO run plan launch until start step >= "
 			                 << systemMinReady << " (now " << startIteration << ")"
 			                 << __E__;
+			indicateSubsystemSyncStepWork();
+			return;
+		}
+
+		if(startIteration == systemMinReady - 1)
+		{
+			__FE_COUT_INFO__ << "CFO SoftReset (aligned with DTC final SoftReset)."
+			                 << __E__;
+			thisCFO_->SoftReset();
 			indicateSubsystemSyncStepWork();
 			return;
 		}
@@ -2868,7 +2880,7 @@ void CFOFrontEndInterface::start(std::string runNumber)  // runNumber)
 			                                             numberOfEventWindowMarkers,
 			                                             next_starting_event_window_tag_,
 			                                             1,
-			                                             false,
+			                                             true,
 			                                             false,
 			                                             false,
 			                                             false);
@@ -5725,12 +5737,15 @@ void CFOFrontEndInterface::SharedRunPlanSubsystemSingleShotJoin(__ARGS__)
 		// or the exact coarse/full-duty chunk size otherwise.
 		uint32_t expectedEventCount =
 		    isFullDutyCycle ? chunkCount : static_cast<uint32_t>(standardNValues_[0]);
+		uint64_t expectedEventCountDelta =
+		    expectedEventCount *
+		    2;  //allow for the possibility of the worst case current position when the batch starts, and have to walk through entire coarse or fine loop before starting batch
 
 		// Read the 48-bit current tag to detect batch completion without 16-bit wraparound.
 		uint64_t initialRunPlanTag = thisCFO_->ReadRunPlanCurrentTag();
 
-		// Use expectedEventCount so timing aligns with the completion definition
-		double chunkDurationUs = static_cast<double>(expectedEventCount) *
+		// Use expectedEventCountDelta so timeout covers worst-case tag advance
+		double chunkDurationUs = static_cast<double>(expectedEventCountDelta) *
 		                         eventDurationInClocks *
 		                         CFOandDTCCoreVInterface::FPGAClock_ / 1000.0;
 		uint64_t pollIntervalUs = chunkDurationUs < 20000.0
@@ -5750,10 +5765,21 @@ void CFOFrontEndInterface::SharedRunPlanSubsystemSingleShotJoin(__ARGS__)
 			// Check condition 2: current run-plan tag has advanced by the expected number of events.
 			uint64_t currentRunPlanTag = thisCFO_->ReadRunPlanCurrentTag();
 			eventCountDelta            = currentRunPlanTag - initialRunPlanTag;
-			uint64_t expectedEventCountDelta =
-			    expectedEventCount *
-			    2;  //allow for the possibility of the worst case current position when the batch starts, and have to walk through entire coarse or fine loop before starting batch
-			bool eventCountValid = (eventCountDelta >= expectedEventCountDelta);
+			bool eventCountValid       = (eventCountDelta >= expectedEventCountDelta);
+
+			// Report progress to the GUI based on tag advancement within this chunk
+			{
+				unsigned int chunkProgressPercent =
+				    expectedEventCountDelta > 0
+				        ? static_cast<unsigned int>(100 * eventCountDelta /
+				                                    expectedEventCountDelta)
+				        : 0;
+				if(chunkProgressPercent > 100)
+					chunkProgressPercent = 100;
+				unsigned int overallPercent = static_cast<unsigned int>(
+				    (chunkIndex * 100 + chunkProgressPercent) / chunkCounts.size());
+				setFEMacroPercentDone(overallPercent);
+			}
 
 			if(singleShotCleared && eventCountValid)
 			{
@@ -5784,7 +5810,7 @@ void CFOFrontEndInterface::SharedRunPlanSubsystemSingleShotJoin(__ARGS__)
 			                                : unclearedDetails)
 			   << " ";
 		ss << "Run-plan current tag delta=" << eventCountDelta << " (expected "
-		   << expectedEventCount << ")." << __E__;
+		   << expectedEventCountDelta << ")." << __E__;
 		__FE_SS_THROW__;
 	};  //end lamda waitForSingleShotReady()
 
