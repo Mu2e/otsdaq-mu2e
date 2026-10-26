@@ -10499,6 +10499,23 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 		}
 		else
 			kv("HW EVB first sticky latch") << "none during this run" << __E__;
+		if(threadStruct->evbBit12SnapshotValid_)
+		{
+			const uint32_t snapshot = threadStruct->evbBit12Snapshot_.load();
+			const int64_t  afterUs  = threadStruct->evbBit12AfterTrafficUs_.load();
+			kv("HW EVB 0x9370 at first bit 12 poll")
+			    << "0x" << std::hex << std::setw(8) << std::setfill('0') << snapshot
+			    << std::dec << std::setfill(' ') << "  bit 9 " << ((snapshot >> 9) & 1u)
+			    << ", bit 10 " << ((snapshot >> 10) & 1u) << ", bit 11 "
+			    << ((snapshot >> 11) & 1u)
+			    << (afterUs >= 0 ? " at " + std::to_string(afterUs / 1000.0) +
+			                           " ms after traffic start"
+			                     : std::string(""))
+			    << " (bits 10/11 clear here = this DTC's own TX was clean when its RX "
+			       "caught a bad "
+			       "beat count; other DTCs: see the post-run EVB Status)"
+			    << __E__;
+		}
 		if(threadStruct->evbStickyErrorsSeen_)
 			kv("HW EVB run validity")
 			    << "INVALID: sticky errors observed during this test: 0x" << std::hex
@@ -10983,12 +11000,14 @@ try
 		threadStruct->evbStatusPolls_          = 0;
 		for(auto& liveBitPolls : threadStruct->evbLiveBitPolls_)
 			liveBitPolls = 0;
-		threadStruct->evbFirstStickyValid_ = false;
-		threadStruct->evbFirstStickyMask_  = 0;
-		threadStruct->evbLoopReaderNs_     = 0;
-		threadStruct->evbLoopStatusPollNs_ = 0;
-		threadStruct->evbLoopHandlingNs_   = 0;
-		threadStruct->evbLoopIterations_   = 0;
+		threadStruct->evbFirstStickyValid_   = false;
+		threadStruct->evbFirstStickyMask_    = 0;
+		threadStruct->evbBit12SnapshotValid_ = false;
+		threadStruct->evbBit12Snapshot_      = 0;
+		threadStruct->evbLoopReaderNs_       = 0;
+		threadStruct->evbLoopStatusPollNs_   = 0;
+		threadStruct->evbLoopHandlingNs_     = 0;
+		threadStruct->evbLoopIterations_     = 0;
 		threadStruct->evbRocFragmentsBySource_.clear();
 		threadStruct->evbRocPayloadBytesBySource_.clear();
 		if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
@@ -11160,12 +11179,14 @@ try
 						threadStruct->evbStatusPolls_          = 0;
 						for(auto& liveBitPolls : threadStruct->evbLiveBitPolls_)
 							liveBitPolls = 0;
-						threadStruct->evbFirstStickyValid_ = false;
-						threadStruct->evbFirstStickyMask_  = 0;
-						threadStruct->evbLoopReaderNs_     = 0;
-						threadStruct->evbLoopStatusPollNs_ = 0;
-						threadStruct->evbLoopHandlingNs_   = 0;
-						threadStruct->evbLoopIterations_   = 0;
+						threadStruct->evbFirstStickyValid_   = false;
+						threadStruct->evbFirstStickyMask_    = 0;
+						threadStruct->evbBit12SnapshotValid_ = false;
+						threadStruct->evbBit12Snapshot_      = 0;
+						threadStruct->evbLoopReaderNs_       = 0;
+						threadStruct->evbLoopStatusPollNs_   = 0;
+						threadStruct->evbLoopHandlingNs_     = 0;
+						threadStruct->evbLoopIterations_     = 0;
 						threadStruct->evbRocFragmentsBySource_.clear();
 						threadStruct->evbRocPayloadBytesBySource_.clear();
 						if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
@@ -11368,6 +11389,27 @@ try
 				{
 					const uint32_t stickyNow = evbErr & DTCLib::EVBDefinedErrorMask &
 					                           ~threadStruct->evbStickyIgnoreMask_;
+					if((evbErr & (1u << 12)) && !threadStruct->evbBit12SnapshotValid_)
+					{
+						threadStruct->evbBit12Snapshot_ = evbErr;
+						threadStruct->evbBit12AfterTrafficUs_ =
+						    threadStruct->evbTrafficStarted_
+						        ? std::chrono::duration_cast<std::chrono::microseconds>(
+						              std::chrono::steady_clock::now() -
+						              threadStruct->evbTrafficStartTime_)
+						              .count()
+						        : -1;
+						threadStruct->evbBit12SnapshotValid_ = true;
+						__GEN_COUT_WARN__
+						    << "EVB bit 12 (RX frame size) first seen: 0x9370 = 0x"
+						    << std::hex << std::setw(8) << std::setfill('0') << evbErr
+						    << std::dec << std::setfill(' ')
+						    << "; sender-side bits at this poll: bit 10 "
+						    << ((evbErr >> 10) & 1u) << ", bit 11 "
+						    << ((evbErr >> 11) & 1u) << ", bit 9 " << ((evbErr >> 9) & 1u)
+						    << "; iteration #" << ii << ", SubEvents received so far = "
+						    << threadStruct->subeventsCount_ << __E__;
+					}
 					if(stickyNow && !threadStruct->evbFirstStickyValid_)
 					{
 						threadStruct->evbFirstStickyMask_ = stickyNow;
