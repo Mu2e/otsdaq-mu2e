@@ -1840,6 +1840,7 @@ void CFOFrontEndInterface::configureSlowControls(void)
 //===============================================================================================
 void CFOFrontEndInterface::configure(void)
 {
+	__FE_COUTV__(getSubsystemIterationIndexString());
 	__FE_COUTV__(getIterationIndex());
 	__FE_COUTV__(getSubIterationIndex());
 

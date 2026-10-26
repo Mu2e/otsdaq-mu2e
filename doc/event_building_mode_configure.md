@@ -79,8 +79,13 @@ Key design constraints:
   the instance at phase 1).
 - **DCS ownership**: Only one DTC instance can control DCS (ROC communication via DMA). This is
   the instance with real ROCs. The CFO-subsystem DTC must never call `EnableDCSReception()`.
-- **No-ROC DTCs** skip ROC/EVB setup entirely — they only participate in clock/sync phases
-  (phases 0–9) and Final SoftReset (phase 12).
+- **No-ROC DTCs** skip ROC/EVB setup — they participate in clock/sync phases (phases 0–9)
+  and Final SoftReset (phase 12). They never write the ROC link enables or the ROC emulation
+  bits while any ROC link is on, so the detector-subsystem instance that owns those links
+  keeps the state it set. The single exception: at Phase 4, if every ROC link of the DTC is
+  off, the no-ROC DTC sets the links up from its own ROC config entries (DTC-internal
+  emulation where `EmulateInDTCHardware` is true, plain otherwise), so the timing chain
+  reaches the ROCs.
 - **Sub-step budget**: Each sub-step must complete in <5s to avoid SOAP/xoap timeouts.
 
 ## Phase Map
@@ -91,7 +96,7 @@ within the pass.
 
 | Phase | Name | CFO | DTC (no real ROCs) | DTC (real ROCs) |
 |---|---|---|---|---|
-| 0 | **1a — Establish Clocks** | `halt()`, `DisableBeamOnMode(ALL)`, `DisableBeamOffMode(ALL)`, `ClearControlRegister()`, `DisableAllOutputs()`, JA setup + lock poll | `ClearControlRegister(keepMask)`, `DisableLink(EVB)`, `DisableCFOLoopback()`, JA setup + lock poll (keepMask preserves bits 5-7: edge settings) | idle |
+| 0 | **1a — Establish Clocks** | `halt()`, `DisableBeamOnMode(ALL)`, `DisableBeamOffMode(ALL)`, `ClearControlRegister()`, `DisableAllOutputs()`, JA setup + lock poll | `ClearControlRegister(keepMask)`, `DisableLink(EVB)`, ROC links left untouched, `DisableCFOLoopback()`, JA setup + lock poll (keepMask preserves bits 5-7: edge settings) | idle |
 | 1 | **1b — Establish Clocks** | idle | idle | `ClearControlRegister(keepMask)`, `DisableLink(EVB)`, disable ROC links, `DisableCFOLoopback()`, JA setup + lock poll (keepMask preserves bits 5-7: edge settings) |
 | 2 | **2a — Timing Chain: Enable** | `EnableLink(CFO_Link_ALL)`, `EnableEmbeddedClockMarker()`; in both EB modes starts fixed-width event run plan (1.7µs, mode 0, infinite markers) for aggressive 8b10 traffic during edge fix | `EnableLink(DTC_Link_CFO)`; in Sync mode also enables CFO-RTF Offset Control (bit 6) | `EnableLink(DTC_Link_CFO)`; in Sync mode also enables CFO-RTF Offset Control (bit 6) |
 | 3 | **2b — Timing Chain: CDR Check** | Enumerate DTCs, call "Get Link Lock Status" FE Macro on each; if unlocked -> `ResetSERDES()` + retry; throw on 2nd failure | `ReadSERDESRXCDRLock(DTC_Link_CFO)` — throw if not locked | `ReadSERDESRXCDRLock(DTC_Link_CFO)` — throw if not locked |
@@ -101,7 +106,7 @@ within the pass.
 | 7 | **3c — Sync: RTF offset + verify (no-ROC)** | idle | Clear JA counters, apply RTF offset + `SoftReset()`, wait markers > 1000, verify error flags + RTF counters; if RTFPhase-only, toggle RTF punched clock edge (bit 7) + `SoftReset()` and re-verify once; then verify JA counters stayed 0. **Sync mode only.** | idle |
 | 8 | **3d — Sync: RTF offset + verify (ROC)** | idle | idle | Same offset + verify sub-steps as 3c. **Sync mode only.** |
 | 9 | **3e — Stop CFO Events** | `DisableBeamOnMode(ALL)`, `DisableBeamOffMode(ALL)`. Active in both EB modes. | idle | idle |
-| 10 | **4 — ROC and DCS Setup** | idle | idle | `SetupROCs()` per link, `EnableDCSReception()`, CRV `SetPunchEnable()`, `SoftReset()`, ROC DCS-based configure |
+| 10 | **4 — ROC and DCS Setup** | idle | If any ROC link is on: nothing touched. If all ROC links are off: `SetupROCs()` per link from the ROC config (emulated per `EmulateInDTCHardware`). No DCS, no SoftReset. | `SetupROCs()` per link, `EnableDCSReception()`, CRV `SetPunchEnable()`, `SoftReset()`, ROC DCS-based configure |
 | 11 | **5 — ROC Data Path Setup** | idle | idle | `DisableLink(EVB)`, `SetEVBInfo()`, DRP mode, `EnableLink(EVB)` only if `EventBuilderMode != 0`, `SetCFOEventModeRequiredMask()` |
 | 12 | **Final SoftReset** | `SoftReset()` | `EnableLink(CFO)`, `SoftReset()` | `EnableLink(CFO)`, `SoftReset()` |
 | 13 | **6 — Enable CFO Operation** | `EnableAcceleratorRF0()`, `SetPunchEnable()` | idle | idle |
@@ -169,8 +174,9 @@ so operators can see why a DTC took a particular phase path.
    Control), and 7 (RTF Punched Clock Edge Select) — run-time error counters and previously
    calibrated edge settings are carried into Phase 2c for the first edge fix decision.
    The EVB link (link 7) is turned off for every DTC so it starts from a known state; Phase 5
-   re-enables it only where hardware event building is configured. DTCs with a non-zero
-   `roc_mask_` also disable their configured ROC links.
+   re-enables it only where hardware event building is configured. A DTC with real ROCs and
+   a non-zero `roc_mask_` also disables its configured ROC links; a DTC without real ROCs
+   leaves its ROC links untouched (they belong to the instance with the real ROCs).
 1. JA setup (same lock-aware pattern as CFO)
 2+. JA lock polling
 
@@ -325,7 +331,32 @@ ROC/DCS and data path setup begins.
 
 ## Phase 4 — ROC and DCS Setup (phase 10)
 
-Only DTCs with real ROCs act. CFO and no-ROC DTCs idle.
+The CFO idles. What a DTC does depends on `has_real_roc_flow_` (see "How a DTC knows its
+type"); the check comes before any ROC-link write.
+
+### DTCs without real ROCs
+
+The ROC links belong to the FE instance that has the real ROCs (possibly in another
+subsystem). This DTC reads the link-enable register (0x9114, a DTC register, no DCS traffic)
+for all six ROC links:
+
+- If **any** ROC link has TX or RX on, the owning instance has set the links up: nothing is
+  written — no `SetupROCs()`, no change to the ROC emulation bits (0x9110).
+- If **all** ROC links are off, nobody has set them up yet: the DTC runs the same per-link
+  `SetupROCs()` loop as a real-ROC DTC, from its own ROC config entries — enabled links with
+  `EmulateInDTCHardware = True` get DTC-internal emulation, other enabled links are plain,
+  links not in `roc_mask_` are disabled.
+
+In both cases: no `EnableDCSReception()`, no `SoftReset()`, no ROC configure.
+
+Before 2026-10-23 a no-ROC DTC ran the full `SetupROCs()` loop here (commit 6c559236,
+"Enable ROC links at the DTC even if ROC configure() step is disabled"); with the CFO
+subsystem's ROC children configured `EmulateInDTCHardware = True`, every cfo Configure
+switched all ROC links of the calo and tracker DTCs to DTC-internal emulation underneath the
+detector subsystems that own them. The enable-only rule keeps the one effect that commit
+wanted (links up for the timing chain) without rewriting link state.
+
+### DTCs with real ROCs
 
 Sub-step 0:
 1. `SetupROCs()` per link — enables/disables links, configures emulation per `roc_mask_` and
