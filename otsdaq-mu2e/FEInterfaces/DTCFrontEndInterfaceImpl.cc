@@ -290,7 +290,12 @@ std::string requireEVBBufferTestReady(DTCLib::DTC* dtc, uint32_t operatorIgnoreM
 {
 	// SoftReset drops bit 25 (DDR calibration done) for ~1 s through the reset chain;
 	// wait it out, but refuse immediately on any sticky error
-	const uint32_t buildMask = evbKnownDefectMask(dtc);
+	// Bit 1 (RX sequence gap) on a retransmission build means a lost frame was re-sent and
+	// recovered; the running thread already treats it as informational, and at N=8 a peer's
+	// emulator can start first and lose a frame to this DTC before this DTC's own start
+	// gate runs (seen 2026-10-26 14:20, Trk01_DTC1 refused with 0x06000002).  Apply the same
+	// recovered-loss mask here so the gate agrees with the run-time check.
+	const uint32_t buildMask = evbKnownDefectMask(dtc) | evbRecoveredLossMask(dtc);
 	const uint32_t ignoreMask =
 	    buildMask | (operatorIgnoreMask & DTCLib::EVBDefinedErrorMask);
 
@@ -7863,6 +7868,25 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	}
 	else
 		o << "  Not in this bitfile (retransmission starts with 0xd6100291).\n";
+	o << "\n";
+
+	// Staging slot health (hw agent 2026-10-26): read once per DTC after a run.  Bit 9 on
+	// 0x9370 is expected to stay clear once the slot fix is in; 0x9260 says why if not.
+	o << "=== EVB Staging Slot Health (0x9260, SoftReset clear) ===\n";
+	if(evbHasRetransmission(dtc))
+	{
+		try
+		{
+			o << dtc->FormatEVBSlotHealthText(dtc->ReadEVBSlotHealth(), "  ");
+			o << "  Read with 0x9370 bit 9 on the same DTC: bit 9 clear + nothing here = fix held.\n";
+		}
+		catch(const std::exception& e)
+		{
+			o << "  read failed: " << e.what() << "\n";
+		}
+	}
+	else
+		o << "  Not in this bitfile.\n";
 	o << "\n";
 
 	// TX packet history (hw agent 2026-10-13/14): the log freezes on the first retransmission
