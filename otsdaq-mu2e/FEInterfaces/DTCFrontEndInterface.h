@@ -349,6 +349,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	unsigned int            roc_emulated_mask_     = 0;
 	bool                    has_real_roc_flow_     = false;
 	std::string             real_roc_flow_reason_;
+	bool                    enable_roc_configure_step_ = false;  ///< from DTCInterfaceTable EnableROCConfigureStep; gates only DCS ROC configure/start, not link/emulator setup
 	bool                    emulate_cfo_         = true;
 	bool                    enable_software_drp_ = false;  ///< from DTCInterfaceTable EnableSoftwareDataRequestMode; when true, Autogenerate DRP is never enabled
 	DTCLib::DTCSoftwareCFO* EmulatedCFO_;
