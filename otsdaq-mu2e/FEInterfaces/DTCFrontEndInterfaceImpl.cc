@@ -2569,18 +2569,7 @@ void DTCFrontEndInterface::configureCommon(void)
 
 	//at this point should have stable ROC links, and be ready for DCS-based configure of ROCs:
 	//------------------------------ ROCs //------------------------------
-	bool doConfigureROCs = false;
-	try
-	{
-		doConfigureROCs = Configurable::getSelfNode()
-		                      .getNode("EnableROCConfigureStep")
-		                      .getValue<bool>();
-	}
-	catch(...)
-	{
-	}  // ignore missing field
-
-	if(doConfigureROCs)
+	if(enable_roc_configure_step_)
 	{
 		for(auto& roc : rocs_)
 		{
@@ -2735,9 +2724,7 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 	const bool hasRealROCs = has_real_roc_flow_;
 	__FE_COUT__ << "DTC " << getInterfaceUID() << " classified as '"
 	            << (hasRealROCs ? "w/ real ROCs" : "w/o real ROCs") << "' ("
-	            << (has_real_roc_flow_ ? real_roc_flow_reason_
-	                                   : "all ROCs emulated or none")
-	            << ")" << __E__;
+	            << real_roc_flow_reason_ << ")" << __E__;
 	const int myClockPhase =
 	    hasRealROCs ? CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_CLOCKS_B
 	                : CFOandDTCCoreVInterface::CONFIG_PHASE_ESTABLISH_CLOCKS_A;
@@ -3366,20 +3353,11 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 				// Step 4: SoftReset to clear lock counters
 				dtc->SoftReset();
 
-				// Check if ROC configure is needed
-				bool doConfigureROCs = false;
-				try
-				{
-					doConfigureROCs = Configurable::getSelfNode()
-					                      .getNode("EnableROCConfigureStep")
-					                      .getValue<bool>();
-				}
-				catch(...)
-				{
-				}
-
-				if(doConfigureROCs)
+				if(enable_roc_configure_step_)
 					indicateSubIterationWork();
+				else
+					__FE_COUT__ << "EnableROCConfigureStep is false; skipping ROC configure."
+					            << __E__;
 			}
 		}
 		else
@@ -4187,7 +4165,7 @@ void DTCFrontEndInterface::start(std::string runNumber)
 		// iterations when standalone.
 		const unsigned int startIteration = getSubsystemSyncStepIndex();
 
-		if(startIteration == 0 && has_real_roc_flow_)
+		if(startIteration == 0 && has_real_roc_flow_ && enable_roc_configure_step_)
 		{
 			__FE_COUT__ << "Issuing DTC SoftReset before starting ROCs..." << __E__;
 			getDTC()->SoftReset();
@@ -7108,83 +7086,29 @@ void DTCFrontEndInterface::DTCInstantiate()
 		has_real_roc_flow_    = false;
 		real_roc_flow_reason_ = "";
 
-		// Check EnableROCConfigureStep first — when explicitly false, it overrides
-		// all other classification rules and forces the no-ROC path.
-		bool enableROCConfigureStep = true;  // default: allow other rules to decide
+		// A DTC has real ROCs iff any enabled ROC is not EmulateInDTCHardware.
+		// EnableROCConfigureStep is independent and gates only the DCS-based ROC
+		// configure/start steps.
+		has_real_roc_flow_ = (roc_mask_ & ~roc_emulated_mask_) != 0;
+		real_roc_flow_reason_ =
+		    has_real_roc_flow_ ? "non-emulated ROC present" : "all ROCs emulated or none";
+
+		enable_roc_configure_step_ = false;
 		try
 		{
-			enableROCConfigureStep = Configurable::getSelfNode()
-			                             .getNode("EnableROCConfigureStep")
-			                             .getValue<bool>();
+			enable_roc_configure_step_ = Configurable::getSelfNode()
+			                                 .getNode("EnableROCConfigureStep")
+			                                 .getValue<bool>();
 		}
 		catch(...)
 		{
 		}
 
-		if(!enableROCConfigureStep)
-		{
-			// Explicit opt-out — skip real-ROC classification entirely
-			has_real_roc_flow_    = false;
-			real_roc_flow_reason_ = "EnableROCConfigureStep=false";
-		}
-		else
-		{
-			if((roc_mask_ & ~roc_emulated_mask_) != 0)
-			{
-				has_real_roc_flow_    = true;
-				real_roc_flow_reason_ = "non-emulated ROC present";
-			}
-
-			if(!has_real_roc_flow_)
-			{
-				for(auto& roc : rocChildren)
-				{
-					if(!roc.second.getNode("Status").getValue<bool>())
-						continue;
-					try
-					{
-						if(!roc.second.getNode("ROCTypeLinkTable").isDisconnected())
-						{
-							has_real_roc_flow_ = true;
-							real_roc_flow_reason_ =
-							    "ROC '" + roc.first + "' has ROCTypeLinkTable";
-							break;
-						}
-					}
-					catch(...)
-					{
-					}
-					try
-					{
-						if(!roc.second.getNode("LinkToSlowControlsChannelTable")
-						        .isDisconnected())
-						{
-							has_real_roc_flow_ = true;
-							real_roc_flow_reason_ =
-							    "ROC '" + roc.first +
-							    "' has LinkToSlowControlsChannelTable";
-							break;
-						}
-					}
-					catch(...)
-					{
-					}
-				}
-			}
-
-			if(!has_real_roc_flow_)
-			{
-				// EnableROCConfigureStep is true (checked above) — use it as final rule
-				has_real_roc_flow_    = true;
-				real_roc_flow_reason_ = "EnableROCConfigureStep is true";
-			}
-		}
-
 	}  // end create roc mask
 
-	__FE_COUT__ << "Real ROC flow: " << (has_real_roc_flow_ ? "YES" : "NO")
-	            << (has_real_roc_flow_ ? " (" + real_roc_flow_reason_ + ")" : "")
-	            << __E__;
+	__FE_COUT__ << "Real ROC flow: " << (has_real_roc_flow_ ? "YES" : "NO") << " ("
+	            << real_roc_flow_reason_ << "); ROC configure step "
+	            << (enable_roc_configure_step_ ? "enabled" : "disabled") << __E__;
 
 	// DTC firmware design version must match ReadDesignDate()_ReadVivadoVersion() [ ignoring ReadDesignVersionNumber() for now ]
 	// for example the string might be "Jun/13/2023 16:00	raw-data: 0x23061316" + "_22.1"

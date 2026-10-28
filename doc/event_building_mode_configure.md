@@ -139,24 +139,23 @@ Operating mode constants in `CFOandDTCCoreVInterface.h`:
 
 ## How a DTC knows its type
 
-A DTC is classified as "with real ROCs" (`has_real_roc_flow_ = true`) based on the
-`EnableROCConfigureStep` configuration parameter and ROC mask checks:
+A DTC is classified as "with real ROCs" (`has_real_roc_flow_ = true`) from its ROC table
+only:
 
-0. **Override**: If `EnableROCConfigureStep` is explicitly `false`, the DTC is forced to the
-   no-ROC path regardless of ROC masks or link tables. No further rules are checked.
-1. At least one enabled, non-emulated ROC: `(roc_mask_ & ~roc_emulated_mask_) != 0`
-2. Any enabled ROC has `ROCTypeLinkTable` connected (not `NO_LINK`)
-3. Any enabled ROC has `LinkToSlowControlsChannelTable` connected (not `NO_LINK`)
-4. If none of rules 1–3 triggered but `EnableROCConfigureStep` is `true` (the default),
-   the DTC is classified as real-ROC to exercise the full configure flow.
+```
+has_real_roc_flow_ = (roc_mask_ & ~roc_emulated_mask_) != 0
+```
 
-Rules 1–4 allow exercising the "real ROC" configuration flow (Phases 1b, 3b, 3d, 4, 5) with
-emulated-only ROCs — useful for testing subsystem configure sequences without physical hardware.
-Rule 0 allows forcing a DTC with physical ROCs to skip ROC-specific phases (e.g. during
-commissioning when the ROC side is not yet ready).
+i.e. at least one ROC in `LinkToROCGroupTable` has `Status = true` and
+`EmulateInDTCHardware = false`. `EnableROCConfigureStep` does not affect this; it is read into
+`enable_roc_configure_step_` and gates only the ROC DCS `configure()` (Phase 4 sub-steps 1+)
+and `roc->start()` at Start.
 
 The classification reason is stored in `real_roc_flow_reason_` and included in error messages
 so operators can see why a DTC took a particular phase path.
+
+See [dtc_roc_configure_rules.md](dtc_roc_configure_rules.md) for the full case tables
+covering ownership, ROC configure, and ROC link-enable writes.
 
 ## Phase 1a/1b — Establish Clocks
 
