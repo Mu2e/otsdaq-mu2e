@@ -380,9 +380,11 @@ std::string formatEVBTxRewindDiag(DTCLib::DTC* dtc)
 		const uint32_t txRewindDiag =
 		    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBTxRewindDiag));
 		formatted << "0x9268 = 0x" << std::hex << std::setw(8) << std::setfill('0')
-		          << txRewindDiag << std::dec << std::setfill(' ') << " ([31:24] = "
-		          << ((txRewindDiag >> 24) & 0xFF) << " burst-table misses on rewind, [23:16] = "
-		          << ((txRewindDiag >> 16) & 0xFF) << ", [15:8] = " << ((txRewindDiag >> 8) & 0xFF)
+		          << txRewindDiag << std::dec << std::setfill(' ')
+		          << " ([31:24] = " << ((txRewindDiag >> 24) & 0xFF)
+		          << " burst-table misses on rewind, [23:16] = "
+		          << ((txRewindDiag >> 16) & 0xFF)
+		          << ", [15:8] = " << ((txRewindDiag >> 8) & 0xFF)
 		          << ", [7:0] = " << (txRewindDiag & 0xFF) << ")";
 	}
 	catch(const std::exception& exception)
@@ -6575,9 +6577,12 @@ void DTCFrontEndInterface::DTCCounters(__ARGS__)
 	performance << csvLinkCounts(
 	    "    TX Blocked HBP Count ",
 	    [dtc](DTCLib::DTC_Link_ID l) { return dtc->ReadTXBlockedHeartbeatCount(l); });
-	performance << csvLinkCounts(  // since 2026-11-04 only STORED headers; received = this + wrong-tag dropped
-	    "    Rx Data Header Count ",
-	    [dtc](DTCLib::DTC_Link_ID l) { return dtc->ReadRXDataHeaderPacketCount(l); });
+	performance
+	    << csvLinkCounts(  // since 2026-11-04 only STORED headers; received = this + wrong-tag dropped
+	           "    Rx Data Header Count ",
+	           [dtc](DTCLib::DTC_Link_ID l) {
+		           return dtc->ReadRXDataHeaderPacketCount(l);
+	           });
 	performance << csvLinkCounts(
 	    "    Rx Data Packet Count ",
 	    [dtc](DTCLib::DTC_Link_ID l) { return dtc->ReadRXDataPacketCount(l); });
@@ -7641,17 +7646,26 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		try
 		{
 			o << dtc->FormatEVBSlotHealthText(dtc->ReadEVBSlotHealth(), "  ");
-			o << "  Read with 0x9370 bit 9 on the same DTC: bit 9 clear + nothing here = fix held.\n";
+			o << "  Read with 0x9370 bit 9 on the same DTC: bit 9 clear + nothing here = "
+			     "fix held.\n";
 			// Two newer diagnostics the hardware agent reads after every run; raw, with the one
 			// field whose meaning is known so far.  Both are SoftReset-clear, so this post-run
 			// EVB Status is the record of them before the next sequence resets the DTC.
-			const uint32_t rxBadEnd     = readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBRxBadEnd));
-			const uint32_t txRewindDiag = readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBTxRewindDiag));
-			o << "  0x9264 (RX bad-end verdict, expect 0) = 0x" << std::hex << std::setw(8) << std::setfill('0') << rxBadEnd
-			  << std::dec << std::setfill(' ') << "\n";
-			o << "  0x9268 (TX rewind diag) = 0x" << std::hex << std::setw(8) << std::setfill('0') << txRewindDiag << std::dec
-			  << std::setfill(' ') << ": burst-table misses on rewind [31:24] = " << ((txRewindDiag >> 24) & 0xFFu)
-			  << (((txRewindDiag >> 24) & 0xFFu) ? "  <- continuation count word skipped on this sender" : "") << "\n";
+			const uint32_t rxBadEnd =
+			    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBRxBadEnd));
+			const uint32_t txRewindDiag =
+			    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBTxRewindDiag));
+			o << "  0x9264 (RX bad-end verdict, expect 0) = 0x" << std::hex
+			  << std::setw(8) << std::setfill('0') << rxBadEnd << std::dec
+			  << std::setfill(' ') << "\n";
+			o << "  0x9268 (TX rewind diag) = 0x" << std::hex << std::setw(8)
+			  << std::setfill('0') << txRewindDiag << std::dec << std::setfill(' ')
+			  << ": burst-table misses on rewind [31:24] = "
+			  << ((txRewindDiag >> 24) & 0xFFu)
+			  << (((txRewindDiag >> 24) & 0xFFu)
+			          ? "  <- continuation count word skipped on this sender"
+			          : "")
+			  << "\n";
 		}
 		catch(const std::exception& e)
 		{
@@ -7823,24 +7837,25 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	// instead.  Read offset-indexed first; if the whole idle row is zero while RxCount is
 	// not, re-read it MAC-indexed and say so, rather than printing a misleading zero row.
 	std::string idleRowAddressingNote;
-	auto readIdleRowMacIndexed = [&](uint8_t type, std::vector<uint32_t>& values) {
-		for(uint8_t d = 0; d < bramNodes; ++d)
-		{
-			const uint8_t absoluteMac = static_cast<uint8_t>(startNode + d);
-			values[d] = (absoluteMac < MAX_BRAM_SLOTS)
-			                ? dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType(type), absoluteMac)
-			                : 0u;
-		}
+	auto        readIdleRowMacIndexed = [&](uint8_t type, std::vector<uint32_t>& values) {
+        for(uint8_t d = 0; d < bramNodes; ++d)
+        {
+            const uint8_t absoluteMac = static_cast<uint8_t>(startNode + d);
+            values[d] =
+                (absoluteMac < MAX_BRAM_SLOTS)
+			               ? dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType(type), absoluteMac)
+			               : 0u;
+        }
 	};
 
 	for(uint8_t t = 0; t < NUM_BRAM_TYPES; ++t)
 	{
-		bool isCounter = (t == DTCLib::DTC_EVBStatsType_RxCount ||
-		                  t == DTCLib::DTC_EVBStatsType_RxMissingPacketCount ||
-		                  t == DTCLib::DTC_EVBStatsType_RxByteCount ||
-		                  t == DTCLib::DTC_EVBStatsType_TxIdleCount ||
-		                  t == DTCLib::DTC_EVBStatsType_RxIdleCount);
-		bool isHex     = !isCounter;  // timestamps, sequence tags
+		bool       isCounter = (t == DTCLib::DTC_EVBStatsType_RxCount ||
+                          t == DTCLib::DTC_EVBStatsType_RxMissingPacketCount ||
+                          t == DTCLib::DTC_EVBStatsType_RxByteCount ||
+                          t == DTCLib::DTC_EVBStatsType_TxIdleCount ||
+                          t == DTCLib::DTC_EVBStatsType_RxIdleCount);
+		bool       isHex     = !isCounter;  // timestamps, sequence tags
 		const bool isIdleRow = (t == DTCLib::DTC_EVBStatsType_TxIdleCount ||
 		                        t == DTCLib::DTC_EVBStatsType_RxIdleCount);
 		o << "  " << std::setw(18) << std::left
@@ -7852,7 +7867,7 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 
 		if(isIdleRow)
 		{
-			bool idleRowAllZero = true;
+			bool idleRowAllZero    = true;
 			bool rxCountAnyNonZero = false;
 			for(uint8_t d = 0; d < bramNodes; ++d)
 			{
@@ -7881,7 +7896,7 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 
 		for(uint8_t d = 0; d < bramNodes; ++d)
 		{
-			uint32_t val = rowValues[d];
+			uint32_t val                                   = rowValues[d];
 			currentSnapshot.values[(uint16_t(t) << 8) | d] = val;
 			if(isCounter && val == 0xFFFFFFFFu)
 				o << "  " << std::setw(10) << std::right << "SATURATED";
@@ -11296,10 +11311,11 @@ try
 					                         threadStruct->evbStallAtStartValid_);
 					threadStruct->evbStallLastSnapshotTime_ =
 					    std::chrono::steady_clock::now();
-					__GEN_COUT_WARN__ << "EVB TX rewind diag at FIRST poll after traffic start: "
-					                  << formatEVBTxRewindDiag(threadStruct->thisDTC_)
-					                  << "; iteration #" << ii << ", SubEvents received so far = "
-					                  << threadStruct->subeventsCount_ << __E__;
+					__GEN_COUT_WARN__
+					    << "EVB TX rewind diag at FIRST poll after traffic start: "
+					    << formatEVBTxRewindDiag(threadStruct->thisDTC_)
+					    << "; iteration #" << ii << ", SubEvents received so far = "
+					    << threadStruct->subeventsCount_ << __E__;
 				}
 				else if(threadStruct->evbStallAtStartValid_ &&
 				        !threadStruct->evbStallAtEndValid_ &&
@@ -11732,7 +11748,8 @@ try
 	if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
 		__GEN_COUT_WARN__ << "EVB TX rewind diag at END of run: "
 		                  << formatEVBTxRewindDiag(threadStruct->thisDTC_)
-		                  << "; SubEvents received = " << threadStruct->subeventsCount_ << __E__;
+		                  << "; SubEvents received = " << threadStruct->subeventsCount_
+		                  << __E__;
 
 	__GEN_COUT_INFO__
 	    << "Buffer test thread exited. "
@@ -11756,9 +11773,10 @@ catch(...)
 	threadStruct->running_ = false;
 
 	if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
-		__COUT__ << LOCAL_COUT_HDR << "EVB TX rewind diag at END of run (exception exit): "
-		              << formatEVBTxRewindDiag(threadStruct->thisDTC_)
-		              << "; SubEvents received = " << threadStruct->subeventsCount_ << __E__;
+		__COUT__ << LOCAL_COUT_HDR
+		         << "EVB TX rewind diag at END of run (exception exit): "
+		         << formatEVBTxRewindDiag(threadStruct->thisDTC_)
+		         << "; SubEvents received = " << threadStruct->subeventsCount_ << __E__;
 
 	if(threadStruct->thisDTC_)
 		threadStruct->thisDTC_->GetDevice()->spy(
