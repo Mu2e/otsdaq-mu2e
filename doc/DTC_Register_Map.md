@@ -58,6 +58,9 @@ Source: `register_map.v`
 | 0x9178 | EVB_LOCAL_CHUNK_CAP | (2026-10-06, RW) EVB3 longest SELF chunk to the DMA, in 8-byte words: [15:0]. 0 = whole record (the pre-2026-10-06 behavior: one self chunk of up to DMA max - 2 words = 8189 at 0x9104 = 0xFFF8, during which no remote source FIFO is drained, so the peer stops on credit for most of every self record); values 1..31 act as 32. HardReset 0x0400 (1024 words = ~4 us of DMA), survives SoftReset like 0x9170. A self record larger than the cap arrives as several self chunks with the same FAFA framing (src = self); software already reassembles self by source (EVB3_DMA_FAFA_protocol.md). |
 | 0x917C | EVB_REMOTE_CHUNK_MIN | (2026-10-07, RW) EVB3 buffer manager: [15:0] fewest 8-byte words a REMOTE source FIFO must hold before it is granted a DMA chunk (0 = any words, the pre-2026-10-07 behavior); [31:16] user_clk clocks (4 ns) a non-empty remote FIFO may wait for that minimum before it is granted anyway (so a record's tail never waits). HardReset 0x0400_0080 (1024 clocks = 4 us, 128 words), survives SoftReset. Why: under a steady 10GbE stream a remote chunk was whatever the FIFO held at the grant (11-19 words on average, 90% under 16), each costing 4 clocks + 1 FAFA word on the DMA, and the self stream parked between every two of them; on the 4G-link stand that turned the 0x9178 cap into a 30% loss (0xd6100794). |
 | 0x9180 | EVB_RX_ILLEGAL_DEST_COUNT | (2026-10-13, read-only) [15:0] count of 10GbE RX frames whose destination MAC did not match this DTC's address (non-broadcast only; broadcast is silently ignored). These are frames the switch forwarded to us that belong to another DTC or another partition. SoftReset clear, saturates at 0xFFFF. The sticky flag for the same condition is 0x9370 status bit 26. |
+| 0x9264 | EVB_RX_BAD_END | (2026-10-28, read-only) EVB3 10GbE receive: frames that ended badly. [31] sticky: an accepted EVB frame (0x78 framing, our partition) closed on a word other than the 0xCC end-of-frame word that carries the checksum -- the sender's end word was lost on the link (seen on 8-node HW from one sender: the frame arrived cut, with earlier words spliced in, ending in a bare 0x87 word). [30:16] count of those (saturating). [15:0] count of frames dropped by the commit-at-end verdict for any reason (non-0xCC close, wire beat count != declared, bad checksum; saturating). Since 2026-10-28 a frame that fails at its end is treated as lost: its words are not stored, its position is not advanced, and a resend is requested through the retransmission path (each count here should match one resend served by the peer). All rxgbeclk, no tearing. SoftReset clear. Decode: hi bank 1 (addr[2]=1). |
+| 0x9268 | EVB_REWIND_HEALTH | (2026-11-04, read-only) EVB3 sender stream/ring health, four saturating 8-bit counters, SoftReset clear: [31:24] TX position mismatches (header position != ring index of the first word, or last word index wrong; also 0x9370 bit 8), [23:16] acks/rewinds the ring manager refused (position outside what it holds), [15:8] repeated requests whose echo predates the answer (not served again), [7:0] requests answered without a rewind. Lo bank 1. |
+| 0x9260 | EVB_SLOT_HEALTH | (2026-10-26, read-only) EVB3 DDR->TX staging slot health. [31] sticky: a staging slot's TX-side inventory read 0 while the slot's read-side word count was above 64 for more than 1 us (the inventory and the FIFO disagree; seen on 8-node HW before 0x9370 bit 9). [30:16] count of those episodes (saturating). [15:0] staging slot clears performed by the rewind server (FIFO-reset clears, 2026-10-09 scheme; saturating). Two clock domains, a read can tear between fields. SoftReset clear. Decode: lo bank 1 (addr[2]=0). |
 | 0x9168 | RAWDATA_SERDESREFCLKCONFLOW | SERDES oscillator IIC: [31:16] address, [15:8] write data, [7:0] read data |
 | 0x916C | RAWDATA_SERDESREFCLKCONFHIGH | SERDES oscillator IIC CSR: [1] read enable, [0] write enable |
 | 0x9184 | CFOEM_LOOPBACK_DELAYMEASURE | CFO emulator loopback delay measurement: [31] done, [30:0] measured value |
@@ -87,7 +90,7 @@ Source: `register_map.v`
 | 0x91E4 | DETECTOR_EMULATION_END | Detector emulation end address |
 | 0x91E8 | CFOEMDRPDELAYTIME | CFO emulator DRP delay time |
 | 0x91EC | MAXENETPAYLOADSIZE | Max Ethernet payload size [13:0] |
-| 0x91F0 | EVB_TX_HIST_READ | (2026-10-13, read-only) TX packet history BRAM readback. Each read returns one entry and advances the pointer. Returns 0xFFFFFFFF when all entries have been read. Bit layout: [28] first packet of subevent, [27] last packet, [26] has data (vs null), [25:21] destination (5-bit), [20:13] sequence number, [12:0] packet size in 64-bit words. Read 0x925C first to check frozen + count, then read this register count+1 times (first read loads the output, subsequent reads return entries 0..count-1). **Walk once per run:** the read pointer resets only on SoftReset, so a second walk returns 0xFFFFFFFF until the next SoftReset. **Ring:** after 1024 packets the count holds at 1023 and entry 0 is the oldest surviving packet, not the first packet of the run; the entry just before the freeze is the LAST one read, so walk to the end and look backwards from there. If frozen = 0 at the end of a run, no retransmission was requested and the log holds the most recent packets. |
+| 0x91F0 | EVB_TX_HIST_READ | (2026-10-13, read-only) TX packet history BRAM readback. Each read returns one entry and advances the pointer. Returns 0xFFFFFFFF when all entries have been read. Bit layout: [28] first packet of subevent, [27] last packet, [26] has data (vs null), [25:21] destination (5-bit), [20:13] sequence number, [12:0] packet size in 64-bit words. Read 0x925C first to check frozen + count, then read this register count times; each read returns the next entry, 0..count-1 in order, then 0xFFFFFFFF (bitfiles up to 0xd6101417 skipped entry 0, fixed 2026-10-14; stop at the end marker and either works). **Walk once per run:** the read pointer resets only on SoftReset, so a second walk returns 0xFFFFFFFF until the next SoftReset. **Ring:** after 1024 packets the count holds at 1023 and entry 0 is the oldest surviving packet, not the first packet of the run; the entry just before the freeze is the LAST one read, so walk to the end and look backwards from there. If frozen = 0 at the end of a run, no retransmission was requested and the log holds the most recent packets. |
 | 0x91F4 | CFOEMCLOCK40MHZINTERVAL | CFO emulator 40 MHz clock marker interval |
 | 0x91F8 | CFOMarkerEnables | CFO 40 MHz clock marker enables [5:0] |
 | 0x91FC | ROCFINISHTHRESHOLD | ROC finish threshold [7:0] |
@@ -236,7 +239,7 @@ Note: Per-ROC DRP auto-generate enable bits [21:16] are OR'd with the global DTC
 
 ### 0x9380-0x939C RINGERROR bit map (per link, ROC links 0-5)
 
-Layout: `[31:16] = status` (bit 20 = external ROC emulator error since 2026-10-02), `[15] = internal emulator error`, `[14:0] = link errors`
+Layout: `[31:16] = status` (bit 20 = external ROC emulator error since 2026-10-02, bits 21/22 = wrong-tag answer dropped / headerless payload dropped since 2026-11-04), `[15] = internal emulator error`, `[14:0] = link errors`
 
 | Bit(s) | Name | Description |
 |--------|------|-------------|
@@ -252,13 +255,15 @@ Layout: `[31:16] = status` (bit 20 = external ROC emulator error since 2026-10-0
 | 9 | rx_dcs_c2s_overflow | DCS C2S FIFO overflow |
 | 10 | tx_cfo_tag_def | CFO event tag definition error (tx) |
 | 11 | tx_hbp_overflow | Downstream HBP-latch overrun (tx) |
-| 12 | rx_out_of_band | ROC data arrived with no pending DCS/DRP (late response after timeout) |
+| 12 | rx_out_of_band | ROC data arrived with no pending DCS/DRP (late response after timeout). Since 2026-11-04 such packets are only thrown away (rx FIFO flushed); before, they also reset both data buffers, wiping a stored timeout header and stalling the link until SoftReset |
 | 13 | rx_buffer_not_emptied | Double-buffer residue purged on read-done (deadlock precursor) |
 | 14 | tx_stray_ewm | Event Window Marker thrown away because no heartbeat had been seen on this link since reset (a SoftReset, link enable or CFO start landed between a heartbeat and its marker). Sticky; the marker never reaches the ROC. Added 2026-10-02; this bit was ext_emulator_error, now at bit 20 |
 | 15 | int_emulator_error | Internal ROC emulator error |
 | [19:16] | tx_fsm | Tx handling FSM state |
 | 20 | ext_emulator_error | External ROC emulator error (moved from bit 14 on 2026-10-02) |
-| [31:21] | — | Reserved (zero) |
+| 21 | rx_wrong_tag_dropped | (2026-11-04) A ROC Data Header answered a Data Request with a different Event Window Tag than the one requested. The header and its Data Payload packets were dropped (nothing stored), the request stayed pending with its timeout timer running, and the drops were counted at 0xA4A0.. / 0xA4C0... Sticky, cleared by SoftReset. Before this date such an answer was stored under the requested tag |
+| 22 | rx_headerless_payload | (2026-11-04) Data Payload packets arrived under a Data Request whose Data Header had not been accepted (the late tail of a previous answer, e.g. after a mid-answer timeout) and were dropped and counted at 0xA4C0... Sticky, cleared by SoftReset |
+| [31:23] | — | Reserved (zero) |
 
 Bits [13:0] are latched `_ever` flags, cleared by link reset.
 
@@ -363,7 +368,7 @@ RTF punched clock histogram bins and IDELAY tap readback.
 | 0x9664 | TRANSMIT_HB_COUNT5 | Transmitted heartbeat count, ROC 5 |
 | 0x9668 | TRANSMIT_HB_COUNT6 | Heartbeat packets seen on the CFO link (all, null or not, before any blocking); the ROC links' 0x9650.. can only be <= this |
 | 0x966C | CFO_HB_FORWARDED_COUNT | CFO heartbeats forwarded to ROCs (Heartbeat_sig) |
-| 0x9670 | RECEIVE_DH_COUNT0 | Received data header count, ROC 0 |
+| 0x9670 | RECEIVE_DH_COUNT0 | Data headers STORED from ROC 0 (since 2026-11-04 a header whose Event Window Tag differs from the Data Request's is dropped and counted at 0xA4A0 instead: received = 0x9670 + 0xA4A0) |
 | 0x9674 | RECEIVE_DH_COUNT1 | Received data header count, ROC 1 |
 | 0x9678 | RECEIVE_DH_COUNT2 | Received data header count, ROC 2 |
 | 0x967C | RECEIVE_DH_COUNT3 | Received data header count, ROC 3 |
@@ -434,7 +439,7 @@ RTF punched clock histogram bins and IDELAY tap readback.
 | 0xA410 | TRANSMIT_EWM_COUNT4 | Transmitted event window marker count, ROC 4 |
 | 0xA414 | TRANSMIT_EWM_COUNT5 | Transmitted event window marker count, ROC 5 |
 | 0xA418 | TRANSMIT_EWM_COUNT6 | Event window markers seen on the CFO link (all). 0x9668 - 0xA418 = heartbeats whose marker never arrived (run stop between heartbeat and marker, or a heartbeat still waiting for its marker at the poll) |
-| 0xA420 | RECEIVE_DHTIMEOUT_COUNT0 | Received data header timeout count, ROC 0 |
+| 0xA420 | RECEIVE_DHTIMEOUT_COUNT0 | Received data header timeout count, ROC 0 (since 2026-11-04 exactly one count per Data Request timeout; a timeout landing between the packets of an answer used to count up to 6 and leave the partial answer in the record under the timeout status) |
 | 0xA424 | RECEIVE_DHTIMEOUT_COUNT1 | Received data header timeout count, ROC 1 |
 | 0xA428 | RECEIVE_DHTIMEOUT_COUNT2 | Received data header timeout count, ROC 2 |
 | 0xA42C | RECEIVE_DHTIMEOUT_COUNT3 | Received data header timeout count, ROC 3 |
@@ -458,6 +463,18 @@ RTF punched clock histogram bins and IDELAY tap readback.
 | 0xA48C | TRANSMIT_NONNULL_HB_COUNT3 | Non-null heartbeats sent, ROC 3 |
 | 0xA490 | TRANSMIT_NONNULL_HB_COUNT4 | Non-null heartbeats sent, ROC 4 |
 | 0xA494 | TRANSMIT_NONNULL_HB_COUNT5 | Non-null heartbeats sent, ROC 5 |
+| 0xA4A0 | RECEIVE_DROPPED_DH_COUNT0 | (2026-11-04) Data Headers from ROC 0 dropped because their Event Window Tag was not the one the Data Request asked for (e.g. a late answer to the previous request). The header and its payload are thrown away, the request stays pending and its timeout timer keeps running (the right answer can still arrive, else the normal timeout header is produced). 16-bit, wraps, SoftReset clear. RINGERROR bit 21 is the sticky flag |
+| 0xA4A4 | RECEIVE_DROPPED_DH_COUNT1 | Wrong-tag Data Headers dropped, ROC 1 |
+| 0xA4A8 | RECEIVE_DROPPED_DH_COUNT2 | Wrong-tag Data Headers dropped, ROC 2 |
+| 0xA4AC | RECEIVE_DROPPED_DH_COUNT3 | Wrong-tag Data Headers dropped, ROC 3 |
+| 0xA4B0 | RECEIVE_DROPPED_DH_COUNT4 | Wrong-tag Data Headers dropped, ROC 4 |
+| 0xA4B4 | RECEIVE_DROPPED_DH_COUNT5 | Wrong-tag Data Headers dropped, ROC 5 |
+| 0xA4C0 | RECEIVE_DROPPED_DP_COUNT0 | (2026-11-04) Data Payload packets from ROC 0 dropped: with a wrong-tag Data Header, or arriving under a request whose header had not been accepted (a late tail; RINGERROR bit 22). 16-bit, wraps, SoftReset clear. 0xA4A0 and 0xA4C0 for one link are sampled in the same instant |
+| 0xA4C4 | RECEIVE_DROPPED_DP_COUNT1 | Payload packets dropped with a wrong-tag header, ROC 1 |
+| 0xA4C8 | RECEIVE_DROPPED_DP_COUNT2 | Payload packets dropped with a wrong-tag header, ROC 2 |
+| 0xA4CC | RECEIVE_DROPPED_DP_COUNT3 | Payload packets dropped with a wrong-tag header, ROC 3 |
+| 0xA4D0 | RECEIVE_DROPPED_DP_COUNT4 | Payload packets dropped with a wrong-tag header, ROC 4 |
+| 0xA4D4 | RECEIVE_DROPPED_DP_COUNT5 | Payload packets dropped with a wrong-tag header, ROC 5 |
 
 Per-link heartbeat counter identities (all 16-bit, wrap at 65536; 0xA440/0xA460/0xA480 for one link are sampled in the SAME instant, so their arithmetic is exact at any time):
 
