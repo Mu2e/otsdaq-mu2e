@@ -440,6 +440,7 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void SetDTCIdAndEVBInfo(__ARGS__);
 	void EVBInit(__ARGS__);
 	void EVBStatus(__ARGS__);
+	void EVBTimingChainReadout(__ARGS__);
 	void ExerciseLink7Reset(__ARGS__);
 	void SetEVBStartGateIgnoreMask(__ARGS__);
 	void SetupEVBIdlePackets(__ARGS__);
