@@ -1,0 +1,18 @@
+{
+  "banner": "",
+  "footer": "Mu2e otsdaq tutorials. Source files are in md/; see AGENTS.md for how to edit and build.",
+  "site_title": "Mu2e Tutorials",
+  "logos": [
+    {"src": "assets/ots-logo.png", "alt": "ots", "height": 50},
+    {"src": "assets/mu2e-logo.png", "alt": "Mu2e", "height": 50}
+  ],
+  "tutorials": [
+    {
+      "slug": "adding-a-roc-register-to-slow-controls",
+      "title": "Adding a ROC Register to Slow Controls",
+      "category": "Slow Controls and EPICS",
+      "status": "draft",
+      "prereqs": []
+    }
+  ]
+}
