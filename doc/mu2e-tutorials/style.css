@@ -33,6 +33,11 @@ body.nav-closed .sidenav { flex-basis: 0; width: 0; }
 .cards { display: flex; flex-wrap: wrap; gap: 12px; }  /* fixed-size cards that wrap onto new lines; nothing scales with the window */
 .card { position: relative; display: flex; flex-direction: column; flex: 0 0 auto; width: 244px; height: 118px; background: #efefef; text-decoration: none;
   box-shadow: 0 1px 2px rgba(0,0,0,.08); transition: box-shadow .15s, transform .15s; }
+.card.draft { background: #fafafa; outline: 2px dashed #8a96a3; outline-offset: -2px; }
+.cardlegend { margin: 0 0 10px; font-size: 14px; color: #444; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; }
+.cardlegend .lgitem { display: inline-flex; align-items: center; gap: 6px; }
+.badge.badge-key { position: static; }
+.cardlegend i.dash { background: #fff; border: 2px dashed #8a96a3; width: 12px; height: 12px; display: inline-block; border-radius: 3px; }
 .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.18); transform: translateY(-1px); }
 .card img { display: block; width: 100%; flex: none; }
 .centeredName { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: 4px 12px 8px; text-align: center; color: #004C97;

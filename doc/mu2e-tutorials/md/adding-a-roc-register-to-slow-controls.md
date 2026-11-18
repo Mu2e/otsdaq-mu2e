@@ -1,11 +1,9 @@
-# Adding a ROC Register to Slow Controls
-
-<!-- written 2026-11-16 from a real run in the HWDev web GUI on mu2e-cfo-01, using a software-emulated DTC and ROC on calo-14. The front-end context calo_14_FEContext, the emulated caloDTC26, and ROC caloROC156 with a fake temperature register at address 0x3E8 (1000). Confirmed: Configure with tutorial_calo14_emulated alias, EPICS PV file generated with tutorialTemperature channel, Macro Maker reads show random walk. Dashboard screenshots could not be automated (cross-origin iframe between ports 3155 and 3159). -->
+# Adding a ROC DCS Register to EPICS
 
 <!-- slide 1 -->
-## Adding a ROC Register to Slow Controls
+## Adding a ROC DCS Register to EPICS
 
-Add a register of a readout controller (ROC) to slow-controls monitoring, and watch the value change in the Dashboard every five seconds.
+Add a register of a readout controller (ROC) to the Mu2e Slow Controls and EPICS (Experimental Physics and Industrial Control System) monitoring, and watch the value change in the Dashboard every five seconds. The register is read with the Detector Control System (DCS) protocol, which the data transfer controller (DTC) uses to talk to the ROC.
 
 ![otsdaq logo](../images/adding-a-roc-register-to-slow-controls/hwdev-first.png)
 
@@ -23,7 +21,7 @@ Last checked: November 2026, using a software-emulated DTC and ROC on calo-14.
 <!-- slide 3 -->
 ## Before You Start
 
-- Recommended: the sandbox tutorials [Introducing Slow Controls](https://otsdaq.fnal.gov/tutorials/introducing-slow-controls.html), [Slow Controls Dashboard Features and Hotkeys](https://otsdaq.fnal.gov/tutorials/slow-controls-dashboard-features-and-hotkeys.html), and [Setting Up EPICS With *otsdaq*](https://otsdaq.fnal.gov/tutorials/setting-up-epics-with-otsdaq.html). They cover the Dashboard, widgets, and the EPICS plugin.
+- The **Slow Controls Dashboard** is part of *otsdaq*, and *otsdaq* Slow Controls can be set up in more than one way. Mu2e uses the `EpicsInterface` plugin, which reads the channels from the Mu2e EPICS system; the file-based `OtsSlowControlsInterface` plugin is another choice. The *otsdaq* tutorials at [otsdaq.fnal.gov/tutorials](https://otsdaq.fnal.gov/tutorials/index.html) cover the Dashboard and both plugins. Recommended: [Introducing Slow Controls](https://otsdaq.fnal.gov/tutorials/introducing-slow-controls.html), [Slow Controls Dashboard Features and Hotkeys](https://otsdaq.fnal.gov/tutorials/slow-controls-dashboard-features-and-hotkeys.html), and [Setting Up EPICS With *otsdaq*](https://otsdaq.fnal.gov/tutorials/setting-up-epics-with-otsdaq.html), which covers the `EpicsInterface` plugin.
 - Access to the **HWDev** Desktop on mu2e-cfo-01 (port 3155). HWDev uses NoSecurity mode, so no login is needed.
 - The **calo-14** front-end context must be running (check **App Status** on the Desktop).
 - A software-emulated DTC (`caloDTC26`) and ROC (`caloROC156`) already configured on calo-14, with `EmulatorMode=True` on the DTC and `EmulateInDTCHardware=True` on the ROC.
@@ -31,10 +29,10 @@ Last checked: November 2026, using a software-emulated DTC and ROC on calo-14.
 <!-- slide 4 -->
 ## How a ROC Register Reaches the Dashboard
 
-1. The **front-end** (DTC interface) polls the ROC register at the interval you set (five seconds in this tutorial), using a DTC DCS (device control and status) read.
+1. The **front-end** (DTC interface) polls the ROC register at the interval you set (five seconds in this tutorial), using a DCS read from the DTC to the ROC.
 2. The front-end calls `sendMetric` with the value. The artdaq **EPICS metric plugin** sends it to the IOC with `ca_put`.
 3. The **OTSReader IOC** serves the value as an EPICS process variable (PV). The IOC reloads when the PV file changes (a cron job checks every two minutes).
-4. The **Slow Controls Dashboard** reads the PV through the `EpicsInterface` plugin and shows it in a widget.
+4. The **Slow Controls Dashboard** reads the PV through the `EpicsInterface` plugin and shows it in a widget. Which plugin the Dashboard uses is the `SlowControlsInterfacePluginType` setting in its `SlowControlsDashboardSupervisorTable` row, and Mu2e sets it to `EpicsInterface`. The *otsdaq* tutorials listed in Before You Start explain the setting.
 
 The PV name follows the pattern `<owner>:<subsystem>:<ROC UID>:<channel name>`.
 
@@ -168,12 +166,12 @@ The emulator stores the new value. The next slow-controls sample, within five se
 This is useful for testing alarms or thresholds: write a value that crosses the limit, and confirm that the alarm fires.
 
 <!-- slide 17 -->
-## What We Did Not Cover
+## Where to Go for More
 
-- **Adding the channel from scratch**: this tutorial used a channel already in the tutorial alias. The sandbox tutorial [Setting Up EPICS With *otsdaq*](https://otsdaq.fnal.gov/tutorials/setting-up-epics-with-otsdaq.html) shows how to create a channel in the Configuration GUI.
-- **Alarms and thresholds**: EPICS alarm limits in the PV record and the Dashboard alarm views.
-- **Real hardware**: the emulated DTC and ROC behave like real ones for slow controls, but the values are simulated.
-- **Running state**: slow-controls polling pauses during a run. The last value before the run stays in the Dashboard until the run ends and polling resumes.
+- **Create a channel from scratch:** this tutorial used a channel already in the tutorial alias. [Setting Up EPICS With *otsdaq*](https://otsdaq.fnal.gov/tutorials/setting-up-epics-with-otsdaq.html) shows how to create one in the Configuration GUI.
+- **Alarms and thresholds:** EPICS alarm limits are set in the PV record and shown in the Dashboard alarm views. See [Slow Controls Dashboard Features and Hotkeys](https://otsdaq.fnal.gov/tutorials/slow-controls-dashboard-features-and-hotkeys.html).
+- **Real hardware:** the emulated DTC and ROC take the same slow-controls path as real ones, but the values are simulated.
+- **Running state:** slow-controls polling pauses during a run. The last value before the run stays in the Dashboard until the run ends and polling resumes.
 
 <!-- slide 18 -->
 ## Things to Remember
