@@ -1379,12 +1379,17 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	        "change)",
 	        "EVB Partition ID (Default := 0x99)",
 	        "EVB Idle Packet Words (8-byte words, Default := no change)",
-	        "EVB Idle Burst per Dest Window (Default := no change)"},  // namesOfInputArgs
+	        "EVB Idle Burst per Dest Window (Default := no change)",
+	        "EVB Skipped Nodes as CSV of hostnames or DTCs (e.g. trk-09, trk-10-DTC0) "
+	        "(Default := none)"},  // namesOfInputArgs
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
 	    "Configure EVB registers from hostname-derived addresses (DTC ID, MAC, Mode=0), "
 	    "enable the EVB link, and issue a Soft Reset. "
+	    "Nodes or DTCs in the skipped list get no address: every DTC above them in the "
+	    "same subsystem moves down by 2 per skipped node or 1 per skipped DTC, so the "
+	    "DTCs present have consecutive addresses. Give the same list to every DTC. "
 	    "Set the EVB partition ID (0-255, default 0x99; register 0x9154 bits [15:8]). "
 	    "Optionally set the EVB interpacket gap (0x915C [15:8]), "
 	    "idle-packet payload size in 8-byte words (0x915C [31:16], reset 0x0c), "
@@ -7332,6 +7337,87 @@ static uint32_t hostnameToEVBAddress(const std::string& shortHostname)
 }  //end hostnameToEVBAddress()
 
 //========================================================================
+// Splits a node name (e.g. trk-09, mu2e-trk-09) or a DTC name (e.g. trk-09-DTC0) into
+// subsystem name, node number and DTC index. dtcIndex is -1 when the name is a whole node.
+static void parseEVBNodeName(const std::string& nodeName,
+                             std::string&       subsystemName,
+                             int&               nodeNumber,
+                             int&               dtcIndex)
+{
+	std::vector<std::string> parts;
+	StringMacros::getVectorFromString(nodeName, parts, {'-'});
+
+	dtcIndex = -1;
+	if(parts.size() && parts.back().size() > 3 &&
+	   (parts.back().substr(0, 3) == "DTC" || parts.back().substr(0, 3) == "dtc"))
+	{
+		dtcIndex = atoi(parts.back().substr(3).c_str());
+		parts.pop_back();
+	}
+
+	if(parts.size() < 2 || (dtcIndex != -1 && dtcIndex != 0 && dtcIndex != 1))
+	{
+		__SS__ << "Invalid EVB node name '" << nodeName
+		       << "'. Expected a node like 'trk-09' or one DTC like 'trk-09-DTC0'."
+		       << __E__;
+		__SS_THROW__;
+	}
+
+	nodeNumber    = atoi(parts.back().c_str());
+	subsystemName = parts[parts.size() - 2];
+}  //end parseEVBNodeName()
+
+//========================================================================
+// Counts the skipped DTC addresses that are below the given DTC of the given node and in
+// the same subsystem. A whole node in the list counts 2, one DTC counts 1. The count is
+// subtracted from the address so that the DTCs present get consecutive addresses.
+static uint32_t countEVBSkippedAddressesBelow(const std::string& shortHostname,
+                                              int                deviceIndex,
+                                              const std::string& skippedNodeList)
+{
+	std::string targetSubsystemName;
+	int         targetNodeNumber, targetDtcIndex;
+	parseEVBNodeName(
+	    shortHostname, targetSubsystemName, targetNodeNumber, targetDtcIndex);
+	const int targetPosition = targetNodeNumber * 2 + deviceIndex;
+
+	std::vector<std::string> skippedNodes;
+	StringMacros::getVectorFromString(skippedNodeList, skippedNodes, {','});
+
+	uint32_t skippedCount = 0;
+	for(const auto& skippedNode : skippedNodes)
+	{
+		if(skippedNode.empty())
+			continue;
+
+		std::string skippedSubsystemName;
+		int         skippedNodeNumber, skippedDtcIndex;
+		parseEVBNodeName(
+		    skippedNode, skippedSubsystemName, skippedNodeNumber, skippedDtcIndex);
+		if(skippedSubsystemName != targetSubsystemName)
+			continue;
+
+		for(int dtcIndex = 0; dtcIndex < 2; ++dtcIndex)
+		{
+			if(skippedDtcIndex != -1 && skippedDtcIndex != dtcIndex)
+				continue;
+
+			const int skippedPosition = skippedNodeNumber * 2 + dtcIndex;
+			if(skippedPosition == targetPosition)
+			{
+				__SS__ << "DTC" << deviceIndex << " of '" << shortHostname
+				       << "' is in the EVB skipped node list '" << skippedNodeList
+				       << "', so it has no EVB address." << __E__;
+				__SS_THROW__;
+			}
+			if(skippedPosition < targetPosition)
+				++skippedCount;
+		}
+	}
+	return skippedCount;
+}  //end countEVBSkippedAddressesBelow()
+
+//========================================================================
 void DTCFrontEndInterface::EVBInit(__ARGS__)
 {
 	auto dtc = getDTC();
@@ -7341,7 +7427,19 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 	StringMacros::getVectorFromString(hostname, hostSplit, {'.'});
 	std::string shortHostname = hostSplit[0];
 
-	uint32_t macAddress = hostnameToEVBAddress(shortHostname) + deviceIndex_;
+	std::string skippedNodeList = __GET_ARG_IN__(
+	    "EVB Skipped Nodes as CSV of hostnames or DTCs (e.g. trk-09, trk-10-DTC0) "
+	    "(Default := none)",
+	    std::string,
+	    "");
+	uint32_t skippedAddressCount =
+	    countEVBSkippedAddressesBelow(shortHostname, deviceIndex_, skippedNodeList);
+
+	__FE_COUTV__(skippedNodeList);
+	__FE_COUTV__(skippedAddressCount);
+
+	uint32_t macAddress =
+	    hostnameToEVBAddress(shortHostname) + deviceIndex_ - skippedAddressCount;
 
 	int partitionInput = __GET_ARG_IN__("EVB Partition ID (Default := 0x99)", int, 0x99);
 	if(partitionInput < 0 || partitionInput > 0xFF)
@@ -7369,7 +7467,9 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 	    "auto)",
 	    std::string,
 	    shortHostname);
-	uint8_t evbBaseAddr = hostnameToEVBAddress(baseDTCHostname);
+	uint8_t evbBaseAddr =
+	    hostnameToEVBAddress(baseDTCHostname) -
+	    countEVBSkippedAddressesBelow(baseDTCHostname, 0 /*deviceIndex*/, skippedNodeList);
 
 	__FE_COUTV__(baseDTCHostname);
 	__FE_COUTV__((int)evbBaseAddr);
