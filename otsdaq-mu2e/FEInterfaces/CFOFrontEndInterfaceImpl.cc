@@ -216,25 +216,37 @@ void CFOFrontEndInterface::registerFEMacros(void)
 		"Compile Runplan",
 			static_cast<FEVInterface::frontEndMacroFunction_t>(
 					&CFOFrontEndInterface::CompileRunplan),                  // feMacroFunction
-					std::vector<std::string>{"Input Text File", "Output Binary File"},//"Input Text Run Plan", "Output Binary Run File"},  // namesOfInputArgs
+					std::vector<std::string>{"Input Text File (Offspill, Onspill, Default := cfoInterfaceLib/Commands.txt)", "Output Binary File"},//"Input Text Run Plan", "Output Binary Run File"},  // namesOfInputArgs
 					std::vector<std::string>{"Result"},
 					1,    // requiredUserPermissions
 					"*" /* allowedCallingFEs */,
 					"This FE Macro compiles the CFO run plan to a binary file. You must compile before running <b>Set Runplan</b> "
-					"which downloads the binary run plan to the CFO.\n\nDefault text run plan: srcs/mu2e-pcie-utils/cfoInterfaceLib/Command.txt\nDefault binary run plan: srcs/mu2e-pcie-utils/cfoInterfaceLib/Command.bin" /* feMacroTooltip */
+					"which downloads the binary run plan to the CFO.\n\n"
+			"Input Text File accepts:\n"
+			"\t<b>Offspill</b> : compiles the premade srcs/mu2e-pcie-utils/cfoInterfaceLib/OffspillRunPlan.txt\n"
+			"\t<b>Onspill</b> : compiles the premade srcs/mu2e-pcie-utils/cfoInterfaceLib/OnspillRunPlan.txt\n"
+			"\ta path to any other text run plan\n"
+			"\tDefault : srcs/mu2e-pcie-utils/cfoInterfaceLib/Commands.txt\n\n"
+			"Default binary run plan: srcs/mu2e-pcie-utils/cfoInterfaceLib/Commands.bin" /* feMacroTooltip */
 					);
 
 	registerFEMacroFunction(
 		"Set Runplan",
 			static_cast<FEVInterface::frontEndMacroFunction_t>(
 					&CFOFrontEndInterface::SetRunplan),                  // feMacroFunction
-					std::vector<std::string>{"Binary Run File"},         // namesOfInputArgs
+					std::vector<std::string>{"Binary Run File",
+						"Run Plan Address (Offspill = 0, Onspill = 256, <address>, Default := Offspill)"},         // namesOfInputArgs
 					std::vector<std::string>{"Result"},
 					1,   // requiredUserPermissions
 					"*", /* allowedCallingFEs */
 					"Download the binary run plan to the CFO. <b>You must first compile your run plan</b>.\n\n\n\n" /* feMacroTooltip */
 					"Paramters:\n"
 					"\tBinary Run File (string): Path to the binary run plan. Default: srcs/mu2e-pcie-utils/cfoInterfaceLib/Commands.bin\n"
+					"\tRun Plan Address (string): Where in the run plan memory to load the plan, counted in instructions (the memory holds 1024). Accepted values:\n"
+					"\t\tOffspill: load at instruction 0 and set the Off-Spill base address register to 0 (Default).\n"
+					"\t\tOnspill: load at instruction 256 and set the On-Spill base address register to 256.\n"
+					"\t\t&lt;address&gt;: a number, decimal or 0x hex, from 0 to 1023. The plan is loaded there and the base address registers are not changed.\n"
+					"\tNote: a compiled run plan can be loaded at any address (GOTO is counted from the start of the plan); this needs CFO firmware with GOTO relative to the plan base.\n"
 	);
 
 	registerFEMacroFunction(
@@ -289,6 +301,22 @@ void CFOFrontEndInterface::registerFEMacros(void)
 					"*" /* allowedCallingFEs */,
 					"Launches the Event Building run plan. You must <b>Compile Runplan</b> and <b>Set Runplan</b> before launching. " /* feMacroTooltip */
 					"You do not need to compile and set the same runplan more than once. Use <b>Reset Runplan</b> and <b>Launch Runplan</b> thereafter."
+	);
+
+	registerFEMacroFunction(
+		"Install Default On and Off Spill Run Plans",
+			static_cast<FEVInterface::frontEndMacroFunction_t>(
+					&CFOFrontEndInterface::InstallDefaultOnAndOffSpillRunPlans),                  // feMacroFunction
+					std::vector<std::string>{},  // namesOfInputArgs
+					std::vector<std::string>{"Result"}, // namesOfOutputArgs
+					1,   // requiredUserPermissions
+					"*" /* allowedCallingFEs */,
+					"Compiles, loads and starts the default Off-Spill and On-Spill run plans in one step:\n" /* feMacroTooltip */
+					"\t1. Stops Off-Spill and On-Spill run plan processing.\n"
+					"\t2. Compiles cfoInterfaceLib/OffspillRunPlan.txt, loads it at instruction 0 and sets the Off-Spill base address register to 0.\n"
+					"\t3. Compiles cfoInterfaceLib/OnspillRunPlan.txt, loads it at instruction 256 and sets the On-Spill base address register to 256.\n"
+					"\t4. Soft Reset, enables the accelerator RF0 input, then enables Off-Spill and On-Spill processing.\n"
+					"The Result shows the compiler output of both plans. Use <b>CFO Halt</b> to stop both plans."
 	);
 
 	registerFEMacroFunction(
@@ -531,11 +559,15 @@ void CFOFrontEndInterface::registerFEMacros(void)
 			// "Software Generated Data Requests (bool)",
 			// "Do Not Send Heartbeats (bool)"
 		},
-		std::vector<std::string>{"Result"}, // namesOfOutputArgs
+		std::vector<std::string>{"Result", PLOTLY_PLOT}, // namesOfOutputArgs
 		1,  // requiredUserPermissions
 		"*",
 		"Read a specified number of events from the Data DMA channel-0, and attempt to "
-		"validate data."
+		"validate data.\n\n"
+		"The status reports the number of Off-Spill and On-Spill events seen, and a histogram "
+		"of the event widths found in the CFO event records is plotted. "
+		"Histograms of the duration of each entire Off-Spill period and each entire On-Spill period "
+		"are also plotted, found by adding up the event widths of consecutive events with the same On-Spill flag."
 		// "Send a request for a number of events and waits for the respective responses. "
 		// "Currently, the responses are simulated data (a counter)."
 	);
@@ -602,17 +634,6 @@ void CFOFrontEndInterface::registerFEMacros(void)
 	__FE_COUT__ << "Done registering CFO FE Macros. Total macro count = "
 	            << mapOfFEMacroFunctions_.size() << __E__;
 }  //end registerFEMacros()
-
-// //=====================================================================================
-// //
-// int CFOFrontEndInterface::getLinkStatus()
-// {
-// 	int overall_link_status = registerRead(0x9140);
-
-// 	int link_status = (overall_link_status >> 0) & 0x1;
-
-// 	return link_status;
-// }
 
 //=====================================================================================
 // TODO: function to do a loopback test on the specified link
@@ -1635,173 +1656,6 @@ void CFOFrontEndInterface::TestMarker(__ARGS__)
 	__SET_ARG_OUT__("Response", ostr.str());
 }  // end TestMarker()
 
-//=====================================================================================
-//
-float CFOFrontEndInterface::MeasureLoopback(int linkToLoopback)
-{
-	/* COMMENTED 20-Jun-2023 by rrivera to start using CFO_Register directly.. will need to add features to support loopback revival
-	const int maxNumberOfLoopbacks = 10000;
-	int       numberOfLoopbacks =
-		getConfigurationManager()
-			->getNode("/Mu2eGlobalsTable/SyncDemoConfig/NumberOfLoopbacks")
-			.getValue<unsigned int>();
-
-	__FE_COUTV__(numberOfLoopbacks);
-
-	// prepare histograms
-	float numerator   = 0.0;
-	float denominator = 0.0;
-	failed_loopback_  = 0;
-
-	int loopback_data[maxNumberOfLoopbacks] = {};
-
-	max_distribution_ = 0;      // maximum value of the histogram
-	min_distribution_ = 99999;  // minimum value of the histogram
-
-	for(int n = 0; n < 10000; n++)
-		loopback_distribution_[n] = 0;  // zero out the histogram
-
-	// get initial states
-	unsigned initial_9380 = registerRead(0x9380);
-	unsigned initial_9114 = registerRead(0x9114);
-
-	// clean up after the DTC has done all of its resetting...
-	__FE_COUT__ << "LOOPBACK: CFO reset serdes RX " << __E__;
-	registerWrite(0x9118, 0x000000ff);
-	registerWrite(0x9118, 0x0);
-	sleep(1);
-
-	__FE_COUT__ << "LOOPBACK: CFO status before loopback" << __E__;
-	readStatus();
-
-	//	__FE_COUT__ << "LOOPBACK: BEFORE max_distribution_: " <<
-	// max_distribution_ << __E__;
-
-	for(int n = 0; n <= numberOfLoopbacks; n++)
-	{
-		//----------take out of delay measurement mode
-		registerWrite(0x9380, 0x00000000);
-
-		//-------- Disable tx and rx data
-		registerWrite(0x9114, 0x00000000);
-
-		//--- enable tx and rx for link linkToLoopback
-		int dataToWrite = (0x00000101 << linkToLoopback);
-		registerWrite(0x9114, dataToWrite);
-
-		//----- Put linkToLoopback in delay measurement mode
-		dataToWrite = (0x00000100 << linkToLoopback);
-		registerWrite(0x9380, dataToWrite);
-
-		//------ begin delay measurement
-		dataToWrite = (0x00000101 << linkToLoopback);
-		registerWrite(0x9380, dataToWrite);
-		usleep(5);
-
-		//--------read delay value
-		unsigned int delay = registerRead(0x9360);
-
-		//__COUT_INFO__ << "LOOPBACK iteration " << std::dec << n << " gives " << delay <<
-		//__E__;
-
-		if(delay < 10000 && n > 5)
-		{  // skip the first events since the ROC is
-		   // resetting its alignment
-
-			numerator += (float)delay;
-			denominator += 1.0;
-			// 		__FE_COUT__ << "LOOPBACK iteration " << std::dec << n <<
-			// " gives " << delay << __E__;
-
-			loopback_data[n] = delay;
-
-			loopback_distribution_[delay]++;
-
-			if(delay > max_distribution_)
-			{
-				max_distribution_ = delay;
-				//		    __FE_COUT__ << "LOOPBACK: new max_distribution_: " <<
-				// max_distribution_ << __E__;
-			}
-
-			if(delay < min_distribution_)
-				min_distribution_ = delay;
-		}
-		else
-		{
-			loopback_data[n] = -999;
-
-			if(n > 5)
-			{  // skip the first events since the ROC is resetting its alignment
-				failed_loopback_++;
-			}
-		}
-
-		//----------clear delay measurement mode
-		// registerWrite(0x9380,0x00000000);
-
-		//-------- Disable tx and rx data
-		// registerWrite(0x9114,0x00000000);
-
-		usleep(5);
-	}
-
-	__FE_COUT__ << "LOOPBACK: CFO status after loopback" << __E__;
-	readStatus();
-
-	// return back to initial state
-	registerWrite(0x9380, initial_9380);
-	registerWrite(0x9114, initial_9114);
-
-	// ---------------------------
-	// do a little bit of analysis
-	// ---------------------------
-
-	average_loopback_ = -999.;
-	if(denominator > 0.5)
-		average_loopback_ = numerator / denominator;
-
-	rms_loopback_ = 0.;
-
-	for(int n = 0; n < numberOfLoopbacks; n++)
-	{
-		if(loopback_data[n] > 0)
-		{
-			rms_loopback_ += (loopback_data[n] - average_loopback_) *
-							 (loopback_data[n] - average_loopback_);
-		}
-	}
-
-	if(denominator > 0.5)
-	{
-		rms_loopback_ = sqrt(rms_loopback_ / denominator);
-		average_loopback_ *= 5;  // convert from 5ns bins (200MHz) to 1ns bins
-		rms_loopback_ *= 5;      // convert from 5ns bins (200MHz) to 1ns bins
-	}
-
-	__FE_COUT__ << "LOOPBACK: distribution: " << __E__;
-	//	__FE_COUT__ << "LOOPBACK: min_distribution_: " << min_distribution_ <<
-	//__E__;
-	//	__FE_COUT__ << "LOOPBACK: max_distribution_: " << max_distribution_ <<
-	//__E__;
-
-	for(unsigned int n = (min_distribution_ - 5); n < (max_distribution_ + 5); n++)
-	{
-		__COUT_INFO__ << " delay [ " << n << " ] = " << loopback_distribution_[n] << __E__;
-	}
-
-	__COUT_INFO__ << " average = " << average_loopback_ << " ns, RMS = " << rms_loopback_
-								 << " ns, failures = " << failed_loopback_ << __E__;
-
-	__FE_COUT__ << __E__;
-
-	__FE_COUT__ << "LOOPBACK: number of failed loopbacks = " << std::dec
-				<< failed_loopback_ << __E__;
-*/
-	return 0;  //average_loopback_;
-
-}  // end MeasureLoopback()
-
 //==============================================================================
 void CFOFrontEndInterface::configureSlowControls(void)
 {
@@ -1919,18 +1773,6 @@ void CFOFrontEndInterface::configure(void)
 	{
 		// disable outputs
 		thisCFO_->DisableAllOutputs();
-
-		// __FE_COUT__ << "CFO disable Event Start character output " << __E__;
-		// registerWrite(0x9100, 0x0);
-
-		// __FE_COUT__ << "CFO disable serdes transmit and receive " << __E__;
-		// registerWrite(0x9114, 0x00000000);
-
-		// __FE_COUT__ << "CFO turn off Event Windows" << __E__;
-		// registerWrite(0x91a0, 0x00000000);
-
-		// __FE_COUT__ << "CFO turn off 40MHz marker interval" << __E__;
-		// registerWrite(0x9154, 0x00000000);
 	}
 	else if((config_step % number_of_dtc_config_steps) == 1)
 	{
@@ -1944,15 +1786,12 @@ void CFOFrontEndInterface::configure(void)
 
 			__FE_COUT__ << "CFO set crystal frequency to 156.25 MHz" << __E__;
 			thisCFO_->SetSERDESOscillatorFrequency(0x09502F90);
-			// registerWrite(0x9160, 0x09502F90);
 
 			// set RST_REG bit
 			thisCFO_->WriteSERDESIICInterface(
 			    DTC_IICSERDESBusAddress::DTC_IICSERDESBusAddress_EVB /* device */,
 			    0x87 /* address */,
 			    0x01 /* data */);
-			// registerWrite(0x9168, 0x55870100);
-			// registerWrite(0x916c, 0x00000001);
 
 			// sleep(5);
 
@@ -1995,15 +1834,9 @@ void CFOFrontEndInterface::configure(void)
 
 			__FE_COUT__ << "CFO reset serdes PLLs " << __E__;
 			thisCFO_->ResetAllSERDESPlls();
-			// registerWrite(0x9118, 0x0000ff00);
-			// registerWrite(0x9118, 0x0);
-			// sleep(3);
 
 			__FE_COUT__ << "CFO reset serdes TX " << __E__;
 			thisCFO_->ResetAllSERDESTx();
-			// registerWrite(0x9118, 0x00ff0000);
-			// registerWrite(0x9118, 0x0);
-			// sleep(3);
 		}
 		else
 		{
@@ -2020,9 +1853,6 @@ void CFOFrontEndInterface::configure(void)
 
 		__FE_COUT__ << "CFO reset serdes RX " << __E__;
 		thisCFO_->ResetSERDES(CFOLib::CFO_Link_ID::CFO_Link_ALL);
-		// registerWrite(0x9118, 0x000000ff);
-		// registerWrite(0x9118, 0x0);
-		// sleep(3);
 
 		__FE_COUT__ << "CFO enable Event Start character output " << __E__;
 		thisCFO_->EnableEmbeddedClockMarker();
@@ -2032,22 +1862,10 @@ void CFOFrontEndInterface::configure(void)
 
 		__FE_COUT__ << "CFO enable serdes transmit and receive " << __E__;
 		thisCFO_->EnableLink(CFOLib::CFO_Link_ID::CFO_Link_ALL);
-		// registerWrite(0x9114, 0x0000ffff);
 
 		__FE_COUT__ << "CFO Event Window interval time now controlled by CFO Run Plan, "
 		               "as of Firmware version: Nov/09/2023 11:00"
 		            << __E__;
-		// thisCFO_->SetEventWindowEmulatorInterval(0x1f40 /* 40us */); //0x154 = 1.7us, 0x1f40 = 40us, 0 = NO markers
-		//    registerWrite(0x91a0,0x154);   //1.7us
-		// registerWrite(0x91a0, 0x1f40);  // 40us
-		// 	registerWrite(0x91a0,0x00000000); 	// for NO markers, write these
-		// values
-
-		// __FE_COUT__ << "CFO set 40MHz marker interval" << __E__;
-		// thisCFO_->SetClockMarkerIntervalCount(0x0800);  // 0 = NO markers
-		// registerWrite(0x9154, 0x0800);
-		// 	registerWrite(0x9154,0x00000000); 	// for NO markers, write these
-		// values
 
 		__FE_COUT_INFO__ << "--------------" << __E__;
 		__FE_COUT_INFO__ << "CFO configured" << __E__;
@@ -2889,162 +2707,6 @@ void CFOFrontEndInterface::start(std::string runNumber)  // runNumber)
 			next_starting_event_window_tag_ += numberOfEventWindowMarkers;
 		}
 	}
-
-	/* COMMENTED 20-Jun-2023 by rrivera to start using CFO_Register directly.. will need to add features to support loopback revival
-
-	//bool LoopbackLock = true;
-	//int  loopbackROC  = 0;
-
-	const int numberOfChains       = 1;
-	int       link[numberOfChains] = {0};
-
-	const int numberOfDTCsPerChain = 1;  // assume 0, then 1
-
-	const int numberOfROCsPerDTC = 1;  // assume 0, then 1
-
-	// To do loopbacks on all CFOs, first have to setup all DTCs, then the CFO
-	// (this method) work per iteration. Loop back done on all chains (in this
-	// method), assuming the following order: i DTC0 DTC1 ... DTCN 0 ROC0 none ...
-	// none 1 ROC1 none ... none 2 none ROC0 ... none 3 none ROC1 ... none
-	// ...
-	// N-1 none none ... ROC0
-	// N none none ... ROC1
-
-	int numberOfMeasurements = numberOfChains * numberOfDTCsPerChain * numberOfROCsPerDTC;
-
-	int startIndex = getIterationIndex();
-
-	if(startIndex == 0)  // setup
-	{
-		initial_9100_ = registerRead(0x9100);
-		initial_9114_ = registerRead(0x9114);
-		initial_91a0_ = registerRead(0x91a0);
-		initial_9154_ = registerRead(0x9154);
-
-		__FE_COUT__ << "CFO disable Event Start character output " << __E__;
-		registerWrite(0x9100, 0x0);
-
-		__FE_COUT__ << "CFO turn off Event Windows" << __E__;
-		registerWrite(0x91a0, 0x00000000);
-
-		__FE_COUT__ << "CFO turn off 40MHz marker interval" << __E__;
-		registerWrite(0x9154, 0x00000000);
-
-		__FE_COUT__ << "START: CFO status" << __E__;
-		readStatus();
-
-		for(int nChain = 0; nChain < numberOfChains; nChain++)
-		{
-			for(int nDTC = 0; nDTC < numberOfDTCsPerChain; nDTC++)
-			{
-				for(int nROC = 0; nROC < numberOfROCsPerDTC; nROC++)
-				{
-					delay[nChain][nDTC][nROC]        = -1;
-					delay_rms[nChain][nDTC][nROC]    = -1;
-					delay_failed[nChain][nDTC][nROC] = -1;
-				}
-			}
-		}
-
-		indicateIterationWork();  // I still need to be touched
-		return;
-	}
-
-	if(startIndex > numberOfMeasurements)  // finish
-	{
-		__FE_COUT_INFO__ << "-------------------------" << __E__;
-		__FE_COUT_INFO__ << "FULL SYSTEM loopback DONE" << __E__;
-
-		for(int nChain = 0; nChain < numberOfChains; nChain++)
-		{
-			for(int nDTC = 0; nDTC < numberOfDTCsPerChain; nDTC++)
-			{
-				for(int nROC = 0; nROC < numberOfROCsPerDTC; nROC++)
-				{
-					__FE_COUT_INFO__ << "chain "
-								   << nChain << " - DTC " << nDTC << " - ROC " << nROC
-								   << " = " << std::dec << delay[nChain][nDTC][nROC]
-								   << " ns +/- " << delay_rms[nChain][nDTC][nROC] << " ("
-								   << delay_failed[nChain][nDTC][nROC] << ")" << __E__;
-				}
-			}
-		}
-
-		float diff = delay[0][1][0] - delay[0][0][0];
-
-		__FE_COUT_INFO__ << "DTC1_ROC0 - DTC0_ROC0 = " << diff << __E__;
-		__FE_COUT_INFO__ << "-------------------------" << __E__;
-
-		__FE_COUT__ << "LOOPBACK: CFO reset serdes RX " << __E__;
-		registerWrite(0x9118, 0x000000ff);
-		registerWrite(0x9118, 0x0);
-		usleep(50);
-
-		__FE_COUT__ << "CFO enable Event Start character output 0x" << std::hex << __E__;
-		registerWrite(0x9100, initial_9100_);
-
-		__FE_COUT__ << "CFO enable serdes transmit and receive 0x" << __E__;
-		registerWrite(0x9114, initial_9114_);
-
-		__FE_COUT__ << "CFO set Event Window interval time" << __E__;
-		registerWrite(0x91a0, initial_91a0_);  // 40us
-
-		__FE_COUT__ << "CFO set 40MHz marker interval" << __E__;
-		registerWrite(0x9154, initial_9154_);
-
-		readStatus();
-		return;
-	}
-
-	//=========== Perform loopback=============
-
-	// where are we in the procedure?
-	int activeROC = (startIndex - 1) % numberOfROCsPerDTC;
-
-	int activeDTC = -1;
-
-	for(int nDTC = 0; nDTC < numberOfDTCsPerChain; nDTC++)
-	{
-		//	__FE_COUT__ << "loopback index = " << startIndex
-		//		<< " nDTC = " << nDTC
-		//		<< " numberOfDTCsPerChain = " << numberOfDTCsPerChain
-		//		<< __E__;
-		if((startIndex - 1) >= (nDTC * numberOfROCsPerDTC) &&
-		   (startIndex - 1) < ((nDTC + 1) * numberOfROCsPerDTC))
-		{
-			//				__FE_COUT__ << "ACTIVE DTC " << nDTC <<
-			//__E__;
-			activeDTC = nDTC;
-		}
-	}
-
-	//	__COUT__ 	<< "loopback index = " << startIndex;
-	__FE_COUT_INFO__ << " Looping back DTC" << activeDTC << " ROC" << activeROC << __E__;
-
-	int chainIndex = 0;
-
-	while((chainIndex < numberOfChains))
-	{
-		//__COUT__ << "LOOPBACK: on DTC " << link[chainIndex] <<__E__;
-		MeasureLoopback(link[chainIndex]);
-
-		delay[chainIndex][activeDTC][activeROC]        = average_loopback_;
-		delay_rms[chainIndex][activeDTC][activeROC]    = rms_loopback_;
-		delay_failed[chainIndex][activeDTC][activeROC] = failed_loopback_;
-
-		__FE_COUT__ << "LOOPBACK: link " << link[chainIndex]
-					<< " -> delay = " << delay[chainIndex][activeDTC][activeROC]
-					<< " ns,  rms = " << delay_rms[chainIndex][activeDTC][activeROC]
-					<< " failed = " << delay_failed[chainIndex][activeDTC][activeROC]
-					<< __E__;
-
-		chainIndex++;
-
-	}  // (chainIndex < numberOfChains)
-
-	indicateIterationWork();  // I still need to be touched
-	return;
-*/
 }  //end start()
 
 //==============================================================================
@@ -3601,8 +3263,21 @@ void CFOFrontEndInterface::CompileRunplan(__ARGS__)
 	const std::string SOURCE_BASE_PATH =
 	    std::string(__ENV__("OTS_SOURCE")) + "/mu2e-pcie-utils/cfoInterfaceLib/";
 
-	std::string inFileName =
-	    __GET_ARG_IN__("Input Text File", std::string, SOURCE_BASE_PATH + "Commands.txt");
+	std::string inFileName = __GET_ARG_IN__(
+	    "Input Text File (Offspill, Onspill, Default := cfoInterfaceLib/Commands.txt)",
+	    std::string,
+	    SOURCE_BASE_PATH + "Commands.txt");
+
+	// the keywords Offspill and Onspill select the premade run plans
+	std::string inFileNameLowerCase = inFileName;
+	for(auto& character : inFileNameLowerCase)
+		character = std::tolower(static_cast<unsigned char>(character));
+	if(inFileNameLowerCase == "offspill")
+		inFileName = SOURCE_BASE_PATH + "OffspillRunPlan.txt";
+	else if(inFileNameLowerCase == "onspill")
+		inFileName = SOURCE_BASE_PATH + "OnspillRunPlan.txt";
+	__FE_COUTV__(inFileName);
+
 	std::string outFileName = __GET_ARG_IN__(
 	    "Output Binary File", std::string, SOURCE_BASE_PATH + "Commands.bin");
 
@@ -3616,14 +3291,66 @@ void CFOFrontEndInterface::SetRunplan(__ARGS__)
 {
 	const std::string SOURCE_BASE_PATH =
 	    std::string(__ENV__("OTS_SOURCE")) + "/mu2e-pcie-utils/cfoInterfaceLib/";
-	__SET_ARG_OUT__(
-	    "Result",
-	    SetRunplan(__GET_ARG_IN__(
-	        "Binary Run File", std::string, SOURCE_BASE_PATH + "Commands.bin")));
+	const std::string binFilename = __GET_ARG_IN__(
+	    "Binary Run File", std::string, SOURCE_BASE_PATH + "Commands.bin");
+	const std::string runPlanAddressInput = __GET_ARG_IN__(
+	    "Run Plan Address (Offspill = 0, Onspill = 256, <address>, Default := Offspill)",
+	    std::string,
+	    "Offspill");
+	__FE_COUTV__(runPlanAddressInput);
+
+	const uint32_t DEFAULT_OFFSPILL_INSTRUCTION_ADDRESS = 0;
+	const uint32_t DEFAULT_ONSPILL_INSTRUCTION_ADDRESS  = 256;
+
+	std::string runPlanAddressLowerCase = runPlanAddressInput;
+	for(auto& character : runPlanAddressLowerCase)
+		character = std::tolower(static_cast<unsigned char>(character));
+
+	const bool isOffspillKeyword = runPlanAddressLowerCase == "offspill";
+	const bool isOnspillKeyword  = runPlanAddressLowerCase == "onspill";
+
+	uint32_t runPlanInstructionAddress = DEFAULT_OFFSPILL_INSTRUCTION_ADDRESS;
+	if(isOnspillKeyword)
+		runPlanInstructionAddress = DEFAULT_ONSPILL_INSTRUCTION_ADDRESS;
+	else if(!isOffspillKeyword &&
+	        !StringMacros::getNumber(runPlanAddressInput, runPlanInstructionAddress))
+	{
+		__FE_SS__ << "Invalid Run Plan Address '" << runPlanAddressInput
+		          << "'. Accepted values are 'Offspill' (instruction "
+		          << DEFAULT_OFFSPILL_INSTRUCTION_ADDRESS << "), 'Onspill' (instruction "
+		          << DEFAULT_ONSPILL_INSTRUCTION_ADDRESS
+		          << "), or an instruction address as a number (decimal or 0x hex)."
+		          << __E__;
+		__FE_SS_THROW__;
+	}
+
+	std::stringstream resultSs;
+	resultSs << SetRunplan(binFilename, runPlanInstructionAddress);
+
+	//the base address is set after the plan is in memory
+	if(isOffspillKeyword)
+	{
+		thisCFO_->SetRunPlanBeamOffBaseAddress(runPlanInstructionAddress);
+		resultSs << "Set Off-Spill run plan base address register to instruction "
+		         << runPlanInstructionAddress << __E__;
+	}
+	else if(isOnspillKeyword)
+	{
+		thisCFO_->SetRunPlanBeamOnBaseAddress(runPlanInstructionAddress);
+		resultSs << "Set On-Spill run plan base address register to instruction "
+		         << runPlanInstructionAddress << __E__;
+	}
+	else
+		resultSs << "The Off-Spill and On-Spill run plan base address registers were "
+		            "not changed."
+		         << __E__;
+
+	__SET_ARG_OUT__("Result", resultSs.str());
 }  //end SetRunplan()
 
 //========================================================================
-std::string CFOFrontEndInterface::SetRunplan(const std::string& binFilename)
+std::string CFOFrontEndInterface::SetRunplan(const std::string& binFilename,
+                                             uint32_t runPlanInstructionAddress /* = 0 */)
 {
 	//copying functionality of..
 	//	cfoUtil write_program -p /home/kwar/cfo/RunplanFiveDTCs1.bin --cfo 0
@@ -3647,8 +3374,23 @@ std::string CFOFrontEndInterface::SetRunplan(const std::string& binFilename)
 	std::fread(&binaryContents[0], 1, binaryContents.size(), fp);
 	std::fclose(fp);
 
-	//set the file in hardware:
-	thisCFO_->SetRunPlanData(binaryContents, 0 /* address */);
+	__FE_COUTV__(runPlanInstructionAddress);
+
+	//the run plan memory holds 1024 instructions of 8 bytes each
+	const uint64_t RUN_PLAN_MEMORY_INSTRUCTION_COUNT = 1024;
+	const uint64_t runPlanInstructionCount           = (binaryContents.size() + 7) / 8;
+	if(runPlanInstructionAddress + runPlanInstructionCount >
+	   RUN_PLAN_MEMORY_INSTRUCTION_COUNT)
+	{
+		__FE_SS__ << "The run plan does not fit in the CFO run plan memory: "
+		          << runPlanInstructionCount << " instructions loaded at instruction "
+		          << runPlanInstructionAddress << " would go past the end of the "
+		          << RUN_PLAN_MEMORY_INSTRUCTION_COUNT << " instruction memory." << __E__;
+		__FE_SS_THROW__;
+	}
+
+	//set the file in hardware (the memory write address counts 32-bit words, two per instruction):
+	thisCFO_->SetRunPlanData(binaryContents, 2 * runPlanInstructionAddress);
 
 	std::stringstream resultSs;
 
@@ -3656,7 +3398,8 @@ std::string CFOFrontEndInterface::SetRunplan(const std::string& binFilename)
 	resultSs << "\n\nInitialized CFO Linux Timestamp to "
 	         << StringMacros::getTimestampString(thisCFO_->ReadLinuxTimestamp()) << __E__
 	         << __E__;
-	resultSs << "Downloaded to CFO binary run plan file: " << binFilename << __E__;
+	resultSs << "Downloaded to CFO binary run plan file: " << binFilename
+	         << " at instruction address " << runPlanInstructionAddress << __E__;
 	return resultSs.str();
 }  //end SetRunplan()
 
@@ -4078,6 +3821,88 @@ void CFOFrontEndInterface::LaunchRunplan(__ARGS__)
 }  //end LaunchRunplan()
 
 //========================================================================
+void CFOFrontEndInterface::InstallDefaultOnAndOffSpillRunPlans(__ARGS__)
+{
+	__SET_ARG_OUT__("Result", installDefaultOnAndOffSpillRunPlans());
+}  //end InstallDefaultOnAndOffSpillRunPlans()
+
+//========================================================================
+// installDefaultOnAndOffSpillRunPlans
+//	Compiles the default Off-Spill and On-Spill run plan text files, loads them
+//	at their default places in the run plan memory (instruction 0 and 256),
+//	sets both base address registers and enables processing of both plans.
+//	Follows the sequence of writes in doc/CFO_RunPlan_Loading.md.
+//	Returns the compiler and load results as text (e.g. for display by a FE Macro).
+//	Processing of both plans is stopped by halt() / 'CFO Halt'.
+std::string CFOFrontEndInterface::installDefaultOnAndOffSpillRunPlans()
+{
+	__FE_COUT__ << "Install default On-Spill and Off-Spill CFO Run Plans" << __E__;
+
+	const uint32_t DEFAULT_OFFSPILL_INSTRUCTION_ADDRESS = 0;
+	const uint32_t DEFAULT_ONSPILL_INSTRUCTION_ADDRESS  = 256;
+
+	const std::string SOURCE_BASE_PATH =
+	    std::string(__ENV__("OTS_SOURCE")) + "/mu2e-pcie-utils/cfoInterfaceLib/";
+	const std::string OUTPUT_BASE_PATH = std::string(__ENV__("OTSDAQ_DATA")) + "/";
+
+	const std::string offspillTextFilename   = SOURCE_BASE_PATH + "OffspillRunPlan.txt";
+	const std::string onspillTextFilename    = SOURCE_BASE_PATH + "OnspillRunPlan.txt";
+	const std::string offspillBinaryFilename = OUTPUT_BASE_PATH + "Mu2eCFOOffspillRunPlan.bin";
+	const std::string onspillBinaryFilename  = OUTPUT_BASE_PATH + "Mu2eCFOOnspillRunPlan.bin";
+
+	std::stringstream resultSs;
+
+	//compile both plans before touching the hardware, so a compile error leaves the CFO as it was
+	{
+		CFOLib::CFO_Compiler offspillCompiler;
+		resultSs << "===== Off-Spill Run Plan compile of " << offspillTextFilename << "\n"
+		         << offspillCompiler.processFile(offspillTextFilename,
+		                                         offspillBinaryFilename)
+		         << __E__;
+	}
+	{
+		CFOLib::CFO_Compiler onspillCompiler;
+		resultSs << "\n===== On-Spill Run Plan compile of " << onspillTextFilename << "\n"
+		         << onspillCompiler.processFile(onspillTextFilename,
+		                                        onspillBinaryFilename)
+		         << __E__;
+	}
+
+	//stop processing; a running plan stops at its next REPEAT or GOTO, not instantly
+	thisCFO_->DisableBeamOnMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
+	thisCFO_->DisableBeamOffMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
+	usleep(10 * 1000);
+
+	//write the plans, then set the bases
+	resultSs << "\n===== Loading Off-Spill Run Plan"
+	         << SetRunplan(offspillBinaryFilename, DEFAULT_OFFSPILL_INSTRUCTION_ADDRESS);
+	resultSs << "\n===== Loading On-Spill Run Plan"
+	         << SetRunplan(onspillBinaryFilename, DEFAULT_ONSPILL_INSTRUCTION_ADDRESS);
+
+	thisCFO_->SetRunPlanBeamOffBaseAddress(DEFAULT_OFFSPILL_INSTRUCTION_ADDRESS);
+	thisCFO_->SetRunPlanBeamOnBaseAddress(DEFAULT_ONSPILL_INSTRUCTION_ADDRESS);
+	resultSs << "\nSet Off-Spill base address register to instruction "
+	         << DEFAULT_OFFSPILL_INSTRUCTION_ADDRESS
+	         << " and On-Spill base address register to instruction "
+	         << DEFAULT_ONSPILL_INSTRUCTION_ADDRESS << __E__;
+
+	//Soft Reset while both enables are still 0, for a clean start (also needed after an END)
+	thisCFO_->SoftReset();
+	usleep(10);
+
+	//the RF0 input is needed for the On-Spill plan to ever be chosen
+	thisCFO_->EnableAcceleratorRF0();
+
+	thisCFO_->EnableBeamOffMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
+	thisCFO_->EnableBeamOnMode(CFOLib::CFO_Link_ID::CFO_Link_ALL);
+
+	resultSs << "\nEnabled accelerator RF0 input, Off-Spill processing and On-Spill "
+	            "processing. Use 'CFO Halt' to stop both plans."
+	         << __E__;
+	return resultSs.str();
+}  //end installDefaultOnAndOffSpillRunPlans()
+
+//========================================================================
 void CFOFrontEndInterface::GetCFOCounters(__ARGS__)
 {
 	__FE_COUT__ << "Getting CFO Counters" << __E__;
@@ -4169,6 +3994,77 @@ uint64_t CFOFrontEndInterface::getDetachedBufferTestReceivedCount(
 }  //end getDetachedBufferTestReceivedCount()
 
 //==============================================================================
+// getHeartbeatSpillCountersStatus
+//	Returns text with the two CFO hardware counters of Heartbeat Packets sent
+//	while the firmware on-spill flag was high (0x9244) and low (0x9248).
+//	The counters are 24 bits and wrap (the on-spill one in about 28 s at the RF0 rate),
+//	so both are read twice a short time apart and the differences are shown as well.
+//	Note: the counters sort by the live RF0 flag, not by run plan, so around each switch
+//	2 or 3 events land in the other bin compared with the buffer test counts.
+//	A Soft Reset clears them.
+std::string CFOFrontEndInterface::getHeartbeatSpillCountersStatus()
+{
+	const uint32_t HEARTBEAT_COUNT_MASK              = 0xFFFFFF;  //counters are 24 bits
+	const uint32_t TIME_BETWEEN_READS_MS             = 100;
+
+	const uint32_t firstOnspillHeartbeatCount =
+	    thisCFO_->ReadTransmitOnSpillHeartbeatPacketCount();
+	const uint32_t firstOffspillHeartbeatCount =
+	    thisCFO_->ReadTransmitOffSpillHeartbeatPacketCount();
+	usleep(TIME_BETWEEN_READS_MS * 1000);
+	const uint32_t secondOnspillHeartbeatCount =
+	    thisCFO_->ReadTransmitOnSpillHeartbeatPacketCount();
+	const uint32_t secondOffspillHeartbeatCount =
+	    thisCFO_->ReadTransmitOffSpillHeartbeatPacketCount();
+
+	//the mask handles a counter that wrapped once between the two reads
+	const uint32_t onspillHeartbeatCountDifference =
+	    (secondOnspillHeartbeatCount - firstOnspillHeartbeatCount) & HEARTBEAT_COUNT_MASK;
+	const uint32_t offspillHeartbeatCountDifference =
+	    (secondOffspillHeartbeatCount - firstOffspillHeartbeatCount) &
+	    HEARTBEAT_COUNT_MASK;
+
+	std::stringstream statusSs;
+	statusSs << "Hardware Heartbeat Packet counters (24 bits, they wrap; sorted by the "
+	            "live on-spill flag; cleared by Soft Reset):"
+	         << __E__;
+	statusSs << "\t On-Spill  (0x9244): " << secondOnspillHeartbeatCount << " (0x"
+	         << std::hex << secondOnspillHeartbeatCount << std::dec << "), +"
+	         << onspillHeartbeatCountDifference << " in " << TIME_BETWEEN_READS_MS
+	         << " ms" << __E__;
+	statusSs << "\t Off-Spill (0x9248): " << secondOffspillHeartbeatCount << " (0x"
+	         << std::hex << secondOffspillHeartbeatCount << std::dec << "), +"
+	         << offspillHeartbeatCountDifference << " in " << TIME_BETWEEN_READS_MS
+	         << " ms" << __E__;
+	return statusSs.str();
+}  //end getHeartbeatSpillCountersStatus()
+
+//==============================================================================
+// spillPeriodDurationClocksToString
+//	Returns the duration of a spill period (given in 25 ns clocks) as text in s, ms or us.
+//	Enough digits are kept to tell apart two durations that differ by one clock.
+namespace
+{
+// most bars drawn for a spill period duration histogram; more distinct durations are grouped into this many bins
+const size_t MAXIMUM_SPILL_PERIOD_BARS = 40;
+
+std::string spillPeriodDurationClocksToString(double durationInClocks)
+{
+	const double durationInMicroseconds = durationInClocks * 0.025;
+
+	std::stringstream durationSs;
+	durationSs << std::setprecision(11);
+	if(durationInMicroseconds >= 1000 * 1000)
+		durationSs << durationInMicroseconds / 1000 / 1000 << " s";
+	else if(durationInMicroseconds >= 1000)
+		durationSs << durationInMicroseconds / 1000 << " ms";
+	else
+		durationSs << durationInMicroseconds << " us";
+	return durationSs.str();
+}  //end spillPeriodDurationClocksToString()
+}  // namespace
+
+//==============================================================================
 std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
     std::shared_ptr<CFOFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct)
 {
@@ -4186,6 +4082,148 @@ std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
 		statusSs << "Detached thread running:"
 		         << (threadStruct->running_ ? "true" : "false") << __E__;
 		statusSs << "Subevents count:" << threadStruct->subeventsCount_ << __E__;
+		statusSs << "Off-Spill events count:" << threadStruct->offspillEventsCount_ << __E__;
+		statusSs << "On-Spill events count:" << threadStruct->onspillEventsCount_ << __E__;
+		for(int i = 0; i < 2; ++i)
+		{
+			const auto& eventDurationCounts = (i == 1)
+			                                      ? threadStruct->onspillEventDurationCounts_
+			                                      : threadStruct->offspillEventDurationCounts_;
+			const uint64_t totalEventsCount = (i == 1) ? threadStruct->onspillEventsCount_.load()
+			                                           : threadStruct->offspillEventsCount_.load();
+
+			//list the widths with the most events first
+			std::vector<std::pair<uint16_t, uint64_t>> eventDurationCountsByCount(
+			    eventDurationCounts.begin(), eventDurationCounts.end());
+			std::stable_sort(
+			    eventDurationCountsByCount.begin(),
+			    eventDurationCountsByCount.end(),
+			    [](const std::pair<uint16_t, uint64_t>& leftPair,
+			       const std::pair<uint16_t, uint64_t>& rightPair) {
+				    return leftPair.second > rightPair.second;
+			    });
+
+			const size_t MAX_SHOWN_WIDTHS_COUNT = 10;
+			const size_t shownWidthsCount =
+			    std::min(MAX_SHOWN_WIDTHS_COUNT, eventDurationCountsByCount.size());
+
+			statusSs << ((i == 1) ? "On-Spill" : "Off-Spill") << " event widths: "
+			         << totalEventsCount << " total events in "
+			         << eventDurationCounts.size() << " bins";
+			if(eventDurationCountsByCount.size() > shownWidthsCount)
+				statusSs << " (showing the " << shownWidthsCount
+				         << " bins with the most events)";
+			statusSs << __E__;
+
+			uint64_t shownEventsCount = 0;
+			for(size_t j = 0; j < shownWidthsCount; ++j)
+			{
+				const auto& eventDurationCountPair = eventDurationCountsByCount[j];
+				shownEventsCount += eventDurationCountPair.second;
+				statusSs << "\t " << eventDurationCountPair.first * 0.025 << " us ("
+				         << eventDurationCountPair.first
+				         << " clocks): " << eventDurationCountPair.second << " events";
+				if(totalEventsCount)
+					statusSs << " (" << 100.0 * eventDurationCountPair.second / totalEventsCount
+					         << "%)";
+				statusSs << __E__;
+			}
+			if(eventDurationCountsByCount.size() > shownWidthsCount)
+				statusSs << "\t all other "
+				         << eventDurationCountsByCount.size() - shownWidthsCount
+				         << " bins: " << totalEventsCount - shownEventsCount << " events"
+				         << __E__;
+		}
+
+		for(int i = 0; i < 3; ++i)
+		{
+			const auto& transitionDurationCounts =
+			    (i == 0) ? threadStruct->lastOffspillBeforeOnspillDurationCounts_
+			    : (i == 1) ? threadStruct->lastOnspillBeforeOffspillDurationCounts_
+			               : threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_;
+			const std::string transitionLabel =
+			    (i == 0) ? "Last Off-Spill before On-Spill"
+			    : (i == 1) ? "Last On-Spill before Off-Spill"
+			               : "2nd to last On-Spill before Off-Spill";
+
+			uint64_t totalTransitionCount = 0;
+			for(const auto& durationCountPair : transitionDurationCounts)
+				totalTransitionCount += durationCountPair.second;
+
+			std::vector<std::pair<uint16_t, uint64_t>> transitionDurationCountsByCount(
+			    transitionDurationCounts.begin(), transitionDurationCounts.end());
+			std::stable_sort(
+			    transitionDurationCountsByCount.begin(),
+			    transitionDurationCountsByCount.end(),
+			    [](const std::pair<uint16_t, uint64_t>& leftPair,
+			       const std::pair<uint16_t, uint64_t>& rightPair) {
+				    return leftPair.second > rightPair.second;
+			    });
+
+			const size_t MAX_SHOWN_WIDTHS_COUNT = 10;
+			const size_t shownWidthsCount =
+			    std::min(MAX_SHOWN_WIDTHS_COUNT, transitionDurationCountsByCount.size());
+
+			statusSs << transitionLabel << " event widths: "
+			         << totalTransitionCount << " events in "
+			         << transitionDurationCounts.size() << " bins";
+			if(transitionDurationCountsByCount.size() > shownWidthsCount)
+				statusSs << " (showing the " << shownWidthsCount
+				         << " bins with the most events)";
+			statusSs << __E__;
+
+			uint64_t shownEventsCount = 0;
+			for(size_t j = 0; j < shownWidthsCount; ++j)
+			{
+				const auto& durationCountPair = transitionDurationCountsByCount[j];
+				shownEventsCount += durationCountPair.second;
+				statusSs << "\t " << durationCountPair.first * 0.025 << " us ("
+				         << durationCountPair.first
+				         << " clocks): " << durationCountPair.second << " events";
+				if(totalTransitionCount)
+					statusSs << " (" << 100.0 * durationCountPair.second / totalTransitionCount
+					         << "%)";
+				statusSs << __E__;
+			}
+			if(transitionDurationCountsByCount.size() > shownWidthsCount)
+				statusSs << "\t all other "
+				         << transitionDurationCountsByCount.size() - shownWidthsCount
+				         << " bins: " << totalTransitionCount - shownEventsCount << " events"
+				         << __E__;
+		}
+
+		for(int i = 0; i < 2; ++i)
+		{
+			const auto& spillPeriodDurationCounts =
+			    (i == 1) ? threadStruct->onspillPeriodDurationCounts_
+			             : threadStruct->offspillPeriodDurationCounts_;
+
+			uint64_t totalSpillPeriodsCount = 0;
+			double   totalSpillPeriodClocks = 0;
+			for(const auto& durationCountPair : spillPeriodDurationCounts)
+			{
+				totalSpillPeriodsCount += durationCountPair.second;
+				totalSpillPeriodClocks +=
+				    (double)durationCountPair.first * durationCountPair.second;
+			}
+
+			statusSs << ((i == 1) ? "On-Spill" : "Off-Spill")
+			         << " period durations: " << totalSpillPeriodsCount
+			         << " events in "
+			         << std::min(spillPeriodDurationCounts.size(), MAXIMUM_SPILL_PERIOD_BARS)
+			         << " bins";
+			if(totalSpillPeriodsCount)
+				statusSs << ", shortest "
+				         << spillPeriodDurationClocksToString(
+				                spillPeriodDurationCounts.begin()->first)
+				         << ", longest "
+				         << spillPeriodDurationClocksToString(
+				                spillPeriodDurationCounts.rbegin()->first)
+				         << ", average "
+				         << spillPeriodDurationClocksToString(totalSpillPeriodClocks /
+				                                              totalSpillPeriodsCount);
+			statusSs << __E__;
+		}
 
 		statusSs << "Total CFO Subevent Bytes Transferred: "
 		         << threadStruct->totalSubeventBytesTransferred_ << " bytes" << __E__;
@@ -4260,6 +4298,266 @@ std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
 }  //end getDetachedBufferTestStatus()
 
 //==============================================================================
+// getDetachedBufferTestEventWidthPlot
+//	Returns a Plotly plot (JSON) of the event widths seen in the CFO event records
+//	in 3 rows: row 1 is all Off-Spill and On-Spill events, row 2 is the last
+//	event of each type before a spill transition and the 2nd to last On-Spill event
+//	before Off-Spill, row 3 is the duration of each entire Off-Spill period and each
+//	entire On-Spill period.
+std::string CFOFrontEndInterface::getDetachedBufferTestEventWidthPlot(
+    std::shared_ptr<CFOFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct)
+{
+	const double EVENT_DURATION_CLOCK_PERIOD_US = 0.025;
+	const size_t MAXIMUM_BARS_FOR_LEVEL_TEXT = 12;
+
+	std::stringstream plotlySs, layoutAxesSs, panelTitlesSs;
+	plotlySs << R"({"data":[)";
+
+	// rows can have different numbers of panels, so each panel is placed explicitly
+	//	(instead of with a Plotly grid): returns the "domain" and "anchor" of the x axis
+	//	and the y axis of a panel
+	const int    PLOT_ROWS_COUNT       = 3;
+	const double PANEL_HORIZONTAL_GAP  = 0.15;  // fraction of the panel cell width
+	// the bar labels are drawn below each panel, so most of the space between rows is left
+	//	below the panel
+	const double PANEL_BOTTOM_GAP      = 0.35;  // fraction of the panel cell height
+	const double PANEL_TOP_GAP         = 0.05;  // fraction of the panel cell height
+	auto panelAxesPosition = [&](int                rowIndex,
+	                             int                columnIndex,
+	                             int                columnsCount,
+	                             const std::string& axisSuffix) {
+		const double cellWidth  = 1.0 / columnsCount;
+		const double cellHeight = 1.0 / PLOT_ROWS_COUNT;
+		const double cellBottom = 1.0 - (rowIndex + 1) * cellHeight;  // row 0 is the top row
+		std::stringstream xAxisPositionSs, yAxisPositionSs;
+		xAxisPositionSs << R"("domain":[)"
+		                << columnIndex * cellWidth + cellWidth * PANEL_HORIZONTAL_GAP / 2 << ","
+		                << (columnIndex + 1) * cellWidth - cellWidth * PANEL_HORIZONTAL_GAP / 2
+		                << R"(],"anchor":"y)" << axisSuffix << R"(",)";
+		yAxisPositionSs << R"("domain":[)" << cellBottom + cellHeight * PANEL_BOTTOM_GAP
+		                << "," << cellBottom + cellHeight - cellHeight * PANEL_TOP_GAP
+		                << R"(],"anchor":"x)" << axisSuffix << R"(",)";
+		return std::make_pair(xAxisPositionSs.str(), yAxisPositionSs.str());
+	};
+	// the panel title is drawn inside the top of the panel, so that no text other than the bar
+	//	labels is between panels (the event and bin counts are in the status text)
+	auto addPanelTitle = [&](int                rowIndex,
+	                         int                columnIndex,
+	                         int                columnsCount,
+	                         const std::string& panelTitle) {
+		const double cellWidth  = 1.0 / columnsCount;
+		const double cellHeight = 1.0 / PLOT_ROWS_COUNT;
+		const double cellBottom = 1.0 - (rowIndex + 1) * cellHeight;  // row 0 is the top row
+		if(!panelTitlesSs.str().empty())
+			panelTitlesSs << ",";
+		panelTitlesSs << R"({"text":")" << panelTitle
+		              << R"(","xref":"paper","yref":"paper","x":)"
+		              << (columnIndex + 0.5) * cellWidth << R"(,"y":)"
+		              << cellBottom + cellHeight - cellHeight * PANEL_TOP_GAP
+		              << R"(,"xanchor":"center","yanchor":"top","showarrow":false})";
+	};
+
+	// start mutex scope
+	{
+		std::lock_guard<std::mutex> lock(threadStruct->lock_);
+
+		struct PanelDescriptor
+		{
+			const std::map<uint16_t, uint64_t>& durationCounts;
+			std::string                         panelTitle;
+			uint64_t                            totalEventsCount;
+			std::string                         axisSuffix;
+			int                                 rowIndex;
+			int                                 columnIndex;
+			int                                 columnsCount;
+		};
+
+		uint64_t lastOffspillBeforeOnspillTotal = 0;
+		for(const auto& durationCountPair : threadStruct->lastOffspillBeforeOnspillDurationCounts_)
+			lastOffspillBeforeOnspillTotal += durationCountPair.second;
+
+		uint64_t lastOnspillBeforeOffspillTotal = 0;
+		for(const auto& durationCountPair : threadStruct->lastOnspillBeforeOffspillDurationCounts_)
+			lastOnspillBeforeOffspillTotal += durationCountPair.second;
+
+		uint64_t secondToLastOnspillBeforeOffspillTotal = 0;
+		for(const auto& durationCountPair : threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_)
+			secondToLastOnspillBeforeOffspillTotal += durationCountPair.second;
+
+		const PanelDescriptor panelDescriptors[] = {
+		    {threadStruct->offspillEventDurationCounts_,
+		     "Off-Spill",
+		     threadStruct->offspillEventsCount_.load(),
+		     "", 0, 0, 2},
+		    {threadStruct->onspillEventDurationCounts_,
+		     "On-Spill",
+		     threadStruct->onspillEventsCount_.load(),
+		     "2", 0, 1, 2},
+		    {threadStruct->lastOffspillBeforeOnspillDurationCounts_,
+		     "Last Off-Spill before On-Spill",
+		     lastOffspillBeforeOnspillTotal,
+		     "3", 1, 0, 3},
+		    {threadStruct->lastOnspillBeforeOffspillDurationCounts_,
+		     "Last On-Spill before Off-Spill",
+		     lastOnspillBeforeOffspillTotal,
+		     "4", 1, 1, 3},
+		    {threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_,
+		     "2nd to last On-Spill before Off-Spill",
+		     secondToLastOnspillBeforeOffspillTotal,
+		     "7", 1, 2, 3},
+		};
+
+		for(int panelIndex = 0; panelIndex < 5; ++panelIndex)
+		{
+			const auto& panel = panelDescriptors[panelIndex];
+
+			std::stringstream eventClocksSs, eventWidthsSs, eventCountsSs;
+			bool              firstPoint        = true;
+			uint64_t          maximumEventCount = 1;
+			for(const auto& eventDurationCountPair : panel.durationCounts)
+			{
+				if(!firstPoint)
+				{
+					eventClocksSs << ",";
+					eventWidthsSs << ",";
+					eventCountsSs << ",";
+				}
+				firstPoint = false;
+				const double eventWidthInMicroseconds =
+				    eventDurationCountPair.first * EVENT_DURATION_CLOCK_PERIOD_US;
+				if(eventWidthInMicroseconds < 1)
+					eventWidthsSs << "\"" << eventWidthInMicroseconds * 1000 << " ns\"";
+				else
+					eventWidthsSs << "\"" << eventWidthInMicroseconds << " us\"";
+				eventClocksSs << eventDurationCountPair.first;
+				eventCountsSs << eventDurationCountPair.second;
+				if(eventDurationCountPair.second > maximumEventCount)
+					maximumEventCount = eventDurationCountPair.second;
+			}
+
+			const double countAxisMinimum = -0.5;
+			const double countAxisMaximum =
+			    1.25 * std::log10((double)maximumEventCount) + 1.5;
+
+			if(panelIndex > 0)
+				plotlySs << ",";
+			plotlySs << R"({"x":[)" << eventWidthsSs.str() << R"(],"y":[)"
+			         << eventCountsSs.str() << R"(],"customdata":[)"
+			         << eventClocksSs.str() << R"(],"text":[)" << eventCountsSs.str()
+			         << R"(],"textposition":"outside","cliponaxis":false,"textangle":)"
+			         << (panel.durationCounts.size() > MAXIMUM_BARS_FOR_LEVEL_TEXT ? -90 : 0)
+			         << R"(,"hovertemplate":"%{x} (%{customdata} clocks)<br>%{y} events<extra></extra>",)"
+			         << R"("type":"bar","showlegend":false,"name":")" << panel.panelTitle << "\"";
+			if(!panel.axisSuffix.empty())
+				plotlySs << R"(,"xaxis":"x)" << panel.axisSuffix
+				         << R"(","yaxis":"y)" << panel.axisSuffix << "\"";
+			plotlySs << "}";
+
+			addPanelTitle(
+			    panel.rowIndex, panel.columnIndex, panel.columnsCount, panel.panelTitle);
+			const auto panelPosition = panelAxesPosition(
+			    panel.rowIndex, panel.columnIndex, panel.columnsCount, panel.axisSuffix);
+			layoutAxesSs << R"("xaxis)" << panel.axisSuffix << R"(":{)" << panelPosition.first
+			             << R"("type":"category","tickangle":-90},"yaxis)" << panel.axisSuffix
+			             << R"(":{)"
+			             << panelPosition.second
+			             << R"("type":"log","range":[)" << countAxisMinimum << ","
+			             << countAxisMaximum << R"(],"title":{"text":"Events"}},)";
+		}
+
+		// row 3: duration of each entire Off-Spill period and each entire On-Spill period
+		for(int spillPeriodPanelIndex = 0; spillPeriodPanelIndex < 2;
+		    ++spillPeriodPanelIndex)
+		{
+			const bool  isOnSpillPanel = (spillPeriodPanelIndex == 1);
+			const auto& spillPeriodDurationCounts =
+			    isOnSpillPanel ? threadStruct->onspillPeriodDurationCounts_
+			                   : threadStruct->offspillPeriodDurationCounts_;
+			const std::string spillPeriodPanelTitle =
+			    isOnSpillPanel ? "On-Spill period duration" : "Off-Spill period duration";
+			const std::string spillPeriodAxisSuffix = isOnSpillPanel ? "6" : "5";
+
+			// one bar per distinct duration, unless there are too many distinct durations,
+			//	then group the durations into equal width bins from shortest to longest
+			std::vector<std::pair<double /* duration in clocks */, uint64_t /* periods count */>>
+			    spillPeriodBars;
+			if(spillPeriodDurationCounts.size() <= MAXIMUM_SPILL_PERIOD_BARS)
+			{
+				for(const auto& durationCountPair : spillPeriodDurationCounts)
+					spillPeriodBars.push_back(std::make_pair(
+					    (double)durationCountPair.first, durationCountPair.second));
+			}
+			else
+			{
+				const uint64_t shortestDurationClocks =
+				    spillPeriodDurationCounts.begin()->first;
+				const uint64_t longestDurationClocks =
+				    spillPeriodDurationCounts.rbegin()->first;
+				const uint64_t binWidthClocks =
+				    (longestDurationClocks - shortestDurationClocks) /
+				        MAXIMUM_SPILL_PERIOD_BARS +
+				    1;
+				for(size_t i = 0; i < MAXIMUM_SPILL_PERIOD_BARS; ++i)
+					spillPeriodBars.push_back(std::make_pair(
+					    shortestDurationClocks + (i + 0.5) * binWidthClocks,
+					    (uint64_t)0));  // labeled by the center of the bin
+				for(const auto& durationCountPair : spillPeriodDurationCounts)
+					spillPeriodBars[(durationCountPair.first - shortestDurationClocks) /
+					                binWidthClocks]
+					    .second += durationCountPair.second;
+			}
+
+			std::stringstream spillPeriodDurationsSs, spillPeriodCountsSs;
+			uint64_t          maximumSpillPeriodsCount = 1;
+			for(size_t i = 0; i < spillPeriodBars.size(); ++i)
+			{
+				if(i)
+				{
+					spillPeriodDurationsSs << ",";
+					spillPeriodCountsSs << ",";
+				}
+				spillPeriodDurationsSs
+				    << "\"" << spillPeriodDurationClocksToString(spillPeriodBars[i].first)
+				    << "\"";
+				spillPeriodCountsSs << spillPeriodBars[i].second;
+				if(spillPeriodBars[i].second > maximumSpillPeriodsCount)
+					maximumSpillPeriodsCount = spillPeriodBars[i].second;
+			}
+
+			plotlySs << R"(,{"x":[)" << spillPeriodDurationsSs.str() << R"(],"y":[)"
+			         << spillPeriodCountsSs.str() << R"(],"text":[)"
+			         << spillPeriodCountsSs.str()
+			         << R"(],"textposition":"outside","cliponaxis":false,"textangle":)"
+			         << (spillPeriodBars.size() > MAXIMUM_BARS_FOR_LEVEL_TEXT ? -90 : 0)
+			         << R"(,"hovertemplate":"%{x}<br>%{y} periods<extra></extra>",)"
+			         << R"("type":"bar","showlegend":false,"name":")"
+			         << spillPeriodPanelTitle << R"(","xaxis":"x)" << spillPeriodAxisSuffix
+			         << R"(","yaxis":"y)" << spillPeriodAxisSuffix << "\"}";
+
+			addPanelTitle(2, spillPeriodPanelIndex, 2, spillPeriodPanelTitle);
+			const auto spillPeriodPanelPosition = panelAxesPosition(
+			    2, spillPeriodPanelIndex, 2, spillPeriodAxisSuffix);
+			layoutAxesSs << R"("xaxis)" << spillPeriodAxisSuffix << R"(":{)"
+			             << spillPeriodPanelPosition.first
+			             << R"("type":"category","tickangle":-90},"yaxis)"
+			             << spillPeriodAxisSuffix << R"(":{)"
+			             << spillPeriodPanelPosition.second
+			             << R"("type":"log","range":[-0.5,)"
+			             << 1.25 * std::log10((double)maximumSpillPeriodsCount) + 1.5
+			             << R"(],"title":{"text":"Periods"}},)";
+		}
+	}
+
+	plotlySs << R"(],"layout":{)"
+	         << R"("title":{"text":"CFO Event Widths and Spill Period Durations Seen by Buffer Test"},)"
+	         << layoutAxesSs.str() << R"("annotations":[)" << panelTitlesSs.str()
+	         << R"(],"bargap":0.3,"autosize":true,)"
+	         << R"("margin":{"t":80,"b":100}}})";
+
+	return plotlySs.str();
+}  //end getDetachedBufferTestEventWidthPlot()
+
+//==============================================================================
 void CFOFrontEndInterface::handleDetachedSubevent(
     const CFOLib::CFO_Event&                                              subeventIn,
     std::shared_ptr<CFOFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct)
@@ -4309,6 +4607,69 @@ void CFOFrontEndInterface::handleDetachedSubevent(
 
 	threadStruct->totalSubeventBytesTransferred_ +=
 	    sizeof(CFOLib::CFO_EventRecord);  //for subevent header
+
+	// count Off-Spill and On-Spill events, and histogram the event width from the CFO event record
+	if(subevent->GetEventMode().isOnSpillFlagSet())
+	{
+		++(threadStruct->onspillEventsCount_);
+		++(threadStruct->onspillEventDurationCounts_[
+		    subevent->GetEventRecord().event_duration]);
+	}
+	else
+	{
+		++(threadStruct->offspillEventsCount_);
+		++(threadStruct->offspillEventDurationCounts_[
+		    subevent->GetEventRecord().event_duration]);
+	}
+
+	{
+		const bool    currentEventIsOnSpill = subevent->GetEventMode().isOnSpillFlagSet();
+		const uint16_t currentEventDuration  = subevent->GetEventRecord().event_duration;
+
+		if(threadStruct->previousEventIsValid_ &&
+		   currentEventIsOnSpill != threadStruct->previousEventWasOnSpill_)
+		{
+			if(currentEventIsOnSpill)
+				++(threadStruct->lastOffspillBeforeOnspillDurationCounts_[
+				    threadStruct->previousEventDuration_]);
+			else
+			{
+				++(threadStruct->lastOnspillBeforeOffspillDurationCounts_[
+				    threadStruct->previousEventDuration_]);
+
+				// the event before the last On-Spill event, if it was also On-Spill
+				if(threadStruct->eventBeforePreviousIsValid_ &&
+				   threadStruct->eventBeforePreviousWasOnSpill_)
+					++(threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_[
+					    threadStruct->eventBeforePreviousDuration_]);
+			}
+
+			// the spill period that just ended is complete, so add its duration to the histogram
+			//	(unless the test joined it part way through, then its duration is not known)
+			if(threadStruct->currentSpillPeriodStartWasSeen_)
+			{
+				if(threadStruct->previousEventWasOnSpill_)
+					++(threadStruct->onspillPeriodDurationCounts_[
+					    threadStruct->currentSpillPeriodDurationClocks_]);
+				else
+					++(threadStruct->offspillPeriodDurationCounts_[
+					    threadStruct->currentSpillPeriodDurationClocks_]);
+			}
+			threadStruct->currentSpillPeriodStartWasSeen_   = true;
+			threadStruct->currentSpillPeriodDurationClocks_ = 0;
+		}
+
+		// add this event to the duration of the current spill period
+		threadStruct->currentSpillPeriodDurationClocks_ += currentEventDuration;
+
+		threadStruct->eventBeforePreviousIsValid_    = threadStruct->previousEventIsValid_;
+		threadStruct->eventBeforePreviousWasOnSpill_ = threadStruct->previousEventWasOnSpill_;
+		threadStruct->eventBeforePreviousDuration_   = threadStruct->previousEventDuration_;
+
+		threadStruct->previousEventIsValid_    = true;
+		threadStruct->previousEventWasOnSpill_ = currentEventIsOnSpill;
+		threadStruct->previousEventDuration_   = currentEventDuration;
+	}
 
 #if 1
 	//save binary CFO event record data
@@ -4383,6 +4744,19 @@ try
 		threadStruct->subeventsCount_           = 0;
 		threadStruct->mismatchedEventTagsCount_ = 0;
 		threadStruct->mismatchedEventTagJumps_.clear();
+		threadStruct->offspillEventsCount_ = 0;
+		threadStruct->onspillEventsCount_ = 0;
+		threadStruct->offspillEventDurationCounts_.clear();
+		threadStruct->onspillEventDurationCounts_.clear();
+		threadStruct->previousEventIsValid_ = false;
+		threadStruct->eventBeforePreviousIsValid_ = false;
+		threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_.clear();
+		threadStruct->currentSpillPeriodDurationClocks_ = 0;
+		threadStruct->currentSpillPeriodStartWasSeen_ = false;
+		threadStruct->offspillPeriodDurationCounts_.clear();
+		threadStruct->onspillPeriodDurationCounts_.clear();
+		threadStruct->lastOffspillBeforeOnspillDurationCounts_.clear();
+		threadStruct->lastOnspillBeforeOffspillDurationCounts_.clear();
 		threadStruct->totalSubeventBytesTransferred_ = 0;
 		threadStruct->transferStartTime_ = std::chrono::steady_clock::time_point::min();
 		threadStruct->transferEndTime_   = std::chrono::steady_clock::time_point::min();
@@ -4448,6 +4822,19 @@ try
 						threadStruct->subeventsCount_           = 0;
 						threadStruct->mismatchedEventTagsCount_ = 0;
 						threadStruct->mismatchedEventTagJumps_.clear();
+						threadStruct->offspillEventsCount_ = 0;
+						threadStruct->onspillEventsCount_ = 0;
+						threadStruct->offspillEventDurationCounts_.clear();
+						threadStruct->onspillEventDurationCounts_.clear();
+						threadStruct->previousEventIsValid_ = false;
+		threadStruct->eventBeforePreviousIsValid_ = false;
+		threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_.clear();
+		threadStruct->currentSpillPeriodDurationClocks_ = 0;
+		threadStruct->currentSpillPeriodStartWasSeen_ = false;
+		threadStruct->offspillPeriodDurationCounts_.clear();
+		threadStruct->onspillPeriodDurationCounts_.clear();
+						threadStruct->lastOffspillBeforeOnspillDurationCounts_.clear();
+						threadStruct->lastOnspillBeforeOffspillDurationCounts_.clear();
 						threadStruct->totalSubeventBytesTransferred_ = 0;
 						threadStruct->transferStartTime_ =
 						    std::chrono::steady_clock::time_point::min();
@@ -6948,6 +7335,8 @@ void CFOFrontEndInterface::BufferTest_detached(__ARGS__)
 		outSs << "Unrecognized command '" << command
 		      << "' found. Valid commands are Start, Status, and Halt." << __E__;
 	}
+	outSs << getHeartbeatSpillCountersStatus();
+
 	// outSs << "Active Event Match: " << (activeMatch?"true":"false") << __E__;
 	// outSs << "Event Duration: " << cfoDelay << " = " << cfoDelay*25 << " ns" << __E__;
 	// outSs << "Reading back: " << (doNotReadBack?"false":"true") << __E__;
@@ -6965,6 +7354,12 @@ void CFOFrontEndInterface::BufferTest_detached(__ARGS__)
 	std::cout << "Untruncated output: \n" << outSs.str() << __E__;  //for no truncation!
 
 	__SET_ARG_OUT__("Result", outSs.str());
+	if(!bufferTestThreadStruct_)  //initialize shared pointer for first time (e.g., unrecognized command)
+		bufferTestThreadStruct_ =
+		    std::make_shared<CFOFrontEndInterface::DetachedBufferTestThreadStruct>();
+	__SET_ARG_OUT__(PLOTLY_PLOT,
+	                CFOFrontEndInterface::getDetachedBufferTestEventWidthPlot(
+	                    bufferTestThreadStruct_));
 }  //end BufferTest_detached()
 
 //========================================================================

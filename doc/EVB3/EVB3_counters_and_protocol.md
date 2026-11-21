@@ -298,8 +298,8 @@ but EVB3 never sees it as one record: the AXIMux splits any aggregate larger
 than `DMA_max_packetcount = DMA_max_size[15:4] - 1` packets into several DMA
 transfers, each starting with its own count quadword. A record is therefore at
 most `DMA_max_size - 8` bytes (<= 65,528 B = 8191 words with the 16-bit
-register), which is exactly what EVB3's `[15:3]` word fields (local peek, DDR
-pad-strip, count validation) and software's 16-bit mask cover. Records of one
+register), which is exactly what EVB3's `[15:3]` word fields (local peek; the
+DDR path itself no longer parses records since 2026-11-04) and software's 16-bit mask cover. Records of one
 subevent are consecutive in the same source stream. The 10GbE
 TX path fragments this into ethernet packets of at most `MAX_PACKET_BYTES`
 bytes each (1492 = 186 words on every build except 0xd6092888, which alone used
@@ -350,11 +350,24 @@ its words" was not the next packet's address whenever a pad fell inside the pack
 computed its `last_good` from exactly that sum, asked for a resend 13 words short of the real gap,
 and the sender re-sent 9 words the receiver already had (sim run 22/23, DTC_5 -> DTC_0). A count
 of words sent has no such holes: `pkt_pos + words` IS the next packet's `pkt_pos`, on both sides,
-with no tolerance. The sender keeps a small per-destination table mapping each packet's stream
-offset to its DDR address, which is what a rewind needs.
+with no tolerance.
+
+**Position == ring index (2026-11-04):** the sender's DDR ring per destination holds ONLY the stream words,
+contiguous (a record that ends mid-block is written with the DDR data mask, no pad words), so the stream
+offset IS the word's index in that ring (4 MB = 2^19 words; the 20-bit offset carries one lap bit). No table
+maps offsets to addresses any more and the read side parses nothing: a rewind is "read index := `ack_pos`",
+the ring frees up to `ack_pos` directly, occupancy is write index minus read index. Firmware note:
+`EVB_ddr_pad_free_ring_2026-11-04.md`.
 
 **Receiver:** per source it keeps `last_good` = the stream offset of the first word it has NOT
-stored, in order (= the last stored packet's `pkt_pos` + its words). On a sequence gap it enters
+stored, in order (= the last stored packet's `pkt_pos` + its words). Since 2026-11-05 a DATA packet whose
+`pkt_pos` is AHEAD of `last_good` is treated as a gap too (positions are exact, so this is a sender-side skip):
+nothing stored, discard entered, resend requested from `last_good`; an idle ahead of `last_good` requests the
+same instead of moving `last_good` up to it (register 0x9270 counts both). A DATA packet whose `pkt_pos` is
+BEHIND `last_good` is a repeat of words already stored (the sender re-read words it had sent): it is not
+stored, `last_good` stays, and register 0x9274 counts it -- on both frame alignments since 2026-11-05 (until
+then only one alignment refused it; the other stored it again and moved `last_good` back, so every later
+record boundary at the host was displaced by the repeated words). On a sequence gap it enters
 DISCARD for that source, starting with the very frame that revealed the gap (its payload is out of
 order too, and the resend will bring it again): frames from it are still parsed, sized, FCS-checked
 and counted, but their payload is not stored and not credited as drained. One exception
@@ -362,25 +375,42 @@ and counted, but their payload is not stored and not credited as drained. One ex
 number says -- the lost frame was an idle, which carries no words -- so it is stored, the sequence
 chain re-seeds from it, and no resend is requested (the gap still counts in RxMissingPktCnt and
 0x9370 bit 1).
-Every header it sends to that peer (data or idle, every window) carries `ack_pos = last_good`
+
+**Committed position (2026-11-09, bitfiles after 0xd6110995).** A frame's words wait in a holding memory
+until the frame's end has been checked (end word, length, checksum). `last_good` above moves at a frame's
+HEADER, before that check, so it is only the receiver's guess of what comes next. The receiver now also
+keeps, per source, the committed position = the offset of the first word it has NOT handed on, and it moves
+only when a frame is handed on at its end. A held frame is handed on only if it ended well AND its
+`pkt_pos` equals the committed position. Anything else is thrown away, `last_good` is set back to the
+committed position, and a resend is asked from there. This covers the case the header checks cannot:
+frame A is dropped at its end while frame B from the same sender is already coming in right behind it
+(B's header was judged "in order" before A's end was known). Before this rule B was stored, and stored
+again when the resend brought A and B: one whole frame too many at the host, no error bit (8-node run14).
+Register 0x9264 `[23:16]` counts the frames refused this way.
+
+Every header it sends to that peer (data or idle, every window) carries `ack_pos` = the committed position
+(until 2026-11-09: `last_good`, which could acknowledge a frame that was then dropped at its end)
 and `resend_req = 1` until the answer arrives: the first packet whose `pkt_pos` equals
-`last_good`. A data packet there is the resend; it and everything after it is stored normally. An
-idle there means the lost frame was itself an idle, or nothing had been sent past `last_good`
-yet -- nothing is missing. Nothing else clears discard: not a packet before or after that
-position (a stale duplicate or a later one; the answer is still coming), not a timeout.
+the committed position (the same value it is sending as `ack_pos`). A data packet there is the
+resend; it and everything after it is stored normally. An idle there means the lost frame was
+itself an idle, or nothing had been sent past that position yet -- nothing is missing. Nothing
+else clears discard: not a packet before or after that position (a stale duplicate or a later
+one; it is dropped and the receiver keeps asking), not a timeout. (Until 2026-11-09 the test was
+against `last_good`, which the header of a frame let in just before a failure could leave one frame
+ahead; the next frame then matched it and the request was dropped for a frame time.)
 
 **Idle packet position (sender rule):** an idle carries the offset the next data word will have
 = the sender's running count for that destination. After a rewind the count stands at the
 receiver's `ack_pos`, so the first header out of that window -- data or idle -- is the answer.
 
 
-**Sender:** every data packet is tagged with its stream offset, and the sender records the DDR
-address where each packet started. The ring keeps sent-but-not-yet-acknowledged bursts
+**Sender:** every data packet is tagged with its stream offset, which is also the ring index of its first
+word (the staging side-band carries it with every word; a disagreement with the running count sets 0x9370
+bit 8, TX_POS_MISMATCH). The ring keeps sent-but-not-yet-acknowledged bursts
 (hold-back: `sent_ptr` trails `read_ptr`; the write side may not reuse a burst until the peer's
 `ack_pos` has passed it). Once per rotation, just before it opens a destination's window, the
-sender reads that peer's feedback: it frees the ring up to the burst where the packet at
-`ack_pos` starts, and if `resend_req` is set and words were sent past `ack_pos`, it rewinds its
-read pointer to that packet's DDR address, drops what it had staged for that destination, sets
+sender reads that peer's feedback: it frees the ring up to `ack_pos`, and if `resend_req` is set and words were sent past `ack_pos`, it sets
+its read index back to `ack_pos`, drops what it had staged for that destination, sets
 its count back to `ack_pos`, and re-sends from there as the FIRST frame of that window. If
 nothing was sent past `ack_pos` there is nothing to rewind: the next header carries
 `pkt_pos == ack_pos` and clears the receiver. A request is served once per
