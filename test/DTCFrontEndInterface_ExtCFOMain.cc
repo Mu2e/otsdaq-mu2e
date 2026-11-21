@@ -57,10 +57,16 @@ try
 	////////////////////////////////////////////////////
 
 	// // Variables
-	std::string supervisorContextUID_     = "ContextCalo03";
-	std::string supervisorApplicationUID_ = "FESupervisorCalo03";
+	// Entry used only to build the DTC object; the JA/register actions hit the local /dev/mu2e<deviceIndex>.
+	// Requires these UIDs in the active context group of $USER_DATA (Data_HWDev for JA_ots_setup.sh):
+	//   Context group MC2CaloContext v65 (with MC2CaloBackbone v577, MC2CaloConfig v350), 2026-11-18.
+	//   XDAQContextTable/calo_03_FEContext/LinkToApplicationTable/Calo03FEContext/
+	//     LinkToSupervisorTable/LinkToFEInterfaceTable/caloDTC4 (device 0) and caloDTC5 (device 1)
+	// Before 2026-11-18: ContextCalo03/FESupervisorCalo03/DTC4,DTC5 (from daqRoomContext, no longer loadable).
+	std::string supervisorContextUID_     = "calo_03_FEContext";
+	std::string supervisorApplicationUID_ = "Calo03FEContext";
 	std::string feUID_ =
-	    deviceIndex == 0 ? "DTC4" : "DTC5";  //DTC4 for Device0 and DTC5 for Device1
+	    deviceIndex == 0 ? "caloDTC4" : "caloDTC5";  //caloDTC4 for Device0 and caloDTC5 for Device1
 	std::string theConfigurationPath_ =
 	    supervisorContextUID_ + "/LinkToApplicationTable/" + supervisorApplicationUID_ +
 	    "/LinkToSupervisorTable/LinkToFEInterfaceTable/" + feUID_ + "/LinkToFETypeTable";

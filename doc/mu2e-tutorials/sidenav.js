@@ -36,14 +36,14 @@
   bm.addEventListener('click', function () { view('map', true); });
   var saved = null; try { saved = localStorage.getItem('tutorialView'); } catch (e) {}
   view(location.hash === '#map' ? 'map' : (saved === 'map' ? 'map' : 'cards'), false);
-  // hovering a key entry (a category, or "draft") highlights the tutorials of that kind and dims the rest
+  // hovering a key entry (a category, "draft" or "coming soon") highlights the tutorials of that kind and dims the rest
   var nodes = map.querySelectorAll('a.node');
   map.querySelectorAll('.maplegend .lg').forEach(function (lg) {
     function on(e) {
       var cat = lg.getAttribute('data-cat'), draft = lg.getAttribute('data-draft');
       var hit = {};
       nodes.forEach(function (n) {
-        var m = cat !== null ? n.getAttribute('data-cat') === cat : n.classList.contains('draft');
+        var m = cat !== null ? n.getAttribute('data-cat') === cat : n.classList.contains(lg.getAttribute('data-soon') !== null ? 'soon' : 'draft');
         n.classList.toggle('lit', m); n.classList.toggle('faded', !m);
         if (m) hit[n.getAttribute('data-slug')] = 1;
       });

@@ -14,7 +14,7 @@ Last checked: November 2026, *otsdaq* v3.12.00
 <!-- slide 2 -->
 ## Coming Soon
 
-This tutorial is a placeholder. It will cover how the Muon-to-Electron Conversion Experiment (Mu2e) uses the *otsdaq* Iterator.
+Not written yet, so this is only a placeholder. Soon you will see how the Muon-to-Electron Conversion Experiment (Mu2e) uses the *otsdaq* Iterator.
 
-- Generic Iterator tutorial: [Iterator](https://otsdaq.fnal.gov/tutorials/iterator.html).
-- Mu2e subsystem names, which the plans refer to: [Mu2e Subsystems in *otsdaq*](mu2e-subsystems-in-otsdaq.md).
+- In the meantime, read the generic Iterator tutorial: [Iterator](https://otsdaq.fnal.gov/tutorials/iterator.html).
+- You will also want the Mu2e subsystem names, which the plans refer to: [Mu2e Subsystems in *otsdaq*](mu2e-subsystems-in-otsdaq.md).

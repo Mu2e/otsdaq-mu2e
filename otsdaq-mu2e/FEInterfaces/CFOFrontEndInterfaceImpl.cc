@@ -565,7 +565,9 @@ void CFOFrontEndInterface::registerFEMacros(void)
 		"Read a specified number of events from the Data DMA channel-0, and attempt to "
 		"validate data.\n\n"
 		"The status reports the number of Off-Spill and On-Spill events seen, and a histogram "
-		"of the event widths found in the CFO event records is plotted."
+		"of the event widths found in the CFO event records is plotted. "
+		"Histograms of the duration of each entire Off-Spill period and each entire On-Spill period "
+		"are also plotted, found by adding up the event widths of consecutive events with the same On-Spill flag."
 		// "Send a request for a number of events and waits for the respective responses. "
 		// "Currently, the responses are simulated data (a counter)."
 	);
@@ -4038,6 +4040,31 @@ std::string CFOFrontEndInterface::getHeartbeatSpillCountersStatus()
 }  //end getHeartbeatSpillCountersStatus()
 
 //==============================================================================
+// spillPeriodDurationClocksToString
+//	Returns the duration of a spill period (given in 25 ns clocks) as text in s, ms or us.
+//	Enough digits are kept to tell apart two durations that differ by one clock.
+namespace
+{
+// most bars drawn for a spill period duration histogram; more distinct durations are grouped into this many bins
+const size_t MAXIMUM_SPILL_PERIOD_BARS = 40;
+
+std::string spillPeriodDurationClocksToString(double durationInClocks)
+{
+	const double durationInMicroseconds = durationInClocks * 0.025;
+
+	std::stringstream durationSs;
+	durationSs << std::setprecision(11);
+	if(durationInMicroseconds >= 1000 * 1000)
+		durationSs << durationInMicroseconds / 1000 / 1000 << " s";
+	else if(durationInMicroseconds >= 1000)
+		durationSs << durationInMicroseconds / 1000 << " ms";
+	else
+		durationSs << durationInMicroseconds << " us";
+	return durationSs.str();
+}  //end spillPeriodDurationClocksToString()
+}  // namespace
+
+//==============================================================================
 std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
     std::shared_ptr<CFOFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct)
 {
@@ -4082,10 +4109,10 @@ std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
 
 			statusSs << ((i == 1) ? "On-Spill" : "Off-Spill") << " event widths: "
 			         << totalEventsCount << " total events in "
-			         << eventDurationCounts.size() << " distinct widths";
+			         << eventDurationCounts.size() << " bins";
 			if(eventDurationCountsByCount.size() > shownWidthsCount)
 				statusSs << " (showing the " << shownWidthsCount
-				         << " widths with the most events)";
+				         << " bins with the most events)";
 			statusSs << __E__;
 
 			uint64_t shownEventsCount = 0;
@@ -4104,19 +4131,20 @@ std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
 			if(eventDurationCountsByCount.size() > shownWidthsCount)
 				statusSs << "\t all other "
 				         << eventDurationCountsByCount.size() - shownWidthsCount
-				         << " widths: " << totalEventsCount - shownEventsCount << " events"
+				         << " bins: " << totalEventsCount - shownEventsCount << " events"
 				         << __E__;
 		}
 
-		for(int i = 0; i < 2; ++i)
+		for(int i = 0; i < 3; ++i)
 		{
-			const bool isOffspillBeforeOnspill = (i == 0);
-			const auto& transitionDurationCounts = isOffspillBeforeOnspill
-			    ? threadStruct->lastOffspillBeforeOnspillDurationCounts_
-			    : threadStruct->lastOnspillBeforeOffspillDurationCounts_;
-			const std::string transitionLabel = isOffspillBeforeOnspill
-			    ? "Last Off-Spill before On-Spill"
-			    : "Last On-Spill before Off-Spill";
+			const auto& transitionDurationCounts =
+			    (i == 0) ? threadStruct->lastOffspillBeforeOnspillDurationCounts_
+			    : (i == 1) ? threadStruct->lastOnspillBeforeOffspillDurationCounts_
+			               : threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_;
+			const std::string transitionLabel =
+			    (i == 0) ? "Last Off-Spill before On-Spill"
+			    : (i == 1) ? "Last On-Spill before Off-Spill"
+			               : "2nd to last On-Spill before Off-Spill";
 
 			uint64_t totalTransitionCount = 0;
 			for(const auto& durationCountPair : transitionDurationCounts)
@@ -4137,11 +4165,11 @@ std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
 			    std::min(MAX_SHOWN_WIDTHS_COUNT, transitionDurationCountsByCount.size());
 
 			statusSs << transitionLabel << " event widths: "
-			         << totalTransitionCount << " transitions in "
-			         << transitionDurationCounts.size() << " distinct widths";
+			         << totalTransitionCount << " events in "
+			         << transitionDurationCounts.size() << " bins";
 			if(transitionDurationCountsByCount.size() > shownWidthsCount)
 				statusSs << " (showing the " << shownWidthsCount
-				         << " widths with the most events)";
+				         << " bins with the most events)";
 			statusSs << __E__;
 
 			uint64_t shownEventsCount = 0;
@@ -4160,8 +4188,41 @@ std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
 			if(transitionDurationCountsByCount.size() > shownWidthsCount)
 				statusSs << "\t all other "
 				         << transitionDurationCountsByCount.size() - shownWidthsCount
-				         << " widths: " << totalTransitionCount - shownEventsCount << " events"
+				         << " bins: " << totalTransitionCount - shownEventsCount << " events"
 				         << __E__;
+		}
+
+		for(int i = 0; i < 2; ++i)
+		{
+			const auto& spillPeriodDurationCounts =
+			    (i == 1) ? threadStruct->onspillPeriodDurationCounts_
+			             : threadStruct->offspillPeriodDurationCounts_;
+
+			uint64_t totalSpillPeriodsCount = 0;
+			double   totalSpillPeriodClocks = 0;
+			for(const auto& durationCountPair : spillPeriodDurationCounts)
+			{
+				totalSpillPeriodsCount += durationCountPair.second;
+				totalSpillPeriodClocks +=
+				    (double)durationCountPair.first * durationCountPair.second;
+			}
+
+			statusSs << ((i == 1) ? "On-Spill" : "Off-Spill")
+			         << " period durations: " << totalSpillPeriodsCount
+			         << " events in "
+			         << std::min(spillPeriodDurationCounts.size(), MAXIMUM_SPILL_PERIOD_BARS)
+			         << " bins";
+			if(totalSpillPeriodsCount)
+				statusSs << ", shortest "
+				         << spillPeriodDurationClocksToString(
+				                spillPeriodDurationCounts.begin()->first)
+				         << ", longest "
+				         << spillPeriodDurationClocksToString(
+				                spillPeriodDurationCounts.rbegin()->first)
+				         << ", average "
+				         << spillPeriodDurationClocksToString(totalSpillPeriodClocks /
+				                                              totalSpillPeriodsCount);
+			statusSs << __E__;
 		}
 
 		statusSs << "Total CFO Subevent Bytes Transferred: "
@@ -4239,16 +4300,62 @@ std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
 //==============================================================================
 // getDetachedBufferTestEventWidthPlot
 //	Returns a Plotly plot (JSON) of the event widths seen in the CFO event records
-//	in a 2x2 grid: row 1 is all Off-Spill and On-Spill events, row 2 is the last
-//	event of each type before a spill transition.
+//	in 3 rows: row 1 is all Off-Spill and On-Spill events, row 2 is the last
+//	event of each type before a spill transition and the 2nd to last On-Spill event
+//	before Off-Spill, row 3 is the duration of each entire Off-Spill period and each
+//	entire On-Spill period.
 std::string CFOFrontEndInterface::getDetachedBufferTestEventWidthPlot(
     std::shared_ptr<CFOFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct)
 {
 	const double EVENT_DURATION_CLOCK_PERIOD_US = 0.025;
 	const size_t MAXIMUM_BARS_FOR_LEVEL_TEXT = 12;
 
-	std::stringstream plotlySs, layoutAxesSs;
+	std::stringstream plotlySs, layoutAxesSs, panelTitlesSs;
 	plotlySs << R"({"data":[)";
+
+	// rows can have different numbers of panels, so each panel is placed explicitly
+	//	(instead of with a Plotly grid): returns the "domain" and "anchor" of the x axis
+	//	and the y axis of a panel
+	const int    PLOT_ROWS_COUNT       = 3;
+	const double PANEL_HORIZONTAL_GAP  = 0.15;  // fraction of the panel cell width
+	// the bar labels are drawn below each panel, so most of the space between rows is left
+	//	below the panel
+	const double PANEL_BOTTOM_GAP      = 0.35;  // fraction of the panel cell height
+	const double PANEL_TOP_GAP         = 0.05;  // fraction of the panel cell height
+	auto panelAxesPosition = [&](int                rowIndex,
+	                             int                columnIndex,
+	                             int                columnsCount,
+	                             const std::string& axisSuffix) {
+		const double cellWidth  = 1.0 / columnsCount;
+		const double cellHeight = 1.0 / PLOT_ROWS_COUNT;
+		const double cellBottom = 1.0 - (rowIndex + 1) * cellHeight;  // row 0 is the top row
+		std::stringstream xAxisPositionSs, yAxisPositionSs;
+		xAxisPositionSs << R"("domain":[)"
+		                << columnIndex * cellWidth + cellWidth * PANEL_HORIZONTAL_GAP / 2 << ","
+		                << (columnIndex + 1) * cellWidth - cellWidth * PANEL_HORIZONTAL_GAP / 2
+		                << R"(],"anchor":"y)" << axisSuffix << R"(",)";
+		yAxisPositionSs << R"("domain":[)" << cellBottom + cellHeight * PANEL_BOTTOM_GAP
+		                << "," << cellBottom + cellHeight - cellHeight * PANEL_TOP_GAP
+		                << R"(],"anchor":"x)" << axisSuffix << R"(",)";
+		return std::make_pair(xAxisPositionSs.str(), yAxisPositionSs.str());
+	};
+	// the panel title is drawn inside the top of the panel, so that no text other than the bar
+	//	labels is between panels (the event and bin counts are in the status text)
+	auto addPanelTitle = [&](int                rowIndex,
+	                         int                columnIndex,
+	                         int                columnsCount,
+	                         const std::string& panelTitle) {
+		const double cellWidth  = 1.0 / columnsCount;
+		const double cellHeight = 1.0 / PLOT_ROWS_COUNT;
+		const double cellBottom = 1.0 - (rowIndex + 1) * cellHeight;  // row 0 is the top row
+		if(!panelTitlesSs.str().empty())
+			panelTitlesSs << ",";
+		panelTitlesSs << R"({"text":")" << panelTitle
+		              << R"(","xref":"paper","yref":"paper","x":)"
+		              << (columnIndex + 0.5) * cellWidth << R"(,"y":)"
+		              << cellBottom + cellHeight - cellHeight * PANEL_TOP_GAP
+		              << R"(,"xanchor":"center","yanchor":"top","showarrow":false})";
+	};
 
 	// start mutex scope
 	{
@@ -4260,6 +4367,9 @@ std::string CFOFrontEndInterface::getDetachedBufferTestEventWidthPlot(
 			std::string                         panelTitle;
 			uint64_t                            totalEventsCount;
 			std::string                         axisSuffix;
+			int                                 rowIndex;
+			int                                 columnIndex;
+			int                                 columnsCount;
 		};
 
 		uint64_t lastOffspillBeforeOnspillTotal = 0;
@@ -4270,26 +4380,34 @@ std::string CFOFrontEndInterface::getDetachedBufferTestEventWidthPlot(
 		for(const auto& durationCountPair : threadStruct->lastOnspillBeforeOffspillDurationCounts_)
 			lastOnspillBeforeOffspillTotal += durationCountPair.second;
 
+		uint64_t secondToLastOnspillBeforeOffspillTotal = 0;
+		for(const auto& durationCountPair : threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_)
+			secondToLastOnspillBeforeOffspillTotal += durationCountPair.second;
+
 		const PanelDescriptor panelDescriptors[] = {
 		    {threadStruct->offspillEventDurationCounts_,
 		     "Off-Spill",
 		     threadStruct->offspillEventsCount_.load(),
-		     ""},
+		     "", 0, 0, 2},
 		    {threadStruct->onspillEventDurationCounts_,
 		     "On-Spill",
 		     threadStruct->onspillEventsCount_.load(),
-		     "2"},
+		     "2", 0, 1, 2},
 		    {threadStruct->lastOffspillBeforeOnspillDurationCounts_,
 		     "Last Off-Spill before On-Spill",
 		     lastOffspillBeforeOnspillTotal,
-		     "3"},
+		     "3", 1, 0, 3},
 		    {threadStruct->lastOnspillBeforeOffspillDurationCounts_,
 		     "Last On-Spill before Off-Spill",
 		     lastOnspillBeforeOffspillTotal,
-		     "4"},
+		     "4", 1, 1, 3},
+		    {threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_,
+		     "2nd to last On-Spill before Off-Spill",
+		     secondToLastOnspillBeforeOffspillTotal,
+		     "7", 1, 2, 3},
 		};
 
-		for(int panelIndex = 0; panelIndex < 4; ++panelIndex)
+		for(int panelIndex = 0; panelIndex < 5; ++panelIndex)
 		{
 			const auto& panel = panelDescriptors[panelIndex];
 
@@ -4335,21 +4453,106 @@ std::string CFOFrontEndInterface::getDetachedBufferTestEventWidthPlot(
 				         << R"(","yaxis":"y)" << panel.axisSuffix << "\"";
 			plotlySs << "}";
 
-			layoutAxesSs << R"("xaxis)" << panel.axisSuffix
-			             << R"(":{"type":"category","tickangle":-90,"title":{"text":")"
-			             << panel.panelTitle << ": " << panel.totalEventsCount
-			             << " events in " << panel.durationCounts.size()
-			             << R"( distinct widths"}},"yaxis)" << panel.axisSuffix
-			             << R"(":{"type":"log","range":[)" << countAxisMinimum << ","
+			addPanelTitle(
+			    panel.rowIndex, panel.columnIndex, panel.columnsCount, panel.panelTitle);
+			const auto panelPosition = panelAxesPosition(
+			    panel.rowIndex, panel.columnIndex, panel.columnsCount, panel.axisSuffix);
+			layoutAxesSs << R"("xaxis)" << panel.axisSuffix << R"(":{)" << panelPosition.first
+			             << R"("type":"category","tickangle":-90},"yaxis)" << panel.axisSuffix
+			             << R"(":{)"
+			             << panelPosition.second
+			             << R"("type":"log","range":[)" << countAxisMinimum << ","
 			             << countAxisMaximum << R"(],"title":{"text":"Events"}},)";
+		}
+
+		// row 3: duration of each entire Off-Spill period and each entire On-Spill period
+		for(int spillPeriodPanelIndex = 0; spillPeriodPanelIndex < 2;
+		    ++spillPeriodPanelIndex)
+		{
+			const bool  isOnSpillPanel = (spillPeriodPanelIndex == 1);
+			const auto& spillPeriodDurationCounts =
+			    isOnSpillPanel ? threadStruct->onspillPeriodDurationCounts_
+			                   : threadStruct->offspillPeriodDurationCounts_;
+			const std::string spillPeriodPanelTitle =
+			    isOnSpillPanel ? "On-Spill period duration" : "Off-Spill period duration";
+			const std::string spillPeriodAxisSuffix = isOnSpillPanel ? "6" : "5";
+
+			// one bar per distinct duration, unless there are too many distinct durations,
+			//	then group the durations into equal width bins from shortest to longest
+			std::vector<std::pair<double /* duration in clocks */, uint64_t /* periods count */>>
+			    spillPeriodBars;
+			if(spillPeriodDurationCounts.size() <= MAXIMUM_SPILL_PERIOD_BARS)
+			{
+				for(const auto& durationCountPair : spillPeriodDurationCounts)
+					spillPeriodBars.push_back(std::make_pair(
+					    (double)durationCountPair.first, durationCountPair.second));
+			}
+			else
+			{
+				const uint64_t shortestDurationClocks =
+				    spillPeriodDurationCounts.begin()->first;
+				const uint64_t longestDurationClocks =
+				    spillPeriodDurationCounts.rbegin()->first;
+				const uint64_t binWidthClocks =
+				    (longestDurationClocks - shortestDurationClocks) /
+				        MAXIMUM_SPILL_PERIOD_BARS +
+				    1;
+				for(size_t i = 0; i < MAXIMUM_SPILL_PERIOD_BARS; ++i)
+					spillPeriodBars.push_back(std::make_pair(
+					    shortestDurationClocks + (i + 0.5) * binWidthClocks,
+					    (uint64_t)0));  // labeled by the center of the bin
+				for(const auto& durationCountPair : spillPeriodDurationCounts)
+					spillPeriodBars[(durationCountPair.first - shortestDurationClocks) /
+					                binWidthClocks]
+					    .second += durationCountPair.second;
+			}
+
+			std::stringstream spillPeriodDurationsSs, spillPeriodCountsSs;
+			uint64_t          maximumSpillPeriodsCount = 1;
+			for(size_t i = 0; i < spillPeriodBars.size(); ++i)
+			{
+				if(i)
+				{
+					spillPeriodDurationsSs << ",";
+					spillPeriodCountsSs << ",";
+				}
+				spillPeriodDurationsSs
+				    << "\"" << spillPeriodDurationClocksToString(spillPeriodBars[i].first)
+				    << "\"";
+				spillPeriodCountsSs << spillPeriodBars[i].second;
+				if(spillPeriodBars[i].second > maximumSpillPeriodsCount)
+					maximumSpillPeriodsCount = spillPeriodBars[i].second;
+			}
+
+			plotlySs << R"(,{"x":[)" << spillPeriodDurationsSs.str() << R"(],"y":[)"
+			         << spillPeriodCountsSs.str() << R"(],"text":[)"
+			         << spillPeriodCountsSs.str()
+			         << R"(],"textposition":"outside","cliponaxis":false,"textangle":)"
+			         << (spillPeriodBars.size() > MAXIMUM_BARS_FOR_LEVEL_TEXT ? -90 : 0)
+			         << R"(,"hovertemplate":"%{x}<br>%{y} periods<extra></extra>",)"
+			         << R"("type":"bar","showlegend":false,"name":")"
+			         << spillPeriodPanelTitle << R"(","xaxis":"x)" << spillPeriodAxisSuffix
+			         << R"(","yaxis":"y)" << spillPeriodAxisSuffix << "\"}";
+
+			addPanelTitle(2, spillPeriodPanelIndex, 2, spillPeriodPanelTitle);
+			const auto spillPeriodPanelPosition = panelAxesPosition(
+			    2, spillPeriodPanelIndex, 2, spillPeriodAxisSuffix);
+			layoutAxesSs << R"("xaxis)" << spillPeriodAxisSuffix << R"(":{)"
+			             << spillPeriodPanelPosition.first
+			             << R"("type":"category","tickangle":-90},"yaxis)"
+			             << spillPeriodAxisSuffix << R"(":{)"
+			             << spillPeriodPanelPosition.second
+			             << R"("type":"log","range":[-0.5,)"
+			             << 1.25 * std::log10((double)maximumSpillPeriodsCount) + 1.5
+			             << R"(],"title":{"text":"Periods"}},)";
 		}
 	}
 
 	plotlySs << R"(],"layout":{)"
-	         << R"("title":{"text":"CFO Event Widths Seen by Buffer Test"},)"
-	         << R"("grid":{"rows":2,"columns":2,"pattern":"independent","ygap":0.25,"xgap":0.15},)"
-	         << layoutAxesSs.str() << R"("bargap":0.3,"height":1000,)"
-	         << R"("margin":{"t":80,"b":140}}})";
+	         << R"("title":{"text":"CFO Event Widths and Spill Period Durations Seen by Buffer Test"},)"
+	         << layoutAxesSs.str() << R"("annotations":[)" << panelTitlesSs.str()
+	         << R"(],"bargap":0.3,"autosize":true,)"
+	         << R"("margin":{"t":80,"b":100}}})";
 
 	return plotlySs.str();
 }  //end getDetachedBufferTestEventWidthPlot()
@@ -4430,9 +4633,38 @@ void CFOFrontEndInterface::handleDetachedSubevent(
 				++(threadStruct->lastOffspillBeforeOnspillDurationCounts_[
 				    threadStruct->previousEventDuration_]);
 			else
+			{
 				++(threadStruct->lastOnspillBeforeOffspillDurationCounts_[
 				    threadStruct->previousEventDuration_]);
+
+				// the event before the last On-Spill event, if it was also On-Spill
+				if(threadStruct->eventBeforePreviousIsValid_ &&
+				   threadStruct->eventBeforePreviousWasOnSpill_)
+					++(threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_[
+					    threadStruct->eventBeforePreviousDuration_]);
+			}
+
+			// the spill period that just ended is complete, so add its duration to the histogram
+			//	(unless the test joined it part way through, then its duration is not known)
+			if(threadStruct->currentSpillPeriodStartWasSeen_)
+			{
+				if(threadStruct->previousEventWasOnSpill_)
+					++(threadStruct->onspillPeriodDurationCounts_[
+					    threadStruct->currentSpillPeriodDurationClocks_]);
+				else
+					++(threadStruct->offspillPeriodDurationCounts_[
+					    threadStruct->currentSpillPeriodDurationClocks_]);
+			}
+			threadStruct->currentSpillPeriodStartWasSeen_   = true;
+			threadStruct->currentSpillPeriodDurationClocks_ = 0;
 		}
+
+		// add this event to the duration of the current spill period
+		threadStruct->currentSpillPeriodDurationClocks_ += currentEventDuration;
+
+		threadStruct->eventBeforePreviousIsValid_    = threadStruct->previousEventIsValid_;
+		threadStruct->eventBeforePreviousWasOnSpill_ = threadStruct->previousEventWasOnSpill_;
+		threadStruct->eventBeforePreviousDuration_   = threadStruct->previousEventDuration_;
 
 		threadStruct->previousEventIsValid_    = true;
 		threadStruct->previousEventWasOnSpill_ = currentEventIsOnSpill;
@@ -4517,6 +4749,12 @@ try
 		threadStruct->offspillEventDurationCounts_.clear();
 		threadStruct->onspillEventDurationCounts_.clear();
 		threadStruct->previousEventIsValid_ = false;
+		threadStruct->eventBeforePreviousIsValid_ = false;
+		threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_.clear();
+		threadStruct->currentSpillPeriodDurationClocks_ = 0;
+		threadStruct->currentSpillPeriodStartWasSeen_ = false;
+		threadStruct->offspillPeriodDurationCounts_.clear();
+		threadStruct->onspillPeriodDurationCounts_.clear();
 		threadStruct->lastOffspillBeforeOnspillDurationCounts_.clear();
 		threadStruct->lastOnspillBeforeOffspillDurationCounts_.clear();
 		threadStruct->totalSubeventBytesTransferred_ = 0;
@@ -4589,6 +4827,12 @@ try
 						threadStruct->offspillEventDurationCounts_.clear();
 						threadStruct->onspillEventDurationCounts_.clear();
 						threadStruct->previousEventIsValid_ = false;
+		threadStruct->eventBeforePreviousIsValid_ = false;
+		threadStruct->secondToLastOnspillBeforeOffspillDurationCounts_.clear();
+		threadStruct->currentSpillPeriodDurationClocks_ = 0;
+		threadStruct->currentSpillPeriodStartWasSeen_ = false;
+		threadStruct->offspillPeriodDurationCounts_.clear();
+		threadStruct->onspillPeriodDurationCounts_.clear();
 						threadStruct->lastOffspillBeforeOnspillDurationCounts_.clear();
 						threadStruct->lastOnspillBeforeOffspillDurationCounts_.clear();
 						threadStruct->totalSubeventBytesTransferred_ = 0;

@@ -35,6 +35,13 @@
   ],
   "tutorials": [
     {
+      "slug": "installing-and-starting-otsdaq-for-mu2e",
+      "title": "Installing and Starting otsdaq for Mu2e",
+      "category": "Setup and Operations",
+      "status": "coming-soon",
+      "prereqs": []
+    },
+    {
       "slug": "adding-a-roc-register-to-slow-controls",
       "title": "Adding a ROC DCS Register to EPICS",
       "category": "Slow Controls and EPICS",
@@ -53,15 +60,35 @@
       "title": "Mu2e Subsystems in otsdaq",
       "category": "Setup and Operations",
       "status": "draft",
-      "prereqs": []
+      "prereqs": [
+        "installing-and-starting-otsdaq-for-mu2e"
+      ]
     },
     {
       "slug": "how-the-iterator-is-used-in-mu2e",
       "title": "How the Iterator Is Used in Mu2e",
       "category": "Setup and Operations",
+      "status": "coming-soon",
+      "prereqs": [
+        "mu2e-subsystems-in-otsdaq"
+      ]
+    },
+    {
+      "slug": "running-artdaq-in-mu2e",
+      "title": "Running artdaq in Mu2e",
+      "category": "Setup and Operations",
       "status": "draft",
       "prereqs": [
         "mu2e-subsystems-in-otsdaq"
+      ]
+    },
+    {
+      "slug": "dcs-dashboard-for-mu2e",
+      "title": "DCS Dashboard for Mu2e",
+      "category": "Slow Controls and EPICS",
+      "status": "coming-soon",
+      "prereqs": [
+        "adding-a-roc-register-to-slow-controls"
       ]
     }
   ]

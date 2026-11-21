@@ -34,6 +34,11 @@ body.nav-closed .sidenav { flex-basis: 0; width: 0; }
 .card { position: relative; display: flex; flex-direction: column; flex: 0 0 auto; width: 244px; height: 118px; background: #efefef; text-decoration: none;
   box-shadow: 0 1px 2px rgba(0,0,0,.08); transition: box-shadow .15s, transform .15s; }
 .card.draft { background: #fafafa; outline: 2px dashed #8a96a3; outline-offset: -2px; }
+.card.soon { background: #fff8ec; outline: 3px dotted #c77700; outline-offset: -3px; }
+.cardlegend i.dot { background: #fff8ec; border: 2px dotted #c77700; width: 12px; height: 12px; display: inline-block; border-radius: 3px; }
+.badge.badge-soon { background: #c77700; }
+.maplegend i.dot { background: #fff8ec; border: 2px dotted #c77700; width: 12px; height: 12px; }
+.tmap a.node.soon .box { stroke: #c77700 !important; stroke-dasharray: 2 3; fill: #fff8ec; }
 .cardlegend { margin: 0 0 10px; font-size: 14px; color: #444; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; }
 .cardlegend .lgitem { display: inline-flex; align-items: center; gap: 6px; }
 .badge.badge-key { position: static; }

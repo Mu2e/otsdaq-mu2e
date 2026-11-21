@@ -96,6 +96,18 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 		std::map<uint16_t, uint64_t> lastOffspillBeforeOnspillDurationCounts_;
 		std::map<uint16_t, uint64_t> lastOnspillBeforeOffspillDurationCounts_;
 
+		// the event before the previous event, to histogram the 2nd to last On-Spill event before Off-Spill
+		bool     eventBeforePreviousIsValid_    = false;
+		bool     eventBeforePreviousWasOnSpill_ = false;
+		uint16_t eventBeforePreviousDuration_   = 0;
+		std::map<uint16_t, uint64_t> secondToLastOnspillBeforeOffspillDurationCounts_;
+
+		// duration of each entire Off-Spill period and each entire On-Spill period, found by adding up
+		//	the event durations of consecutive events with the same On-Spill flag
+		uint64_t currentSpillPeriodDurationClocks_ = 0;
+		bool     currentSpillPeriodStartWasSeen_   = false;  // false for the first period, which the test joined part way through
+		std::map<uint64_t /* period duration in clocks */, uint64_t /* periods count */> offspillPeriodDurationCounts_, onspillPeriodDurationCounts_;
+
 		uint64_t totalSubeventBytesTransferred_;
 		std::chrono::time_point<std::chrono::steady_clock>
 		    transferStartTime_, transferEndTime_;

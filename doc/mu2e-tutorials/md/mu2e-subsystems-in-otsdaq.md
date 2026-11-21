@@ -5,7 +5,7 @@
 <!-- slide 1 -->
 ## Mu2e Subsystems in otsdaq
 
-How the Muon-to-Electron Conversion Experiment (Mu2e) divides its *otsdaq* system into subsystems, and how the subsystems are named
+How the Muon-to-Electron Conversion Experiment (Mu2e) cuts its *otsdaq* system into subsystems, and how to read the names you will meet along the way
 
 ![otsdaq logo](../images/mu2e-subsystems-in-otsdaq/slide01_2.png)
 
@@ -16,40 +16,40 @@ Last checked: November 2026, *otsdaq* v3.12.00
 
 - How Mu2e starts one *otsdaq* subsystem with `setup_ots.sh`.
 - Why you log in at the `shift` Gateway only, and not at each subsystem.
-- How the HTTPS port translation map lets users on the Fermilab network reach every subsystem without a tunnel.
+- How the HTTPS port translation map lets you reach every subsystem from the Fermilab network without a tunnel.
 - Which subsystems Mu2e has, and which repository each one uses.
 - How the `shift` Gateway knows each subsystem: an icon and a path row for each one.
 - The Mu2e naming conventions: ports, user data folders, databases, owner names, group names and front-end names.
 - How user permissions work at Mu2e: one permission group for each subsystem.
-- How to make a demonstration user, and what a normal user and an administrator see.
+- How to make a demonstration user, and what a normal user and an administrator see on the Desktop.
 - The Mu2e Desktop icon convention.
 
 <!-- slide 3 -->
 ## Before You Start
 
-- Recommended prerequisite: [Multiple Subsystems in *otsdaq*](https://otsdaq.fnal.gov/tutorials/multiple-subsystems-in-otsdaq.html), the experiment-independent tutorial. It explains what a subsystem is, and what each one has of its own. This page does not repeat it.
+- Recommended prerequisite: [Multiple Subsystems in *otsdaq*](https://otsdaq.fnal.gov/tutorials/multiple-subsystems-in-otsdaq.html), the experiment-independent tutorial. It explains what a subsystem is, and what each one has of its own. This page does not repeat it, so read that one first if "subsystem" is a fuzzy word for you.
 - `yourhost` stands for the name of a machine, and `username` for your account name on it.
 - The names come from `setup_ots.sh` of the Mu2e ops install and from the folders next to it.
 - Recommended: [User Management](https://otsdaq.fnal.gov/tutorials/user-management.html) for accounts and permission levels, and [Changing/Adding Icons](https://otsdaq.fnal.gov/tutorials/changing-adding-icons.html) for the Desktop icons. This page shows how Mu2e uses them.
-- The live walk-through was done on the development area `ots_ops_tdaq`: its `shift` Gateway is at port 3175 on mu2e-cfo-01.
+- We did the live walk-through on the development area `ots_ops_tdaq`: its `shift` Gateway is at port 3175 on mu2e-cfo-01.
 
 <!-- slide 4 -->
 ## Subsystems at Mu2e
 
-At Mu2e, each part of the system runs as its own *otsdaq* instance: one for the calorimeter, one for the tracker, and so on. Each has its own Gateway, user data folder and active groups, and they share one configuration database.
+Mu2e does not run one giant *otsdaq*. Each part of the system runs as its own *otsdaq* instance: one for the calorimeter, one for the tracker, and so on. Each has its own Gateway, user data folder and active groups, and they share one configuration database.
 
-You choose the instance by its name, when you set up the terminal:
+You pick the instance by its name when you set up your terminal:
 
 ```bash
 source setup_ots.sh calo
 ```
 
-With no name, `setup_ots.sh` uses the last one that you used. It keeps that name in the file `.ots_setup_type.txt` next to it.
+With no name, `setup_ots.sh` uses the last one you used. It keeps that name in the file `.ots_setup_type.txt` next to it.
 
 <!-- slide 5 -->
 ## How the Shift Gateway Knows a Subsystem
 
-The top level needs two pieces for each subsystem, as in [Multiple Subsystems in *otsdaq*](https://otsdaq.fnal.gov/tutorials/multiple-subsystems-in-otsdaq.html). At Mu2e they are in the **Context** group of `shift` (`MC2ShiftContext`):
+How does the top level find all of these instances? It needs two pieces for each subsystem, as in [Multiple Subsystems in *otsdaq*](https://otsdaq.fnal.gov/tutorials/multiple-subsystems-in-otsdaq.html). At Mu2e they are in the **Context** group of `shift` (`MC2ShiftContext`):
 
 - A **Desktop icon** with the name `<Name>_HardwareGateway`, for example `Calo_HardwareGateway`. Its caption is `Calo Icons`, its **FolderPath** is `Calo Hardware`, and its **AlternateText** is `CAL`.
 - A row of the **SubsystemUserDataPathsTable** whose **SubsystemUID** is that same `CAL`.
@@ -90,7 +90,7 @@ Most paths use the owner `mu2eshift`, the machine `OTS_GATEWAY_HOST` and the fol
 <!-- slide 8 -->
 ## What the Development Gateway Shows
 
-On the `shift` Desktop of the development area, the subsystem folders do not all come up.
+On the `shift` Desktop of the development area, not every subsystem folder comes up. Do not panic if yours looks the same.
 
 - **Calo Hardware** and **CFO Hardware** are folders.
 - **Trk Hardware**, **CRV Hardware**, **Trigger**, **DQM** and **HW2 Hardware** show an `X` and the word *loading...*: the top level has not received the icons of that subsystem.
@@ -140,7 +140,7 @@ The Gateway port of a subsystem is its base port plus an **offset**. The offset 
 <!-- slide 12 -->
 ## Log In at the Shift Gateway
 
-At Mu2e, `shift` is the **top-level Gateway**. Log in there, and open the other subsystems from its Desktop.
+At Mu2e, `shift` is the **top-level Gateway**. Log in there once, and open the other subsystems from its Desktop. That is all.
 
 - You can log in to a subsystem on its own, but then that subsystem keeps its own usernames, passwords and new account codes (NAC). That is not the recommended way, for Mu2e or for any *otsdaq* system.
 - The `shift` Desktop handles the redirects to the subsystems.
@@ -149,7 +149,7 @@ At Mu2e, `shift` is the **top-level Gateway**. Log in there, and open the other 
 <!-- slide 13 -->
 ## No Tunnels at Mu2e: HTTPS Ports
 
-Users on the Fermilab network do not make ssh tunnels. Mu2e gives every subsystem an HTTPS port on one gateway machine, and the **port translation map** tells the `shift` Gateway which one to hand to your browser. The entry point is the `shift` Gateway at `https://mu2egateway02.fnal.gov:8443`.
+On the Fermilab network, you do not need an ssh tunnel. Mu2e gives every subsystem an HTTPS port on one gateway machine, and the **port translation map** tells the `shift` Gateway which one to hand to your browser. The entry point is the `shift` Gateway at `https://mu2egateway02.fnal.gov:8443`.
 
 The map is the file `webPortTranslation.dat` in the `otsdaq-mu2e-config` folder. `install_ots_ops.sh` links it to `ServiceData/webPortTranslation.dat` of each user data folder, and `setup_ots.sh` points `OTS_PORT_TRANSLATION_MAP_FILE` at it.
 
@@ -226,12 +226,12 @@ Front-end names say the subsystem, the kind of board and a number:
 <!-- slide 20 -->
 ## User Permissions at Mu2e
 
-A permission **group** can have any name, and a user can have a level, any number from 0 to 255, in each group. The group `allUsers` is always there. Mu2e adds one group for each subsystem: `CFO`, `CRV`, `Calo`, `DCS`, `DEV`, `DQM`, `STM`, `Trig` and `Trk`. The accounts of the whole system are kept at the `shift` Gateway: you make them in its **Settings** window, as in [User Management](https://otsdaq.fnal.gov/tutorials/user-management.html).
+Who gets to click what? A permission **group** can have any name, and a user can have a level, any number from 0 to 255, in each group. The group `allUsers` is always there. Mu2e adds one group for each subsystem: `CFO`, `CRV`, `Calo`, `DCS`, `DEV`, `DQM`, `STM`, `Trig` and `Trk`. The accounts of the whole system are kept at the `shift` Gateway: you make them in its **Settings** window, as in [User Management](https://otsdaq.fnal.gov/tutorials/user-management.html).
 
 - A bigger number can do more. 0 is inactive and 255 is an administrator; 1, 10 and 100 are the usual steps in between, and other numbers, such as 5, are allowed.
 - The account list shows each level as text, for example `Calo: 255, allUsers: 10`.
 - A user with `allUsers: 255` and every group at 255 is an administrator of the whole system.
-- A user can be an expert in one subsystem only: give that group a high level, and the other groups a low level or none.
+- You can make a user an expert in one subsystem only: give that group a high level, and the other groups a low level or none.
 
 <!-- slide 21 -->
 ## Which Group Opens Which Icon
@@ -266,7 +266,7 @@ The new row is in the **Accounts** table, with the permissions as text and a **N
 
 ![The account row of the new user](../images/mu2e-subsystems-in-otsdaq/tutorial-account-row.png)
 
-Give the NAC to the user. It is used once, for the first login: on the login page click **New User?**, type the username, a password twice and the NAC. The Desktop then says *Welcome to Mu2e ots* and the name of the account. A first-time user also gets the *Desktop Introduction* tooltip: close it with **Esc**.
+Give the NAC to the new user. It is used once, for the first login: on the login page click **New User?**, type the username, a password twice and the NAC. The Desktop then says *Welcome to Mu2e ots* and the name of the account. A first-time user also meets the *Desktop Introduction* tooltip: close it with **Esc**.
 
 <!-- slide 24 -->
 ## A Normal User and an Administrator
@@ -295,16 +295,16 @@ The `tutorial` user logged in at `shift` only. Click **Calo Hardware**: a list n
 
 ![The Calo Hardware folder](../images/mu2e-subsystems-in-otsdaq/calo-folder-open.png)
 
-The list has the calorimeter's **State Machine**, **Configure**, **Macro Maker**, **Slow Controls Dashboard**, **Console**, **Iterator**, **Code Editor**, **App Status**, **Calo Config**, **ROC Firmware Manager**, **Wiz-Mode Config** and more. The user has no account at the calorimeter instance.
+The list has the calorimeter's **State Machine**, **Configure**, **Macro Maker**, **Slow Controls Dashboard**, **Console**, **Iterator**, **Code Editor**, **App Status**, **Calo Config**, **ROC Firmware Manager**, **Wiz-Mode Config** and more. The user has no account at the calorimeter instance, and does not need one.
 
 <!-- slide 27 -->
 ## How the Level Reaches the Subsystem
 
-The `shift` Gateway checks your login for the subsystem. It also passes on your level. The comment in the Gateway code gives this example: a user with `HW: 255, allUsers: 1`, and an icon that needs `HW: 1`, becomes `HW: 255, allUsers: 255` at the subsystem. The user is an expert there.
+Here is the trick. The `shift` Gateway checks your login for the subsystem, and it also passes on your level. The comment in the Gateway code gives this example: a user with `HW: 255, allUsers: 1`, and an icon that needs `HW: 1`, becomes `HW: 255, allUsers: 255` at the subsystem. The user is an expert there.
 
-- So a Mu2e user is an expert in a subsystem when the level in that subsystem's group is high.
+- So you are an expert in a subsystem when the level in that subsystem's group is high.
 - A user whose level in the group is missing gets level 0 there, and no access.
-- Change a level in **Settings** at `shift`, with **Update**. You do not make accounts at the subsystem.
+- To change a level, use **Settings** at `shift`, with **Update**. You never make accounts at the subsystem.
 
 <!-- slide 28 -->
 ## Desktop Icon Convention: Generic Icons
@@ -325,7 +325,7 @@ Several icons stay in the table with **Status** `Off`, such as `Visualizer`, `Ma
 <!-- slide 29 -->
 ## Desktop Icon Convention: Subsystem Icons
 
-One icon for each subsystem, with a fixed pattern:
+Each subsystem gets one icon, and the pattern never changes:
 
 | Part | Pattern | Example |
 |------|---------|---------|
@@ -352,8 +352,8 @@ A new subsystem needs this icon, a row in the **SubsystemUserDataPathsTable** wi
 <!-- slide 31 -->
 ## That's It! What Next?
 
-You can now read the name of any Mu2e subsystem and tell where its data, port and groups are.
+You can now read the name of any Mu2e subsystem and tell where its data, port and groups live. No more guessing.
 
-- Add a register to Slow Controls: [Adding a ROC DCS Register to EPICS](adding-a-roc-register-to-slow-controls.md).
-- Save and recall a whole setup: [Saving and Recalling a Mu2e Snapshot](saving-and-recalling-a-mu2e-snapshot.md).
+- Next, add a register to Slow Controls: [Adding a ROC DCS Register to EPICS](adding-a-roc-register-to-slow-controls.md).
+- Or save and recall a whole setup: [Saving and Recalling a Mu2e Snapshot](saving-and-recalling-a-mu2e-snapshot.md).
 - The experiment-independent version of this page: [Multiple Subsystems in *otsdaq*](https://otsdaq.fnal.gov/tutorials/multiple-subsystems-in-otsdaq.html).

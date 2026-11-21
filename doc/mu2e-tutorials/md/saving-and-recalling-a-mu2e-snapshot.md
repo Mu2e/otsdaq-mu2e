@@ -3,7 +3,7 @@
 <!-- slide 1 -->
 ## Saving and Recalling a Mu2e Snapshot
 
-Save your *otsdaq* setup as a named snapshot on the Mu2e server, and bring a snapshot saved by someone else back into your own area.
+Ever wished you could freeze your *otsdaq* setup, break everything, and then thaw it? Save your setup as a named snapshot on the Mu2e server, and bring a snapshot saved by someone else back into your own area.
 
 ![Mu2e logo](../assets/mu2e-logo.png)
 
@@ -29,12 +29,12 @@ Written from the Mu2e snapshot scripts in November 2026.
 <!-- slide 4 -->
 ## What a Snapshot Holds
 
-A snapshot is two zip files, stored on the Mu2e NFS (Network File System) server in `/mu2e/DataFiles/UserSnapshots/`:
+Now you are probably wondering, "What exactly is in a snapshot?" Two zip files, stored on the Mu2e NFS (Network File System) server in `/mu2e/DataFiles/UserSnapshots/`:
 
 - `snapshot_<name>_Data.zip` holds your user data folder (`USER_DATA`, also called `NoGitData`): the Configuration tables info, Macros, desktop icons, `setup_ots.sh`, `mongodb_setup.sh` and `db_setup_ots.sh` when they exist.
 - `snapshot_<name>_database.zip` holds your databases folder (from `ARTDAQ_DATABASE_URI`): all table versions and group keys.
 
-Left out on purpose: logs, output data, run numbers, macro history, console snapshots, tooltip data, and the list of active groups. A recall keeps your own run number.
+What does it leave out, on purpose? Logs, output data, run numbers, macro history, console snapshots, tooltip data, and the list of active groups. A recall keeps your own run number.
 
 <!-- slide 5 -->
 ## Pick a Unique Name
@@ -47,7 +47,7 @@ Left out on purpose: logs, output data, run numbers, macro history, console snap
 <!-- slide 6 -->
 ## Look at What Is Already Saved
 
-List the snapshots on the server before you pick a name:
+Before you pick a name, peek at what everyone else has already saved:
 
 ```
 reset_mu2e_ots_snapshot.sh --list
@@ -86,7 +86,7 @@ No database zip is made or copied. This is how the ops script saves the extra da
 <!-- slide 9 -->
 ## Recall a Snapshot
 
-Recall replaces your current setup, so read the next slide first. From your *otsdaq* area:
+Recall replaces your current setup, so read the next slide first. Seriously. From your *otsdaq* area:
 
 ```
 reset_mu2e_ots_snapshot.sh --name tutorial_demo
@@ -100,12 +100,12 @@ The script runs `ots --killall` and `killall -9 ots_udp_hw_emulator`, downloads 
 - Your current user data folder is renamed to `<USER_DATA>.bak`, and your current databases folder to `<databases>.bak`.
 - Only one backup is kept. A second recall deletes the first `.bak` folders. Copy them somewhere else if you want to keep them.
 - Logs, `ARTDAQConfigurations`, `TriggerConfigurations` and `OutputData` are removed from the recalled user data, and your run number files are copied back from the backup.
-- `killall -9 ots_udp_hw_emulator` stops every emulator started with that name on the machine, including other people's. Do not recall on a shared machine while others are running.
+- `killall -9 ots_udp_hw_emulator` stops every emulator started with that name on the machine, including other people's. Do not recall on a shared machine while others are running, or you will make enemies.
 
 <!-- slide 11 -->
 ## Start ots and Check the Result
 
-Start *otsdaq* as usual:
+Time to see your handiwork. Start *otsdaq* as usual:
 
 ```
 ots
@@ -116,7 +116,7 @@ Open the Configure app and the table and group views, and look for the Context, 
 <!-- slide 12 -->
 ## The ops Version
 
-On the Mu2e ops machines the same two steps exist for the whole ops layout:
+The Mu2e ops machines have the same two steps, but for the whole ops layout:
 
 ```
 create_mu2e_ops_snapshot.sh --name tutorial_demo
@@ -142,7 +142,7 @@ reset_mu2e_ops_snapshot.sh --name tutorial_demo
 <!-- slide 14 -->
 ## That's It! What Next?
 
-You can now save a named snapshot of your user data and databases, and recall one that someone else saved.
+You can now save a named snapshot of your user data and databases, and recall one that someone else saved. Not bad for a pair of scripts.
 
 - Go back to the [Mu2e tutorials home page](index.md).
 - Next: [Adding a ROC DCS Register to EPICS](adding-a-roc-register-to-slow-controls.md).

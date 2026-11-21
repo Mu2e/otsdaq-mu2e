@@ -65,3 +65,22 @@ Other findings:
 - The certificate on the live HTTPS gateway port 8443 had an end date of 2025-01-19 when read with openssl (the live system, not touched further).
 - Images in `images/mu2e-subsystems-in-otsdaq/` come from the dev Gateway; the administrator view is cropped below the top bar so no name shows. The window titles of Settings (which carry the login name) are cropped out.
 - Scratch files (not in the repo): `/home/mu2eshift/ots_ops_tdaq/tmp/subsystems_tutorial/`.
+
+## Running artdaq in Mu2e (`running-artdaq-in-mu2e`, written 2026-11-19, draft)
+
+Source only: nothing was run and no Mu2e instance was opened. Every class, line and folder name was read with `git show` at `origin/develop` (`origin/main` for Offline) and compared with `raw.githubusercontent.com`: all 49 line-anchored links match GitHub. Reading the git refs mattered: the local `otsdaq-mu2e-dqm` checkout was 53 commits behind `origin/develop` (and `artdaq-mu2e` 16, `otsdaq-mu2e-crv` 27, `otsdaq-mu2e-sync` 14, `Offline` 1091), so the working trees show an older `TrackerDQM`, `CaloDigiDQM` and CMake build list. Diagrams: `doc/mu2e-tutorials-diagrams/make_running_artdaq_in_mu2e_diagrams.py` (edit it, not the png).
+
+Not in the repositories, so not on the page: the real ARTDAQ table rows of the subsystems (process labels, hosts, ports) and the table definition of the settings of `DQMMu2eHistoConsumer` (columns `SaveFile`, `FilePath`, `RadixFileName` are read in the consumer source; the definition is probably in the private `otsdaq-mu2e-config`, unverified). The naming slides therefore state only the rules in code (a label is the UID of a row, the FHiCL file per label, fragment types, product names such as `Fragments_daq_DTCEVT_eb01`, the `Mu2e` naming helper, DTC and front-end names) and say that each subsystem chooses its labels.
+
+Still to do, after a look at a live Mu2e DQM instance (`dqm`, `dqmcalo`, `dqmtrk` or `dqmstm`; the web login in `OTS_WEB_USER`/`OTS_WEB_PASSWORD`):
+- The real labels and ports of the DQM subsystems, and which analyzers run in each. The page lists the analyzers in the repository, not the ones that run.
+- What the live view lists at `/`: the page says the folders and histograms of `Mu2eHistos`. The Visualizer code had a fixed `Mu2eHistos` prefix (commit 83908747, 2026-09-23); the rule that skips a single top folder was written 2026-11-18 and is uncommitted in otsdaq-utilities.
+- What a `HistoSender` does when the listener is not up at **Start** (`TCPSendClient` was not read; the page says only that it connects when the analyzer is created).
+- Which branch the ops installs use: `mu2e/ots_ops` exists in `otsdaq-mu2e`, `otsdaq-mu2e-dqm`, `artdaq-mu2e`, `artdaq-core-mu2e` and `otsdaq-mu2e-calorimeter`. The links use `develop`.
+- `CrvOtsDqm` (cosmic ray veto, sends `hists/...:replace`) is in an older `otsdaq-mu2e-crv` checkout and is not built there; the page does not list it. Check `origin/develop` of that repository before adding it.
+- Slide "Mu2e C++ Classes: Art Modules Around the Data": whether the DQM analyzers run the Offline producers in the same job, or read the fragments themselves, differs by analyzer; the page says "or".
+
+## DCS Dashboard for Mu2e (`dcs-dashboard-for-mu2e`, placeholder written 2026-11-19, draft)
+
+Placeholder at the owner's request, with a Coming Soon slide only. Planned content: the full Calorimeter dashboard, meaning its set of pages with their widgets, and the bitmap arrangement (a map of the crystals, with regions highlighted). The picture on the Coming Soon slide is the owner's example of the crystal map; nothing was run and what the green regions mean is not stated on the page. To fill it in: open the Calorimeter dashboard in the Slow Controls Dashboard, list its pages and widgets, and find out how the bitmap arrangement is configured (which widget and which channels). Ask the owner which other subsystems have a full dashboard, and whether the page should go before or after "Adding a ROC DCS Register to EPICS".
+
