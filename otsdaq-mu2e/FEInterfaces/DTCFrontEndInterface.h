@@ -1,6 +1,7 @@
 #ifndef _ots_DTCFrontEndInterface_h_
 #define _ots_DTCFrontEndInterface_h_
 
+#include <atomic>
 #include <array>
 #include <fstream>
 #include <iostream>
@@ -345,6 +346,9 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	                        rtfPhaseEdgeRetryDetail_;  // populated when edge-flip retry runs, included in error if verify still fails
 	int                     dtc_location_in_chain_ = -1;
 	unsigned int            runningCallCount_      = 0;
+	// start(): set when the last start step is done; running() then resumes the
+	// Slow Controls workloop that start() paused
+	std::atomic<bool>       resumeSlowControlsWhenRunning_{false};  // start() and running() are different threads
 	unsigned int            roc_mask_              = 0;
 	unsigned int            roc_emulated_mask_     = 0;
 	bool                    has_real_roc_flow_     = false;

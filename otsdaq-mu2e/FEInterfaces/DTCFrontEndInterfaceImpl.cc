@@ -3871,9 +3871,10 @@ void DTCFrontEndInterface::stop(void)
 		return;
 	__FE_COUTV__(transitionStr);
 
-	// Resume Slow Controls polling now that the run has ended (see matching pause
-	// in start(), which stops Slow Controls for the duration of the run so its
-	// DCS traffic cannot contend with the DAQ while running).
+	// Make sure Slow Controls polling is on after the run. start() pauses it for
+	// the start sequence and running() resumes it a few seconds into the run; this
+	// covers a stop that comes before that.
+	resumeSlowControlsWhenRunning_ = false;
 	{
 		bool slowControlsEnable = true;
 		try
@@ -4117,9 +4118,17 @@ void DTCFrontEndInterface::start(std::string runNumber)
 		}
 		if(slowControlsEnable)
 		{
-			slowControlsWorkLoopShouldRun_ = false;
+			// exchange() tells whether the loop was still allowed to run: only then
+			// can a channel read be in flight, and it must finish before the ROCs
+			// are touched (the loop stops at the next channel once the flag is false)
+			const bool wasRunning = slowControlsWorkLoopShouldRun_.exchange(false);
 			__FE_COUT__ << "Pausing Slow Controls workloop for Start." << __E__;
+			if(wasRunning)
+				sleep(1);
 		}
+		// resumed by running() once the last start step is done (see the end of
+		// this function); it stays paused if the start fails or returns early
+		resumeSlowControlsWhenRunning_ = false;
 	}
 
 	runningCallCount_ = 0;
@@ -4222,6 +4231,22 @@ void DTCFrontEndInterface::start(std::string runNumber)
 		          << " Please specify a valid operating mode in the 'Mu2eGlobalsTable.'"
 		          << __E__;
 		__FE_SS_THROW__;
+	}
+
+	// The last start step is done: let running() switch the Slow Controls workloop
+	// on again, a few seconds into the run. start() pauses it so that its reads do
+	// not collide with the register access of the start sequence.
+	{
+		bool slowControlsEnable = true;
+		try
+		{
+			slowControlsEnable =
+			    getSelfNode().getNode("SlowControlsEnable").getValue<bool>();
+		}
+		catch(...)
+		{
+		}
+		resumeSlowControlsWhenRunning_ = slowControlsEnable;
 	}
 
 	return;
@@ -4443,6 +4468,15 @@ bool DTCFrontEndInterface::running(void)
 		return false;
 
 	++runningCallCount_;
+
+	// running() is called about once per second. Resume Slow Controls on the 5th
+	// call after the last start step, i.e. a few seconds into the run.
+	if(resumeSlowControlsWhenRunning_ && runningCallCount_ >= 5)
+	{
+		resumeSlowControlsWhenRunning_ = false;
+		slowControlsWorkLoopShouldRun_ = true;
+		__FE_COUT_INFO__ << "Resuming Slow Controls workloop while running." << __E__;
+	}
 
 	if(runningCallCount_ % 5 == 0)
 	{
