@@ -4186,6 +4186,9 @@ std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
 		statusSs << "Detached thread running:"
 		         << (threadStruct->running_ ? "true" : "false") << __E__;
 		statusSs << "Subevents count:" << threadStruct->subeventsCount_ << __E__;
+		statusSs << "On-spill count:" << threadStruct->onSpillCount_
+		         << " Off-spill count:" << threadStruct->offSpillCount_
+		         << " Null count:" << threadStruct->nullEventCount_ << __E__;
 
 		statusSs << "Total CFO Subevent Bytes Transferred: "
 		         << threadStruct->totalSubeventBytesTransferred_ << " bytes" << __E__;
@@ -4267,6 +4270,13 @@ void CFOFrontEndInterface::handleDetachedSubevent(
 	const CFOLib::CFO_Event* subevent = &subeventIn;
 
 	++(threadStruct->subeventsCount_);
+
+	if(subevent->GetEventRecord().event_mode == 0)
+		++(threadStruct->nullEventCount_);
+	else if(subevent->GetEventMode().isOnSpillFlagSet())
+		++(threadStruct->onSpillCount_);
+	else
+		++(threadStruct->offSpillCount_);
 
 #if 1
 	// check the subevent tag window
@@ -4382,6 +4392,9 @@ try
 		threadStruct->error_                    = "";
 		threadStruct->subeventsCount_           = 0;
 		threadStruct->mismatchedEventTagsCount_ = 0;
+		threadStruct->onSpillCount_             = 0;
+		threadStruct->offSpillCount_            = 0;
+		threadStruct->nullEventCount_           = 0;
 		threadStruct->mismatchedEventTagJumps_.clear();
 		threadStruct->totalSubeventBytesTransferred_ = 0;
 		threadStruct->transferStartTime_ = std::chrono::steady_clock::time_point::min();
@@ -4390,6 +4403,20 @@ try
 
 	uint64_t                                        lastCount = 0;
 	std::vector<std::unique_ptr<CFOLib::CFO_Event>> subevents;
+
+	// The Metric Manager caps the points it keeps per metric between reports, so
+	// send one count delta per second instead of one point per event.
+	uint64_t lastOnSpill = 0, lastOffSpill = 0, lastNull = 0;
+	auto     lastMetricTime   = std::chrono::steady_clock::now();
+	auto     sendEventsMetric = [](const std::string& name,
+	                               uint64_t           count,
+	                               uint64_t&          lastSentCount) {
+		//counters may have been reset since the last send
+		uint64_t delta =
+		    count >= lastSentCount ? count - lastSentCount : count;
+		lastSentCount = count;
+		metricMan->sendMetric(name, delta, "events", 3, artdaq::MetricMode::Rate);
+	};
 
 	//------------------------
 	while(!threadStruct->exitThread_)
@@ -4447,6 +4474,9 @@ try
 						threadStruct->error_                    = "";
 						threadStruct->subeventsCount_           = 0;
 						threadStruct->mismatchedEventTagsCount_ = 0;
+						threadStruct->onSpillCount_             = 0;
+						threadStruct->offSpillCount_            = 0;
+						threadStruct->nullEventCount_           = 0;
 						threadStruct->mismatchedEventTagJumps_.clear();
 						threadStruct->totalSubeventBytesTransferred_ = 0;
 						threadStruct->transferStartTime_ =
@@ -4512,6 +4542,20 @@ try
 				// threadStruct->thisCFO_->GetDevice()->spy(DTC_DMA_Engine_DAQ, 3 /* for once */ | 8 /* for wide view */ | 16 /* for stack trace */);
 			}
 		}  // end Sub Event handling
+
+		if(std::chrono::steady_clock::now() - lastMetricTime >= std::chrono::seconds(1))
+		{
+			lastMetricTime = std::chrono::steady_clock::now();
+			if(metricMan && metricMan->Running())
+			{
+				sendEventsMetric(
+				    "CFO On-Spill Events", threadStruct->onSpillCount_, lastOnSpill);
+				sendEventsMetric(
+				    "CFO Off-Spill Events", threadStruct->offSpillCount_, lastOffSpill);
+				sendEventsMetric(
+				    "CFO Null Events", threadStruct->nullEventCount_, lastNull);
+			}
+		}
 
 		if(threadStruct->fp_)
 			fflush(threadStruct->fp_);

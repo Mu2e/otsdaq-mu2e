@@ -84,6 +84,7 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 
 		std::atomic<uint64_t>                      subeventsCount_;
 		std::atomic<uint64_t>                      mismatchedEventTagsCount_;
+		std::atomic<uint64_t>                      onSpillCount_ = 0, offSpillCount_ = 0, nullEventCount_ = 0;
 		std::vector<std::pair<uint64_t, uint64_t>> mismatchedEventTagJumps_;
 
 		uint64_t totalSubeventBytesTransferred_;
