@@ -4407,16 +4407,14 @@ try
 	// The Metric Manager caps the points it keeps per metric between reports, so
 	// send one count delta per second instead of one point per event.
 	uint64_t lastOnSpill = 0, lastOffSpill = 0, lastNull = 0;
-	auto     lastMetricTime   = std::chrono::steady_clock::now();
-	auto     sendEventsMetric = [](const std::string& name,
-	                               uint64_t           count,
-	                               uint64_t&          lastSentCount) {
-		//counters may have been reset since the last send
-		uint64_t delta =
-		    count >= lastSentCount ? count - lastSentCount : count;
-		lastSentCount = count;
-		metricMan->sendMetric(name, delta, "events", 3, artdaq::MetricMode::Rate);
-	};
+	auto     lastMetricTime = std::chrono::steady_clock::now();
+	auto     sendEventsMetric =
+	    [](const std::string& name, uint64_t count, uint64_t& lastSentCount) {
+		    //counters may have been reset since the last send
+		    uint64_t delta = count >= lastSentCount ? count - lastSentCount : count;
+		    lastSentCount  = count;
+		    metricMan->sendMetric(name, delta, "events", 3, artdaq::MetricMode::Rate);
+	    };
 
 	//------------------------
 	while(!threadStruct->exitThread_)
