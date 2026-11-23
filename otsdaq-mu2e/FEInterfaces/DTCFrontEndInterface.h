@@ -2,6 +2,7 @@
 #define _ots_DTCFrontEndInterface_h_
 
 #include <array>
+#include <atomic>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -342,12 +343,15 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	    (unsigned int)-1;  // which subsystem-iteration this DTC configures in; -1 = not yet decided
 	bool rtfPhaseEdgeRetried_ = false;
 	std::string
-	                        rtfPhaseEdgeRetryDetail_;  // populated when edge-flip retry runs, included in error if verify still fails
-	int                     dtc_location_in_chain_ = -1;
-	unsigned int            runningCallCount_      = 0;
-	unsigned int            roc_mask_              = 0;
-	unsigned int            roc_emulated_mask_     = 0;
-	bool                    has_real_roc_flow_     = false;
+	             rtfPhaseEdgeRetryDetail_;  // populated when edge-flip retry runs, included in error if verify still fails
+	int          dtc_location_in_chain_ = -1;
+	unsigned int runningCallCount_      = 0;
+	// start(): set when the last start step is done; running() then resumes the
+	// Slow Controls workloop that start() paused
+	std::atomic<bool>       resumeSlowControlsWhenRunning_{false};  // start() and running() are different threads
+	unsigned int            roc_mask_          = 0;
+	unsigned int            roc_emulated_mask_ = 0;
+	bool                    has_real_roc_flow_ = false;
 	std::string             real_roc_flow_reason_;
 	bool                    emulate_cfo_         = true;
 	bool                    enable_software_drp_ = false;  ///< from DTCInterfaceTable EnableSoftwareDataRequestMode; when true, Autogenerate DRP is never enabled
