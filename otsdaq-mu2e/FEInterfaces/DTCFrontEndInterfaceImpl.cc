@@ -732,11 +732,14 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	                             "ROCs, or 0x111111 := all)",
 	                             "address",
 	                             "Number Of 16-bit words to Read (Default := 8)",
-	                             "incrementAddress (Default := false)"},
+	                             "incrementAddress (Default := false)",
+	                             "Fail on Exception (Default := true)"},
 	    std::vector<std::string>{"readData"},
 	    1,  // requiredUserPermissions
 	    "*",
-	    "This FE Macro is used to read multiple words from a ROC.");
+	    "This FE Macro is used to read multiple words from a ROC. "
+	    "When 'Fail on Exception' is false, the links of ROCs that fail to read are "
+	    "listed at the end of readData instead of aborting the macro.");
 
 	registerFEMacroFunction(
 	    "ROC Block Write",
@@ -5507,14 +5510,18 @@ void DTCFrontEndInterface::BlockReadROC(__ARGS__)
 	uint16_t              wordCount =
 	    __GET_ARG_IN__("Number Of 16-bit words to Read (Default := 8)", uint16_t, 8);
 	bool incrementAddress = __GET_ARG_IN__("incrementAddress (Default := false)", bool);
+	bool failOnException =
+	    __GET_ARG_IN__("Fail on Exception (Default := true)", bool, true);
 
 	__FE_COUT__ << "address = 0x" << std::hex << (unsigned int)address << std::dec
 	            << __E__;
 	__FE_COUT__ << "numberOfWords = " << std::dec << (unsigned int)wordCount << __E__;
 	__FE_COUTV__(incrementAddress);
+	__FE_COUTV__(failOnException);
 
 	bool        found  = false;
 	std::string result = "";
+	std::string failedRocResults;
 	for(auto& roc : rocs_)
 	{
 		if(usingRocMask)
@@ -5534,8 +5541,35 @@ void DTCFrontEndInterface::BlockReadROC(__ARGS__)
 			found = true;
 			__FE_COUTT__ << "Doing " << roc.second->getLinkID() << __E__;
 			std::vector<DTCLib::roc_data_t> readData;
+			std::string                     readError;
+			try
+			{
+				roc.second->readBlock(readData, address, wordCount, incrementAddress);
+			}
+			catch(const std::exception& e)
+			{
+				if(failOnException)
+					throw;
+				readError = e.what();
+			}
+			catch(...)
+			{
+				if(failOnException)
+					throw;
+				readError = "Unknown exception during ROC block read.";
+			}
 
-			roc.second->readBlock(readData, address, wordCount, incrementAddress);
+			if(readError.size())  // only with failOnException == false
+			{
+				__FE_COUT_WARN__
+				    << "ROC block read of link " << roc.second->getLinkID()
+				    << " failed, continuing with remaining ROCs: " << readError << __E__;
+				if(failedRocResults.size())
+					failedRocResults += ", ";
+				failedRocResults +=
+				    std::to_string(static_cast<uint8_t>(roc.second->getLinkID()));
+				continue;
+			}
 
 			std::string readDataString = "";
 			{
@@ -5572,6 +5606,12 @@ void DTCFrontEndInterface::BlockReadROC(__ARGS__)
 
 	if(found)
 	{
+		if(failedRocResults.size())
+		{
+			if(result.empty())
+				result = "no ROC read successfully\n";
+			result += "Failed ROC(s): " + failedRocResults;
+		}
 		__SET_ARG_OUT__("readData", result);
 		return;
 	}
