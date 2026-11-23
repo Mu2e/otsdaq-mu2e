@@ -3356,8 +3356,9 @@ void DTCFrontEndInterface::configureEventBuildingMode(int step)
 				if(enable_roc_configure_step_)
 					indicateSubIterationWork();
 				else
-					__FE_COUT__ << "EnableROCConfigureStep is false; skipping ROC configure."
-					            << __E__;
+					__FE_COUT__
+					    << "EnableROCConfigureStep is false; skipping ROC configure."
+					    << __E__;
 			}
 		}
 		else
