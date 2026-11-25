@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1658" height="312" viewBox="0 0 1658 312" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+<defs><marker id="ah" markerUnits="userSpaceOnUse" markerWidth="16" markerHeight="16" refX="14" refY="8" orient="auto"><path d="M1,1 L15,8 L1,15 z" fill="#004C97"/></marker></defs>
+<rect width="100%" height="100%" fill="#fbfbfb"/>
+<rect x="360" y="22" width="1280" height="268" rx="14" fill="none" stroke="#004C97" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="376" y="48" font-size="21" font-style="italic" fill="#004C97">artdaq processes, started by the ARTDAQSupervisor</text>
+<rect x="30" y="70" width="230" height="172" rx="12" fill="#e9edf2" stroke="#5b6773" stroke-width="2.5"/>
+<text x="145" y="120" font-size="23" font-weight="bold" text-anchor="middle" fill="#1d2b3a">ROC and DTC</text>
+<text x="145" y="152" font-size="19" text-anchor="middle" fill="#5b6773" font-weight="bold">Readout hardware</text>
+<text x="145" y="182" font-size="17" text-anchor="middle" fill="#3b4652">the DTC is read</text>
+<text x="145" y="203" font-size="17" text-anchor="middle" fill="#3b4652">through the DTC library</text>
+<line x1="266" y1="156" x2="368" y2="156" stroke="#004C97" stroke-width="3" marker-end="url(#ah)"/>
+<rect x="372" y="70" width="230" height="172" rx="12" fill="#dce8f6" stroke="#004C97" stroke-width="2.5"/>
+<text x="487" y="120" font-size="23" font-weight="bold" text-anchor="middle" fill="#1d2b3a">BoardReader</text>
+<text x="487" y="152" font-size="19" text-anchor="middle" fill="#004C97" font-weight="bold">Mu2eEventReceiver</text>
+<text x="487" y="182" font-size="17" text-anchor="middle" fill="#3b4652">opens the DTC and</text>
+<text x="487" y="203" font-size="17" text-anchor="middle" fill="#3b4652">makes DTCEVT fragments</text>
+<line x1="608" y1="156" x2="710" y2="156" stroke="#004C97" stroke-width="3" marker-end="url(#ah)"/>
+<rect x="714" y="70" width="230" height="172" rx="12" fill="#dce8f6" stroke="#004C97" stroke-width="2.5"/>
+<text x="829" y="120" font-size="23" font-weight="bold" text-anchor="middle" fill="#1d2b3a">EventBuilders</text>
+<text x="829" y="152" font-size="19" text-anchor="middle" fill="#004C97" font-weight="bold">EventBuilder</text>
+<text x="829" y="182" font-size="17" text-anchor="middle" fill="#3b4652">put the fragments</text>
+<text x="829" y="203" font-size="17" text-anchor="middle" fill="#3b4652">into events</text>
+<line x1="950" y1="156" x2="1052" y2="156" stroke="#004C97" stroke-width="3" marker-end="url(#ah)"/>
+<rect x="1056" y="70" width="230" height="172" rx="12" fill="#dce8f6" stroke="#004C97" stroke-width="2.5"/>
+<text x="1171" y="120" font-size="23" font-weight="bold" text-anchor="middle" fill="#1d2b3a">DataLogger</text>
+<text x="1171" y="152" font-size="19" text-anchor="middle" fill="#004C97" font-weight="bold">DataLogger</text>
+<text x="1171" y="182" font-size="17" text-anchor="middle" fill="#3b4652">writes the</text>
+<text x="1171" y="203" font-size="17" text-anchor="middle" fill="#3b4652">art files</text>
+<line x1="1292" y1="156" x2="1394" y2="156" stroke="#004C97" stroke-width="3" marker-end="url(#ah)"/>
+<rect x="1398" y="70" width="230" height="172" rx="12" fill="#dce8f6" stroke="#004C97" stroke-width="2.5"/>
+<text x="1513" y="120" font-size="23" font-weight="bold" text-anchor="middle" fill="#1d2b3a">Dispatcher</text>
+<text x="1513" y="152" font-size="19" text-anchor="middle" fill="#004C97" font-weight="bold">Dispatcher</text>
+<text x="1513" y="182" font-size="17" text-anchor="middle" fill="#3b4652">copies events for</text>
+<text x="1513" y="203" font-size="17" text-anchor="middle" fill="#3b4652">online monitors</text>
+</svg>

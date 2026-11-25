@@ -35,7 +35,6 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 
 	// CFO specific items
 	//----------------
-	float    MeasureLoopback(int linkToLoopback);     ///< pre-covid loopback calculation stretegy
 	uint32_t measureDelay(CFOLib::CFO_Link_ID link);  ///< post-covid loopback function
 
 	// int  								getLinkStatus				(void);
@@ -86,6 +85,30 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 		std::atomic<uint64_t>                      mismatchedEventTagsCount_;
 		std::vector<std::pair<uint64_t, uint64_t>> mismatchedEventTagJumps_;
 
+		std::atomic<uint64_t> offspillEventsCount_ = 0, onspillEventsCount_ = 0;
+		std::atomic<uint64_t> nullEventsCount_ = 0;  // event mode 0; these are also counted in offspillEventsCount_
+		// histograms of event width seen in the CFO event records: event duration field value --> number of events
+		std::map<uint16_t /* event duration */, uint64_t /* events count */> offspillEventDurationCounts_, onspillEventDurationCounts_;
+
+		bool     previousEventIsValid_    = false;
+		bool     previousEventWasOnSpill_ = false;
+		uint16_t previousEventDuration_   = 0;
+
+		std::map<uint16_t, uint64_t> lastOffspillBeforeOnspillDurationCounts_;
+		std::map<uint16_t, uint64_t> lastOnspillBeforeOffspillDurationCounts_;
+
+		// the event before the previous event, to histogram the 2nd to last On-Spill event before Off-Spill
+		bool     eventBeforePreviousIsValid_    = false;
+		bool     eventBeforePreviousWasOnSpill_ = false;
+		uint16_t eventBeforePreviousDuration_   = 0;
+		std::map<uint16_t, uint64_t> secondToLastOnspillBeforeOffspillDurationCounts_;
+
+		// duration of each entire Off-Spill period and each entire On-Spill period, found by adding up
+		//	the event durations of consecutive events with the same On-Spill flag
+		uint64_t currentSpillPeriodDurationClocks_ = 0;
+		bool     currentSpillPeriodStartWasSeen_   = false;  // false for the first period, which the test joined part way through
+		std::map<uint64_t /* period duration in clocks */, uint64_t /* periods count */> offspillPeriodDurationCounts_, onspillPeriodDurationCounts_;
+
 		uint64_t totalSubeventBytesTransferred_;
 		std::chrono::time_point<std::chrono::steady_clock>
 		    transferStartTime_, transferEndTime_;
@@ -99,6 +122,7 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 	};  // end DetachedBufferTestThreadStruct declaration
 
 	static std::string getDetachedBufferTestStatus(std::shared_ptr<CFOFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct);
+	static std::string getDetachedBufferTestEventWidthPlot(std::shared_ptr<CFOFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct);
 	static uint64_t    getDetachedBufferTestReceivedCount(std::shared_ptr<CFOFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct);
 	static void        handleDetachedSubevent(const CFOLib::CFO_Event&                                              subevent,
 	                                          std::shared_ptr<CFOFrontEndInterface::DetachedBufferTestThreadStruct> threadStruct);
@@ -191,8 +215,11 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 	void        ResetRunplan(__ARGS__);
 	void        CompileRunplan(__ARGS__);
 	void        SetRunplan(__ARGS__);
-	std::string SetRunplan(const std::string& binFilename);
+	std::string SetRunplan(const std::string& binFilename, uint32_t runPlanInstructionAddress = 0);
 	void        LaunchRunplan(__ARGS__);
+	void        InstallDefaultOnAndOffSpillRunPlans(__ARGS__);
+	std::string installDefaultOnAndOffSpillRunPlans();
+	std::string getHeartbeatSpillCountersStatus();
 	void        CompileSetAndLaunchTemplateSuperCycleRunPlan(__ARGS__);
 	std::string CompileSetAndLaunchTemplateSuperCycleRunPlan(bool     enable,
 	                                                         bool     useDetachedBufferTest,
@@ -232,6 +259,8 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 	void LoopbackTest(__ARGS__);
 	void LoopbackTopologyDiscovery(__ARGS__);
 	void TemporaryDiagnosticTest(__ARGS__);
+	void EVBMarkerDelayCalibrate(__ARGS__);
+	void ClockMarkerSpacingReadOrSet(__ARGS__);
 
 	struct ROCLoopbackResult
 	{

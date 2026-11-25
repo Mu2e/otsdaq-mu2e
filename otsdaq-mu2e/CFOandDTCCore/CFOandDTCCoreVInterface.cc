@@ -3,7 +3,7 @@
 #include "otsdaq/FECore/MakeInterface.h"
 #include "otsdaq/Macros/BinaryStringMacros.h"
 #include "otsdaq/Macros/InterfacePluginMacros.h"
-#include "otsdaq/TablePlugins/ARTDAQTableBase/ARTDAQTableBase.h"
+#include "otsdaq-artdaqinterface/TablePlugins/ARTDAQTableBase/ARTDAQTableBase.h"
 
 using namespace ots;
 

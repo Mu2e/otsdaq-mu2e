@@ -2,6 +2,7 @@
 #define _ots_DTCFrontEndInterface_h_
 
 #include <array>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -251,6 +252,13 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 		// deltas here; the report prints accumulated + (end - last snapshot)
 		std::array<std::atomic<uint64_t>, 15>              evbStallAccumulated_{};
 		std::chrono::time_point<std::chrono::steady_clock> evbStallLastSnapshotTime_;
+		// send window offset row (stats type 0x6 via 0x9160) read every 5 s while data flows:
+		// (seconds since the first data, one value per DTC of the cluster); cleared when the
+		// next run's data starts, only the most recent evbOffsetRowSnapshotLimit_ are kept
+		static constexpr size_t                                  evbOffsetRowSnapshotLimit_ = 240;
+		std::mutex                                               evbOffsetRowLock_;
+		std::deque<std::pair<double, std::vector<int32_t>>>      evbOffsetRowSnapshots_;
+		std::chrono::time_point<std::chrono::steady_clock>       evbOffsetRowLastSnapshotTime_;
 
 		uint64_t                                           totalSubeventBytesTransferred_;
 		std::chrono::time_point<std::chrono::steady_clock> transferStartTime_,
@@ -440,9 +448,12 @@ class DTCFrontEndInterface : public CFOandDTCCoreVInterface
 	void SetDTCIdAndEVBInfo(__ARGS__);
 	void EVBInit(__ARGS__);
 	void EVBStatus(__ARGS__);
+	void EVBTimingChainReadout(__ARGS__);
 	void ExerciseLink7Reset(__ARGS__);
 	void SetEVBStartGateIgnoreMask(__ARGS__);
 	void SetupEVBIdlePackets(__ARGS__);
+	void EVBMarkerDelayReadOrSet(__ARGS__);
+	void EVBPlanningGapReadOrSet(__ARGS__);
 
 	// void 								ResetEVBLinkRx						(__ARGS__);
 	// void 								ResetEVBLinkTx						(__ARGS__);

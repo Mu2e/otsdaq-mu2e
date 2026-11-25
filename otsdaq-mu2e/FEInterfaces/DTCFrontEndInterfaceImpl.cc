@@ -109,9 +109,33 @@ bool evbHasRetransmission(DTCLib::DTC* dtc)
 	return (designDate & ~sixRocFlag) >= (firstRetransmissionBuild & ~sixRocFlag);
 }
 
+// Bit 12 (RX_FRAME_SIZE): from 0xd6110998 (Nov-09 18:00) a frame that arrives cut is dropped
+// at its end and the sender re-sends it; 0x9264 counts them.  hw agent 2026-11-10: bit 12
+// with complete data is normal on that bitfile, never FAIL (run15/16/17 at N=8: bit 12 on
+// 5-7 of 8 DTCs, 100000 subevents and 12500 events on all).  On older builds bit 12 came with
+// split records, so there it still invalidates the run.  Compared as the 0x9264 layout is:
+// low 28 bits of 0x9004 (the top nibble is the flavor), without the 6-ROC flag.
+// Bit 13 (RX_FCS_BAD), hw agent 2026-11-19: a frame with a bad checksum is thrown away and
+// re-sent the same way, so it is excused on the same bitfiles (it marks a marginal link).
+bool evbResendsCutFrames(DTCLib::DTC* dtc)
+{
+	if(!dtc)
+		return false;
+	constexpr uint32_t comparableBits           = 0x0FFFFF7Fu;
+	constexpr uint32_t firstCutFrameResendBuild = 0xd6110998u;
+	uint32_t           designDate               = 0;
+	dtc->GetDevice()->read_register(0x9004, 100, &designDate);
+	return (designDate & comparableBits) >= (firstCutFrameResendBuild & comparableBits);
+}
+
 uint32_t evbRecoveredLossMask(DTCLib::DTC* dtc)
 {
-	return evbHasRetransmission(dtc) ? DTCLib::EVBRxSequenceGapBit : 0;
+	uint32_t recoveredLossMask = 0;
+	if(evbHasRetransmission(dtc))
+		recoveredLossMask |= DTCLib::EVBRxSequenceGapBit;
+	if(evbResendsCutFrames(dtc))
+		recoveredLossMask |= DTCLib::EVBRxFrameSizeBit | DTCLib::EVBRxFCSBadBit;
+	return recoveredLossMask;
 }
 
 // 0x9174 (one read; the two halves count on different clocks, so a read on a busy link can
@@ -290,7 +314,14 @@ std::string requireEVBBufferTestReady(DTCLib::DTC* dtc, uint32_t operatorIgnoreM
 {
 	// SoftReset drops bit 25 (DDR calibration done) for ~1 s through the reset chain;
 	// wait it out, but refuse immediately on any sticky error
-	const uint32_t buildMask = evbKnownDefectMask(dtc);
+	// Bit 1 (RX sequence gap) on a retransmission build means a lost frame was re-sent and
+	// recovered; the running thread already treats it as informational, and at N=8 a peer's
+	// emulator can start first and lose a frame to this DTC before this DTC's own start
+	// gate runs (seen 2026-10-26 14:20, Trk01_DTC1 refused with 0x06000002).  Apply the same
+	// recovered-loss mask here so the gate agrees with the run-time check.  The same holds
+	// for bit 12 (frame arrived cut, dropped at its end and re-sent) from 0xd6110998.
+	const uint32_t knownDefectMask = evbKnownDefectMask(dtc);
+	const uint32_t buildMask       = knownDefectMask | evbRecoveredLossMask(dtc);
 	const uint32_t ignoreMask =
 	    buildMask | (operatorIgnoreMask & DTCLib::EVBDefinedErrorMask);
 
@@ -310,7 +341,7 @@ std::string requireEVBBufferTestReady(DTCLib::DTC* dtc, uint32_t operatorIgnoreM
 	}
 	std::string report = DTCLib::FormatEVBStatusCheck(
 	    value, dtc->getDeviceUID(), false, true, true, ignoreMask);
-	if(buildMask)
+	if(knownDefectMask)
 		report +=
 		    "NOTE: bit 13 (RX_FCS_BAD) excluded from start gate on this bitfile (checker "
 		    "defect, not data loss); still reported in EVB Status.\n";
@@ -340,6 +371,8 @@ std::string requireEVBBufferTestReady(DTCLib::DTC* dtc, uint32_t operatorIgnoreM
 // 2026-09-24), but software still clears it explicitly.  Bits 6:0 are live ROC-link resets,
 // so every write is read-modify-write.
 constexpr uint16_t kRegDesignVersion   = 0x9004;
+constexpr uint16_t kRegDTCControl      = 0x9100;
+constexpr uint16_t kRegJitterAttenuatorCSR = 0x9308;
 constexpr uint16_t kRegSERDESLoopback  = 0x9108;
 constexpr uint16_t kRegLinkEnable      = 0x9114;
 constexpr uint16_t kRegSERDESReset     = 0x9118;
@@ -363,6 +396,92 @@ uint32_t readReg(DTCLib::DTC* dtc, uint16_t addr)
 		throw std::runtime_error(ss.str());
 	}
 	return v;
+}
+
+// 0x9268 (EVB TX rewind diag) decoded for the buffer-test log: the hw agent wants it at the
+// first poll after the emulators start and again at the end of the run, on every DTC.
+std::string formatEVBTxRewindDiag(DTCLib::DTC* dtc)
+{
+	std::stringstream formatted;
+	try
+	{
+		const uint32_t txRewindDiag =
+		    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBTxRewindDiag));
+		// Layout from bitfile 0xd6110594 on (hw agent 2026-11-05): [31:16] drift at the last
+		// position mismatch (bit 15 set = last-word check, clear = header check; [14:0] side-band
+		// index minus expected, two's complement: +n = n words skipped, -n = n words repeated),
+		// [15:8] mismatch count, [7:0] ring refusals.
+		// hw agent 2026-11-06: [31:16] = 15-bit two's complement staging head minus expected position
+		// (negative = behind / repeated, positive = ahead / skipped), bit 15 = last-word check.
+		const uint32_t driftField = (txRewindDiag >> 16) & 0xFFFF;
+		int            driftWords = static_cast<int>(driftField & 0x7FFF);
+		if(driftWords & 0x4000) driftWords -= 0x8000;
+		formatted << "0x9268 = 0x" << std::hex << std::setw(8) << std::setfill('0')
+		          << txRewindDiag << std::dec << std::setfill(' ') << " (drift " << driftWords
+		          << " words " << (driftWords < 0 ? "behind" : "ahead") << " at "
+		          << ((driftField & 0x8000) ? "last-word" : "header") << " check, mismatches "
+		          << ((txRewindDiag >> 8) & 0xFF) << ", acks/rewinds refused " << (txRewindDiag & 0xFF) << ")";
+		const uint32_t slotHealth =
+		    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBSlotHealth));
+		formatted << "; 0x9260 = 0x" << std::hex << std::setw(8) << std::setfill('0') << slotHealth
+		          << std::dec << std::setfill(' ') << " (sticky " << ((slotHealth >> 31) & 1)
+		          << ", stale-inventory events [30:16] = " << ((slotHealth >> 16) & 0x7FFF)
+		          << ", slot turn-overs that re-read [15:8] = " << ((slotHealth >> 8) & 0xFF)
+		          << ", slot clears [7:0] = " << (slotHealth & 0xFF) << ")";
+		// 0x926C EVB_PATTERN_WATCH and 0x9270 EVB_RX_POS_GAP (hw agent 2026-11-05, both SoftReset-cleared)
+		const uint32_t patternWatch =
+		    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBPatternWatch));
+		formatted << "; 0x926C = 0x" << std::hex << std::setw(8) << std::setfill('0') << patternWatch
+		          << std::dec << std::setfill(' ') << " (non-consecutive words: write "
+		          << ((patternWatch >> 24) & 0xFF) << " / read " << ((patternWatch >> 16) & 0xFF)
+		          << " / wire " << ((patternWatch >> 8) & 0xFF) << " / dest " << ((patternWatch >> 3) & 0x1F)
+		          << ", sticky write " << ((patternWatch >> 2) & 1) << " read " << ((patternWatch >> 1) & 1)
+		          << " wire " << (patternWatch & 1) << ")";
+		const uint32_t rxPosGap =
+		    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBRxPosGap));
+		formatted << "; 0x9270 = 0x" << std::hex << std::setw(8) << std::setfill('0') << rxPosGap
+		          << std::dec << std::setfill(' ') << " (data frames refused ahead of position [31:16] = "
+		          << ((rxPosGap >> 16) & 0xFFFF) << ", idle frames ahead asking resend [15:0] = "
+		          << (rxPosGap & 0xFFFF) << ")";
+		// 0x9274 (0xd61105a3, hw agent 2026-11-06): repeated frames refused by the receiver
+		const uint32_t rxRepeatRefusal =
+		    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBRxRepeatRefusal));
+		formatted << "; 0x9274 = 0x" << std::hex << std::setw(8) << std::setfill('0') << rxRepeatRefusal
+		          << std::dec << std::setfill(' ') << " (data frames refused as repeats [31:16] = "
+		          << ((rxRepeatRefusal >> 16) & 0xFFFF) << ", sequence gaps in order [15:8] = "
+		          << ((rxRepeatRefusal >> 8) & 0xFF) << ", sender restarts [7:0] = " << (rxRepeatRefusal & 0xFF)
+		          << ")";
+		// 0x9264 and 0x9174 so the one line carries every register the hw agent asks for
+		const uint32_t rxBadEnd =
+		    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBRxBadEnd));
+		const uint32_t resendCount =
+		    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBResendCount));
+		// hw agent 2026-11-09: the layout of 0x9264 depends on the bitfile of this DTC
+		const uint32_t designDate = readReg(dtc, kRegDesignVersion);
+		formatted << "; 0x9264 = 0x" << std::hex << std::setw(8) << std::setfill('0') << rxBadEnd
+		          << std::dec << std::setfill(' ') << " ("
+		          << DTCLib::DTC_Registers::FormatEVBRxBadEndText(
+		                 DTCLib::DTC_Registers::DecodeEVBRxBadEnd(rxBadEnd, designDate))
+		          << ")"
+		          << "; 0x9174 = 0x" << std::hex << std::setw(8) << std::setfill('0') << resendCount
+		          << std::dec << std::setfill(' ') << " (served " << ((resendCount >> 16) & 0xFFFF)
+		          << ", requested " << (resendCount & 0xFFFF) << ")";
+		// hw agent 2026-11-10: 0x9100 (bit 9 = punched clock enable to the RJ-45 chain) and
+		// 0x9308 (jitter attenuator) as they are during the run; run17 had bit 9 clear after
+		// a configure by another ots instance and ran 2.5 % slower
+		const uint32_t dtcControl       = readReg(dtc, kRegDTCControl);
+		const uint32_t jitterAttenuator = readReg(dtc, kRegJitterAttenuatorCSR);
+		formatted << "; 0x9100 = 0x" << std::hex << std::setw(8) << std::setfill('0') << dtcControl
+		          << std::dec << std::setfill(' ') << " (punched clock enable bit 9 = "
+		          << ((dtcControl >> 9) & 1u) << ")"
+		          << "; 0x9308 = 0x" << std::hex << std::setw(8) << std::setfill('0')
+		          << jitterAttenuator << std::dec << std::setfill(' ');
+	}
+	catch(const std::exception& exception)
+	{
+		formatted << "0x9268/0x9260/0x926C/0x9270/0x9274/0x9264/0x9174/0x9100/0x9308 read failed: " << exception.what();
+	}
+	return formatted.str();
 }
 
 void writeReg(DTCLib::DTC* dtc, uint16_t addr, uint32_t v)
@@ -458,57 +577,6 @@ bool pollUntil(Pred pred, int timeoutMs, int stepUs = 500)
 	}
 	return true;
 }
-std::string decodeRingErrorFlags(uint32_t flags)
-{
-	struct BitName
-	{
-		uint8_t     bit;
-		const char* name;
-	};
-	static const BitName ringErrorBits[] = {
-	    {0, "S2C_OVF"},
-	    {1, "INVALID_S2C"},
-	    {2, "DCS_PEND"},
-	    {3, "EWM_HBP"},
-	    {4, "PLL"},
-	    {5, "RXCDR"},
-	    {6, "RX_OVF"},
-	    {7, "RX_INVALID"},
-	    {8, "DCS_TMO"},
-	    {9, "DCS_OVF"},
-	    {10, "CFO_TAG"},
-	    {11, "HBP_OVF"},
-	    {12, "OUT_OF_BAND"},
-	    {13, "BUF_RESIDUE"},
-	    {14, "STRAY_EWM"},
-	    {15, "INT_EMU"},
-	    {20, "EXT_EMU"},
-	};
-
-	const uint32_t errorAndStatusMask = 0x001FFFFF;
-	if((flags & errorAndStatusMask) == 0)
-		return "(clean)";
-
-	std::string result;
-	for(const auto& entry : ringErrorBits)
-		if(flags & (1u << entry.bit))
-		{
-			if(!result.empty())
-				result += ' ';
-			result += entry.name;
-		}
-	uint32_t txFsmState = (flags >> 16) & 0xF;
-	if(txFsmState)
-	{
-		if(!result.empty())
-			result += "  ";
-		result += "fsm=" + std::to_string(txFsmState);
-	}
-	if(result.empty())
-		result = "(status only)";
-	return result;
-}
-
 }  // namespace
 
 // // some global variables, probably a bad idea. But temporary
@@ -1313,12 +1381,20 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	        "change)",
 	        "EVB Partition ID (Default := 0x99)",
 	        "EVB Idle Packet Words (8-byte words, Default := no change)",
-	        "EVB Idle Burst per Dest Window (Default := no change)"},  // namesOfInputArgs
+	        "EVB Idle Burst per Dest Window (Default := no change)",
+	        "EVB Skipped Nodes as CSV of hostnames or DTCs (e.g. trk-09, trk-10-DTC0) "
+	        "(Default := none)"},  // namesOfInputArgs
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
 	    "Configure EVB registers from hostname-derived addresses (DTC ID, MAC, Mode=0), "
 	    "enable the EVB link, and issue a Soft Reset. "
+	    "Nodes or DTCs in the skipped list get no address: every DTC above them in the "
+	    "same subsystem moves down by 2 per skipped node or 1 per skipped DTC, so the "
+	    "DTCs present have consecutive addresses. Give the same list to every DTC. "
+	    "On a DTC that is itself in the list, EVB Init only turns its EVB link off (Tx and Rx) "
+	    "and returns; it sets no address and sends no Soft Reset. "
+	    "Names in the list ignore case, '-' and '_', so Trk14_DTC1 and trk-14-DTC1 are the same DTC. "
 	    "Set the EVB partition ID (0-255, default 0x99; register 0x9154 bits [15:8]). "
 	    "Optionally set the EVB interpacket gap (0x915C [15:8]), "
 	    "idle-packet payload size in 8-byte words (0x915C [31:16], reset 0x0c), "
@@ -1334,12 +1410,27 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
-	    "Display all EVB counters: config (0x9154/0x9158), error/status flags (0x9370), "
+	    "Display all EVB counters: config (0x9154/0x9158), the CFO link sticky error "
+	    "check (same flags and counts as Get RTF Interface Status; DTC Soft Reset clears "
+	    "them, so read this before the next reset), error/status flags (0x9370), "
 	    "retransmission (0x9174), TX packet history (0x925C/0x91F0: frozen state and the "
 	    "packets "
 	    "around the first drop), pipeline word counters (0x9200-0x920C), and per-DTC "
 	    "BRAM stats "
 	    "(types 0x0-0xA via 0x9160).");
+
+	registerFEMacroFunction(
+	    "EVB Timing Chain Readout",
+	    static_cast<FEVInterface::frontEndMacroFunction_t>(
+	        &DTCFrontEndInterface::EVBTimingChainReadout),
+	    std::vector<std::string>{},
+	    std::vector<std::string>{"Result"},
+	    1,  // requiredUserPermissions
+	    "*",
+	    "Short readout of CFO timing-chain counters (0x9398, 0xA418, 0x9668, 0x966C, "
+	    "0x96A8, 0x96AC, 0x9688, 0x915C, 0x9158, 0x9370, 0x9174), the 8-source "
+	    "travel-time row (type 6 via 0x9160), and the retransmission refusal registers "
+	    "(0x924C-0x927C). Read BEFORE SoftReset after each run.");
 
 	registerFEMacroFunction(
 	    "Exercise Link 7 Reset",
@@ -1385,6 +1476,50 @@ void DTCFrontEndInterface::registerFEMacros(void)
 
 	//------------------
 	registerFEMacroFunction(
+	    "EVB Planning Gap Read or Set",
+	    static_cast<FEVInterface::frontEndMacroFunction_t>(
+	        &DTCFrontEndInterface::EVBPlanningGapReadOrSet),
+	    std::vector<std::string>{
+	        "Planning Gap in 10GbE transmit clocks (0x92C4[9:0]. Reset 254. Default := no change)",
+	        "Sender Control as hex (0x9178 whole word. Bits [23:22] clock markers per send window 0 = 4 1 = 3 2 = 2 3 = 1. Default := no change)"},
+	    std::vector<std::string>{"Planning Gap", "Markers Per Send Window", "Result"},
+	    1,  // requiredUserPermissions
+	    "*",
+	    "For the CFO clock marker spacing scan. Reads, and with a value in an input first writes and reads back, "
+	    "the gap between clock markers the EVB sender plans its send window with (0x92C4[9:0]) and the sender "
+	    "control word (0x9178, which holds the clock markers per send window). The gap must match the CFO's "
+	    "clock marker spacing: floor(ticks x 25 / 6.206) - 4. Both take effect at the next SoftReset. "
+	    "Write the same values on all DTCs.");
+
+	registerFEMacroFunction(
+	    "EVB Marker Delay Read or Set",
+	    static_cast<FEVInterface::frontEndMacroFunction_t>(
+	        &DTCFrontEndInterface::EVBMarkerDelayReadOrSet),
+	    std::vector<std::string>{
+	        "Marker Delay Offset (0x92B8[8:0]; 0..300 in 5 ns steps, Default := no "
+	        "change)"},
+	    std::vector<std::string>{"EVB Link Enabled",
+	                             "EVB Address",
+	                             "EVB Start Node",
+	                             "EVB Node Count",
+	                             "Markers Per Send Window",
+	                             "Marker Delay Offset",
+	                             "Offset Row",
+	                             "Result"},
+	    1,  // requiredUserPermissions
+	    "*",
+	    "Returns, as plain numbers for other FE Macros (the CFO's 'EVB Marker Delay "
+	    "Calibrate' uses this): whether the EVB link is on, this DTC's EVB address, the "
+	    "start node and node count, the clock markers per send window (0x9178[23:22]), the marker delay offset "
+	    "(0x92B8[8:0]) and the send "
+	    "window offset row (stats type 0x6 via 0x9160, one signed value per DTC of the "
+	    "cluster, as it stands after the last run). With a value in the input it first "
+	    "writes the marker delay offset (takes effect at the next SoftReset) and returns "
+	    "the value read back. A DTC whose EVB link is off is not written and its row is "
+	    "not read.");
+
+	//------------------
+	registerFEMacroFunction(
 	    "EVB Idle Packet Setup",
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::SetupEVBIdlePackets),  // feMacroFunction
@@ -1400,7 +1535,15 @@ void DTCFrontEndInterface::registerFEMacros(void)
 	        "Remote Chunk Control (0x917C whole word, hex: hold clocks [31:16], min "
 	        "remote chunk words [15:0]; reset 0x04000080; build 3+, Default := no "
 	        "change)",
-	        "SoftReset first (Default := false)"},
+	        "SoftReset first (Default := false)",
+	        "Second Credit Read (0x9178[16]; 1 = sender reads its send credit again "
+	        "inside its window when it has run out, 0 = off, Default := no change)",
+	        "Marker Delay Offset (0x915C[7:0]; 0..255 in 5 ns steps, delays the clock "
+	        "markers before the EVB sender sees them, needs a SoftReset after, Default "
+	        ":= no change)",
+	        "Sender Control (0x9178 whole word, hex: self chunk cap [15:0], second "
+	        "credit read [16], short last frame [17], measured window [18]; load value "
+	        "0x00000400, Default := no change)"},
 	    std::vector<std::string>{"Result"},
 	    1,  // requiredUserPermissions
 	    "*",
@@ -6599,15 +6742,26 @@ void DTCFrontEndInterface::DTCCounters(__ARGS__)
 	performance << csvLinkCounts(
 	    "    TX Blocked HBP Count ",
 	    [dtc](DTCLib::DTC_Link_ID l) { return dtc->ReadTXBlockedHeartbeatCount(l); });
-	performance << csvLinkCounts(
-	    "    Rx Data Header Count ",
-	    [dtc](DTCLib::DTC_Link_ID l) { return dtc->ReadRXDataHeaderPacketCount(l); });
+	performance
+	    << csvLinkCounts(  // since 2026-11-04 only STORED headers; received = this + wrong-tag dropped
+	           "    Rx Data Header Count ",
+	           [dtc](DTCLib::DTC_Link_ID l) {
+		           return dtc->ReadRXDataHeaderPacketCount(l);
+	           });
 	performance << csvLinkCounts(
 	    "    Rx Data Packet Count ",
 	    [dtc](DTCLib::DTC_Link_ID l) { return dtc->ReadRXDataPacketCount(l); });
 	performance << csvLinkCounts(
 	    "    Rx DH Timeout Count  ",
 	    [dtc](DTCLib::DTC_Link_ID l) { return dtc->ReadReceiveDHTimeoutCount(l); });
+	// 2026-11-04 counters: Data Headers dropped for a wrong Event Window Tag, and Data Payload packets dropped
+	// (with a wrong-tag header, or with no accepted header). 16-bit, cleared by SoftReset only.
+	performance << csvLinkCounts(
+	    "    Rx DH Wrong-Tag Drop ",
+	    [dtc](DTCLib::DTC_Link_ID l) { return dtc->ReadReceiveDroppedDHCount(l); });
+	performance << csvLinkCounts(
+	    "    Rx DP Dropped Count  ",
+	    [dtc](DTCLib::DTC_Link_ID l) { return dtc->ReadReceiveDroppedDPCount(l); });
 
 	// DEPRECATED: 0x914C DH-to-ROCDone timeout flag no longer implemented in hardware
 	// {
@@ -6659,224 +6813,8 @@ void DTCFrontEndInterface::readTxDiagFIFO(__ARGS__)
 //========================================================================
 void DTCFrontEndInterface::GetDTCErrors(__ARGS__)
 {
-	auto         dtc    = getDTC();
-	DTCLib::DTC* rawDTC = dtc;
-
-	auto hex8 = [](uint32_t v) {
-		std::ostringstream s;
-		s << "0x" << std::hex << std::setfill('0') << std::setw(8) << v;
-		return s.str();
-	};
-	auto hex2 = [](uint32_t v) {
-		std::ostringstream s;
-		s << "0x" << std::hex << std::setfill('0') << std::setw(2) << (v & 0xFF);
-		return s.str();
-	};
-	auto bin8 = [](uint8_t v) {
-		std::string s(8, '0');
-		for(int bitIndex = 7; bitIndex >= 0; --bitIndex)
-			s[7 - bitIndex] = (v & (1 << bitIndex)) ? '1' : '0';
-		return s;
-	};
-
-	std::ostringstream output;
-
-	// ===== Section 1: Link Status =====
-	output << "=== Link Status ===\n";
-	{
-		output << "  CDR Lock (0x9140): 0-5:";
-		for(int linkIndex = 0; linkIndex < 6; ++linkIndex)
-			output << (dtc->ReadSERDESRXCDRLock(
-			               static_cast<DTCLib::DTC_Link_ID>(linkIndex))
-			               ? "1"
-			               : "0");
-		output << "  CFO:" << (dtc->ReadSERDESRXCDRLock(DTCLib::DTC_Link_CFO) ? "1" : "0")
-		       << "  L7:" << ((readReg(rawDTC, 0x9140) & (1u << 7)) ? "1" : "0") << "\n";
-
-		bool allPllLocked = true;
-		for(int linkIndex = 0; linkIndex < 7; ++linkIndex)
-			allPllLocked &=
-			    dtc->ReadSERDESPLLLocked(static_cast<DTCLib::DTC_Link_ID>(linkIndex));
-		allPllLocked &= (readReg(rawDTC, 0x9128) & (1u << 7)) != 0;
-		output << "  PLL Lock (0x9128): " << (allPllLocked ? "all OK" : "FAULT") << "\n";
-
-		uint32_t linkEnableRaw = dtc->ReadLinkEnabledData();
-		output << "  TX enable: " << bin8(linkEnableRaw & 0xFF)
-		       << "  RX enable: " << bin8((linkEnableRaw >> 8) & 0xFF) << "\n";
-
-		uint32_t    jaSourceValue = dtc->ReadJitterAttenuatorSelect().to_ulong();
-		std::string jaSourceName  = jaSourceValue == 0
-		                                ? "emulated CFO"
-		                                : (jaSourceValue == 1 ? "RJ45" : "FMC/SFP+");
-		bool        jaLocked      = dtc->ReadJitterAttenuatorLocked();
-		uint32_t    jaCSR         = readReg(
-            rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_JitterAttenuatorCSR));
-		uint32_t jaLOS = (jaCSR >> 8) & 0xF;
-		output << "  JA (0x9308): src=" << jaSourceName
-		       << ", LOL=" << (jaLocked ? "0" : "1") << ", LOS=" << std::bitset<4>(jaLOS)
-		       << "\n";
-	}
-
-	// ===== Section 2: Per-Link Error Flags =====
-	output
-	    << "\n=== Per-Link Flags (0x9380-0x939C, latched, cleared by link reset) ===\n";
-	{
-		static const char* linkLabels[] = {
-		    "ROC 0", "ROC 1", "ROC 2", "ROC 3", "ROC 4", "ROC 5", "CFO  ", "L7   "};
-		static const uint16_t linkRegisters[] = {
-		    static_cast<uint16_t>(DTCLib::DTC_Register_Link0ErrorFlags),
-		    static_cast<uint16_t>(DTCLib::DTC_Register_Link0ErrorFlags + 0x04),
-		    static_cast<uint16_t>(DTCLib::DTC_Register_Link0ErrorFlags + 0x08),
-		    static_cast<uint16_t>(DTCLib::DTC_Register_Link0ErrorFlags + 0x0C),
-		    static_cast<uint16_t>(DTCLib::DTC_Register_Link0ErrorFlags + 0x10),
-		    static_cast<uint16_t>(DTCLib::DTC_Register_Link0ErrorFlags + 0x14),
-		    static_cast<uint16_t>(DTCLib::DTC_Register_CFOLinkErrorFlags),
-		    static_cast<uint16_t>(DTCLib::DTC_Register_LinkMuxErrorFlags),
-		};
-		for(int linkIndex = 0; linkIndex < 8; ++linkIndex)
-		{
-			uint32_t flags = readReg(rawDTC, linkRegisters[linkIndex]);
-			output << "  " << linkLabels[linkIndex] << ": " << hex8(flags) << "  "
-			       << decodeRingErrorFlags(flags) << "\n";
-		}
-	}
-
-	// ===== Section 3: Latched Flag Registers =====
-	output << "\n=== Latched Flags ===\n";
-	{
-		uint32_t fifo0 = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_FIFOFullErrorFlag0));
-		uint32_t fifo1 = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_FIFOFullErrorFlag1));
-		uint32_t fifo2 = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_FIFOFullErrorFlag2));
-		output << "  FIFO 0x9190:" << hex8(fifo0) << "  0x9194:" << hex8(fifo1)
-		       << "  0x9198:" << hex8(fifo2) << "\n";
-
-		uint32_t rxBuf = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_ReceivePacketError));
-		uint32_t rxPktCount = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_RXPacketCountErrorFlags));
-		output << "  RX buf (0x919C): pkt_err=" << ((rxBuf >> 8) & 0x7F)
-		       << ", crc_err=" << (rxBuf & 0x7F)
-		       << "   pkt_count (0x91CC): " << (rxPktCount & 0x7F) << "\n";
-
-		uint32_t serdesDisp = readReg(
-		    rawDTC,
-		    static_cast<uint16_t>(DTCLib::CFOandDTC_Register_SERDES_RXDisparityError));
-		uint32_t serdesNIT =
-		    readReg(rawDTC,
-		            static_cast<uint16_t>(
-		                DTCLib::CFOandDTC_Register_SERDES_RXCharacterNotInTableError));
-		uint32_t serdesUnlock = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::CFOandDTC_Register_SERDES_UnlockError));
-		output << "  SERDES disp (0x911C): " << hex2(serdesDisp)
-		       << "  NIT (0x9120): " << hex2(serdesNIT)
-		       << "  unlock (0x9124): " << hex2(serdesUnlock) << "\n";
-
-		uint32_t evbFlags = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_EventBuilderErrorFlags));
-		output << "  EVB (0x9370): " << hex8(evbFlags);
-		if(evbFlags == 0)
-			output << "  (clean)";
-		output << "\n";
-		if(evbFlags != 0)
-			for(const auto& line : DTCLib::DecodeEVBErrorStatus(evbFlags))
-				output << "    " << line << "\n";
-		if(evbHasRetransmission(rawDTC))
-		{
-			uint32_t resendCount = readReg(
-			    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_EVBResendCount));
-			output << "  EVB resends (0x9174): requested "
-			       << rawDTC->ReadEVBResendsRequested(resendCount) << ", served "
-			       << rawDTC->ReadEVBResendsServed(resendCount) << "\n";
-		}
-
-		uint32_t vfifoSerdes = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_InputBufferErrorFlags));
-		uint32_t vfifoPci = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_OutputBufferErrorFlags));
-		output << "  VFIFO SERDES (0x9374): " << hex8(vfifoSerdes)
-		       << "  PCI (0x9378): " << hex8(vfifoPci) << "\n";
-	}
-
-	// ===== Section 4: Error Counters =====
-	output << "\n=== Counters ===\n";
-	{
-		auto formatLinkArray7 = [&](const std::string&           label,
-		                            std::function<uint32_t(int)> readFn) {
-			output << "  " << label << ": ";
-			for(int linkIndex = 0; linkIndex < 7; ++linkIndex)
-			{
-				if(linkIndex)
-					output << " / ";
-				output << readFn(linkIndex);
-			}
-			output << "\n";
-		};
-		auto formatLinkArray6 = [&](const std::string&           label,
-		                            std::function<uint32_t(int)> readFn) {
-			output << "  " << label << ": ";
-			for(int linkIndex = 0; linkIndex < 6; ++linkIndex)
-			{
-				if(linkIndex)
-					output << " / ";
-				output << readFn(linkIndex);
-			}
-			output << "\n";
-		};
-
-		formatLinkArray7("Not-in-table (0x9500)  ", [&](int linkIndex) {
-			return dtc->ReadSERDESCharacterNotInTableErrorCount(
-			    static_cast<DTCLib::DTC_Link_ID>(linkIndex));
-		});
-		formatLinkArray7("CDR unlock (0x93B0)    ", [&](int linkIndex) {
-			return dtc->ReadRXCDRUnlockCount(static_cast<DTCLib::DTC_Link_ID>(linkIndex));
-		});
-		formatLinkArray6("Missed CFO pkt (0x9340)", [&](int linkIndex) {
-			return dtc->ReadMissedCFOPacketCount(
-			    static_cast<DTCLib::DTC_Link_ID>(linkIndex));
-		});
-		formatLinkArray6("DH timeout (0xA420)    ", [&](int linkIndex) {
-			return dtc->ReadReceiveDHTimeoutCount(
-			    static_cast<DTCLib::DTC_Link_ID>(linkIndex));
-		});
-
-		output << "  Local event drop (0x9360): " << dtc->ReadLocalFragmentDropCount()
-		       << "\n";
-		output << "  10G RX pkt err (0x9590): "
-		       << dtc->ReadEVBSERDESRXPacketErrorCounter() << "\n";
-
-		output << "  JA lock loss (0x93CC): " << dtc->ReadJitterAttenuatorUnlockCount()
-		       << "   JA sig loss: " << dtc->ReadJitterAttenuatorRecoveredClockLOSCount()
-		       << " / " << dtc->ReadJitterAttenuatorExternalClockLOSCount() << "\n";
-
-		uint32_t cfoEventStartErrors = readReg(
-		    rawDTC,
-		    static_cast<uint16_t>(DTCLib::DTC_Register_CFOLinkEventStartErrorCount));
-		uint32_t cfo40MHzErrors = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_CFOLink40MHzErrorCount));
-		output << "  CFO evt-start err (0x93D0): " << cfoEventStartErrors
-		       << "   CFO 40MHz err (0x93D4): " << cfo40MHzErrors << "\n";
-
-		uint32_t cdcDiag = dtc->ReadCFOCDCDiag();
-		output << "  CFO CDC diag (0x9688): parity=" << ((cdcDiag >> 16) & 0xFFFF)
-		       << ", batch_slip=" << (cdcDiag & 0xFFFF) << "\n";
-	}
-
-	// ===== Section 5: System Health =====
-	output << "\n=== System ===\n";
-	{
-		uint32_t xadcAlarm = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::CFOandDTC_Register_FPGA_MonitorAlarm));
-		output << "  XADC alarm (0x9020): " << hex8(xadcAlarm) << "\n";
-
-		uint32_t slowOptical = readReg(
-		    rawDTC, static_cast<uint16_t>(DTCLib::DTC_Register_SlowOpticalLinksDiag));
-		output << "  Slow optical (0x9410): " << hex8(slowOptical) << "\n";
-	}
-
-	__SET_ARG_OUT__("DTC Errors", "\n" + output.str());
+	// Same register set DTCLib logs on its own when an extraction function hits corrupt data.
+	__SET_ARG_OUT__("DTC Errors", "\n" + getDTC()->ReadDTCErrors());
 }  // end GetDTCErrors()
 
 //========================================================================
@@ -7458,6 +7396,145 @@ static uint32_t hostnameToEVBAddress(const std::string& shortHostname)
 }  //end hostnameToEVBAddress()
 
 //========================================================================
+// Splits a node name (e.g. trk-09, mu2e-trk-09) or a DTC name (e.g. trk-09-DTC0) into
+// subsystem name, node number and DTC index. dtcIndex is -1 when the name is a whole node.
+// Case is ignored, and '-', '_' and spaces are ignored, so Trk09_DTC0, TRK09DTC0 and
+// trk-09-dtc0 are the same DTC.
+static void parseEVBNodeName(const std::string& nodeName,
+                             std::string&       subsystemName,
+                             int&               nodeNumber,
+                             int&               dtcIndex)
+{
+	// lower case, without separators
+	std::string normalizedName;
+	for(const char nameCharacter : nodeName)
+	{
+		if(nameCharacter == '-' || nameCharacter == '_' || isspace((unsigned char)nameCharacter))
+			continue;
+		normalizedName += (char)tolower((unsigned char)nameCharacter);
+	}
+
+	// drop the optional "mu2e" hostname prefix
+	if(normalizedName.compare(0, 4, "mu2e") == 0)
+		normalizedName = normalizedName.substr(4);
+
+	// optional trailing "dtc<index>"
+	dtcIndex                  = -1;
+	const size_t dtcPosition  = normalizedName.rfind("dtc");
+	bool         nameIsValid  = true;
+	if(dtcPosition != std::string::npos && dtcPosition + 3 < normalizedName.size())
+	{
+		const std::string dtcIndexText = normalizedName.substr(dtcPosition + 3);
+		if(dtcIndexText.find_first_not_of("0123456789") == std::string::npos)
+		{
+			dtcIndex       = atoi(dtcIndexText.c_str());
+			normalizedName = normalizedName.substr(0, dtcPosition);
+		}
+	}
+
+	// then <subsystem letters><node number digits>
+	const size_t nodeNumberPosition = normalizedName.find_first_of("0123456789");
+	if(nodeNumberPosition == std::string::npos || nodeNumberPosition == 0 ||
+	   normalizedName.find_first_not_of("0123456789", nodeNumberPosition) !=
+	       std::string::npos)
+		nameIsValid = false;
+
+	if(!nameIsValid || (dtcIndex != -1 && dtcIndex != 0 && dtcIndex != 1))
+	{
+		__SS__ << "Invalid EVB node name '" << nodeName
+		       << "'. Expected a node like 'trk-09' or one DTC like 'trk-09-DTC0' "
+		          "(case, '-' and '_' are ignored, so 'Trk09_DTC0' is also accepted)."
+		       << __E__;
+		__SS_THROW__;
+	}
+
+	nodeNumber    = atoi(normalizedName.substr(nodeNumberPosition).c_str());
+	subsystemName = normalizedName.substr(0, nodeNumberPosition);
+}  //end parseEVBNodeName()
+
+//========================================================================
+// Counts the skipped DTC addresses that are below the given DTC of the given node and in
+// the same subsystem. A whole node in the list counts 2, one DTC counts 1. The count is
+// subtracted from the address so that the DTCs present get consecutive addresses.
+static uint32_t countEVBSkippedAddressesBelow(const std::string& shortHostname,
+                                              int                deviceIndex,
+                                              const std::string& skippedNodeList)
+{
+	std::string targetSubsystemName;
+	int         targetNodeNumber, targetDtcIndex;
+	parseEVBNodeName(
+	    shortHostname, targetSubsystemName, targetNodeNumber, targetDtcIndex);
+	const int targetPosition = targetNodeNumber * 2 + deviceIndex;
+
+	std::vector<std::string> skippedNodes;
+	StringMacros::getVectorFromString(skippedNodeList, skippedNodes, {','});
+
+	uint32_t skippedCount = 0;
+	for(const auto& skippedNode : skippedNodes)
+	{
+		if(skippedNode.empty())
+			continue;
+
+		std::string skippedSubsystemName;
+		int         skippedNodeNumber, skippedDtcIndex;
+		parseEVBNodeName(
+		    skippedNode, skippedSubsystemName, skippedNodeNumber, skippedDtcIndex);
+		if(skippedSubsystemName != targetSubsystemName)
+			continue;
+
+		for(int dtcIndex = 0; dtcIndex < 2; ++dtcIndex)
+		{
+			if(skippedDtcIndex != -1 && skippedDtcIndex != dtcIndex)
+				continue;
+
+			const int skippedPosition = skippedNodeNumber * 2 + dtcIndex;
+			if(skippedPosition == targetPosition)
+			{
+				__SS__ << "DTC" << deviceIndex << " of '" << shortHostname
+				       << "' is in the EVB skipped node list '" << skippedNodeList
+				       << "', so it has no EVB address." << __E__;
+				__SS_THROW__;
+			}
+			if(skippedPosition < targetPosition)
+				++skippedCount;
+		}
+	}
+	return skippedCount;
+}  //end countEVBSkippedAddressesBelow()
+
+//========================================================================
+// Returns true when the given DTC of the given node is named in the skipped list, either
+// as its whole node or as that one DTC.
+static bool isDTCInEVBSkippedNodeList(const std::string& shortHostname,
+                                      int                deviceIndex,
+                                      const std::string& skippedNodeList)
+{
+	std::string targetSubsystemName;
+	int         targetNodeNumber, targetDtcIndex;
+	parseEVBNodeName(
+	    shortHostname, targetSubsystemName, targetNodeNumber, targetDtcIndex);
+
+	std::vector<std::string> skippedNodes;
+	StringMacros::getVectorFromString(skippedNodeList, skippedNodes, {','});
+
+	for(const auto& skippedNode : skippedNodes)
+	{
+		if(skippedNode.empty())
+			continue;
+
+		std::string skippedSubsystemName;
+		int         skippedNodeNumber, skippedDtcIndex;
+		parseEVBNodeName(
+		    skippedNode, skippedSubsystemName, skippedNodeNumber, skippedDtcIndex);
+		if(skippedSubsystemName == targetSubsystemName &&
+		   skippedNodeNumber == targetNodeNumber &&
+		   (skippedDtcIndex == -1 || skippedDtcIndex == deviceIndex))
+			return true;
+	}
+	return false;
+}  //end isDTCInEVBSkippedNodeList()
+
+//========================================================================
 void DTCFrontEndInterface::EVBInit(__ARGS__)
 {
 	auto dtc = getDTC();
@@ -7467,7 +7544,41 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 	StringMacros::getVectorFromString(hostname, hostSplit, {'.'});
 	std::string shortHostname = hostSplit[0];
 
-	uint32_t macAddress = hostnameToEVBAddress(shortHostname) + deviceIndex_;
+	std::string skippedNodeList = __GET_ARG_IN__(
+	    "EVB Skipped Nodes as CSV of hostnames or DTCs (e.g. trk-09, trk-10-DTC0) "
+	    "(Default := none)",
+	    std::string,
+	    "");
+
+	// A DTC in the skipped list is not part of event building: it gets no address, its EVB
+	// link is turned off (Tx and Rx), and nothing else on it is touched (no Soft Reset).
+	if(isDTCInEVBSkippedNodeList(shortHostname, deviceIndex_, skippedNodeList))
+	{
+		dtc->DisableLink(DTCLib::DTC_Link_EVB);
+		auto skippedEVBLinkEnabled =
+		    dtc->ReadLinkEnabled(DTCLib::DTC_Link_ID::DTC_Link_EVB);
+
+		std::ostringstream skippedSs;
+		skippedSs << "\nDTC" << deviceIndex_ << " of '" << shortHostname
+		          << "' is in the EVB skipped node list '" << skippedNodeList
+		          << "': it gets no EVB address and its EVB link was disabled. No Soft "
+		             "Reset was sent."
+		          << "\nEVB Link:          "
+		          << (skippedEVBLinkEnabled.TransmitEnable ? "Tx ON" : "Tx OFF") << "     "
+		          << (skippedEVBLinkEnabled.ReceiveEnable ? "Rx ON" : "Rx OFF") << "\n";
+		__FE_COUT__ << skippedSs.str() << __E__;
+		__SET_ARG_OUT__("Result", skippedSs.str());
+		return;
+	}
+
+	uint32_t skippedAddressCount =
+	    countEVBSkippedAddressesBelow(shortHostname, deviceIndex_, skippedNodeList);
+
+	__FE_COUTV__(skippedNodeList);
+	__FE_COUTV__(skippedAddressCount);
+
+	uint32_t macAddress =
+	    hostnameToEVBAddress(shortHostname) + deviceIndex_ - skippedAddressCount;
 
 	int partitionInput = __GET_ARG_IN__("EVB Partition ID (Default := 0x99)", int, 0x99);
 	if(partitionInput < 0 || partitionInput > 0xFF)
@@ -7495,7 +7606,9 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 	    "auto)",
 	    std::string,
 	    shortHostname);
-	uint8_t evbBaseAddr = hostnameToEVBAddress(baseDTCHostname);
+	uint8_t evbBaseAddr =
+	    hostnameToEVBAddress(baseDTCHostname) -
+	    countEVBSkippedAddressesBelow(baseDTCHostname, 0 /*deviceIndex*/, skippedNodeList);
 
 	__FE_COUTV__(baseDTCHostname);
 	__FE_COUTV__((int)evbBaseAddr);
@@ -7540,8 +7653,7 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 		                              : dtc->ReadEVBIdlePacketWordCount();
 		uint8_t  ipg            = (ipgInput >= 0) ? static_cast<uint8_t>(ipgInput)
 		                                          : dtc->ReadEVBInterpacketGap();
-		uint8_t  loopbackOffset = dtc->ReadEVBLoopbackCalibratedOffset();
-		dtc->SetEVBPacketControlInfo(idleWordCount, ipg, loopbackOffset);
+		dtc->SetEVBPacketControlInfo(idleWordCount, ipg, 0);  // [7:0] is no longer used; the marker delay is in 0x92B8
 		__FE_COUT__ << "Set EVB Packet Control (0x915C): Idle Words = "
 		            << (int)idleWordCount << " (8-byte words), IPG = " << (int)ipg
 		            << " txGbE clks." << __E__;
@@ -7789,7 +7901,8 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		  << dmaMaxBytes << " B), min 0x" << std::hex << dmaMinBytes << std::dec << " ("
 		  << dmaMinBytes << " B) => chunk cap " << chunkCapWords << " words, record cap "
 		  << (dmaMaxBytes - 8) << " B\n";
-		const uint16_t localChunkCapWords = dtc->ReadEVBLocalChunkCap();
+		const uint32_t localChunkCapRegister = dtc->ReadEVBLocalChunkCapRegister();
+		const uint16_t localChunkCapWords = dtc->ReadEVBLocalChunkCap(localChunkCapRegister);
 		{
 			const uint32_t remoteChunkControl = dtc->ReadEVBRemoteChunkControl();
 			o << "  Remote chunk control (0x917C): 0x" << std::hex << std::setw(8)
@@ -7803,6 +7916,29 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		  << (localChunkCapWords >= 1 && localChunkCapWords <= 31 ? " (1..31 act as 32)"
 		                                                          : "")
 		  << " (reset value 1024)\n";
+		o << "  Second credit read (0x9178 bit 16): "
+		  << (dtc->ReadEVBSecondCreditRead(localChunkCapRegister) ? "ON" : "off")
+		  << " (0x9178 = 0x" << std::hex << std::setw(8) << std::setfill('0')
+		  << localChunkCapRegister << std::dec << std::setfill(' ') << ")\n";
+		o << "  Short last frame (0x9178 bit 17): "
+		  << (dtc->ReadEVBShortLastFrame(localChunkCapRegister) ? "ON" : "off") << "\n";
+		o << "  Measured window (0x9178 bit 18): "
+		  << (dtc->ReadEVBMeasuredWindow(localChunkCapRegister) ? "ON" : "off") << "\n";
+		o << "  Aligned start (0x9178 bit 19): "
+		  << (dtc->ReadEVBAlignedStart(localChunkCapRegister) ? "ON" : "off") << "\n";
+		o << "  Marker fill (0x9178 bit 20): "
+		  << (dtc->ReadEVBMarkerFill(localChunkCapRegister) ? "ON" : "off") << "\n";
+		o << "  Deep prefetch (0x9178 bit 21): "
+		  << (dtc->ReadEVBDeepPrefetch(localChunkCapRegister) ? "ON" : "off") << "\n";
+		o << "  Clock markers per send window (0x9178[23:22]): "
+		  << static_cast<unsigned>(dtc->ReadEVBMarkersPerSendWindow(localChunkCapRegister))
+		  << "\n";
+		o << "  Missing clock markers since SoftReset (0x92BC): "
+		  << dtc->ReadEVBMissingClockMarkerCountFull() << "\n";
+		o << "  Marker delay (0x92B8[8:0], 5 ns steps): " << dtc->ReadEVBMarkerDelay()
+		  << "\n";
+		o << "  Planning gap (0x92C4[9:0], 10GbE transmit clocks): " << dtc->ReadEVBPlanningGap()
+		  << "\n";
 	}
 	{
 		// Rate arithmetic: an idle frame = (4 + words) beats + gap beats at 156.25 MHz.
@@ -7825,6 +7961,51 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		__FE_SS__ << "Error reading EVB error/status register 0x9370. Error code = "
 		          << evbErrorStatusReadError;
 		__SS_THROW__;
+	}
+
+	// CFO link sticky errors are cleared by DTC Soft Reset, so they have to be read here,
+	// at the end of a run, before the next run's Soft Reset wipes them.
+	{
+		auto        dtc                  = getDTC();
+		uint32_t    cfoLinkErrorRegister = dtc->ReadCFOLinkErrorRegister();
+		uint32_t    cfoCDCDiagnostic     = dtc->ReadCFOCDCDiag();
+		std::string cfoLinkStickyErrors;
+		if(dtc->ReadCFORTF40MHzPhaseShiftError(cfoLinkErrorRegister))
+			cfoLinkStickyErrors += " RTFPhase";
+		if(dtc->ReadCFOIllegalMarkerTimingError(cfoLinkErrorRegister))
+			cfoLinkStickyErrors += " RTFMarker";
+		if(dtc->ReadCFOEventStartMarkerTxError(cfoLinkErrorRegister))
+			cfoLinkStickyErrors += " TxEventStartMarker";
+		if(dtc->ReadCFOClockMarkerTxError(cfoLinkErrorRegister))
+			cfoLinkStickyErrors += " TxClockMarker";
+		if(dtc->ReadCFORxToTxDataCorruptionError(cfoLinkErrorRegister))
+			cfoLinkStickyErrors += " Rx-to-Tx";
+		if(dtc->ReadRXCDRUnlockCount(DTCLib::DTC_Link_CFO))
+			cfoLinkStickyErrors += " CDRUnlock";
+		if(dtc->ReadJitterAttenuatorUnlockCount())
+			cfoLinkStickyErrors += " JAUnlock";
+		if(dtc->ReadJitterAttenuatorRecoveredClockLOSCount())
+			cfoLinkStickyErrors += " JARecoveredClockLOS";
+		if(dtc->ReadJitterAttenuatorExternalClockLOSCount())
+			cfoLinkStickyErrors += " JAExternalClockLOS";
+		if(dtc->ReadRXCFOLinkEventStartCharacterErrorCount())
+			cfoLinkStickyErrors += " EvtStartCharacter";
+		if(dtc->ReadRXCFOLink40MHzCharacterErrorCount())
+			cfoLinkStickyErrors += " 40MHzCharacter";
+		if((cfoCDCDiagnostic >> 16) & 0xFFFF)
+			cfoLinkStickyErrors += " Parity";
+		if(cfoCDCDiagnostic & 0xFFFF)
+			cfoLinkStickyErrors += " BatchSlip";
+
+		o << "=== CFO Link Sticky Error Check (cleared by DTC Soft Reset) ===\n";
+		if(cfoLinkStickyErrors.empty())
+			o << "  CFO link sticky errors: NONE since the last DTC Soft Reset.\n";
+		else
+			o << "  ERROR: CFO link sticky errors since the last DTC Soft Reset:"
+			  << cfoLinkStickyErrors
+			  << ". The CFO link sync was disturbed; events may be missing at the ROC "
+			     "input.\n";
+		o << "\n" << getCFORTFSettingsStatusAndErrors() << "\n";
 	}
 
 	o << "=== EVB Errors / Status (0x9370) ===\n";
@@ -7863,6 +8044,49 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 	}
 	else
 		o << "  Not in this bitfile (retransmission starts with 0xd6100291).\n";
+	o << "\n";
+
+	// Staging slot health (hw agent 2026-10-26): read once per DTC after a run.  Bit 9 on
+	// 0x9370 is expected to stay clear once the slot fix is in; 0x9260 says why if not.
+	o << "=== EVB Staging Slot Health (0x9260, SoftReset clear) ===\n";
+	if(evbHasRetransmission(dtc))
+	{
+		try
+		{
+			o << dtc->FormatEVBSlotHealthText(dtc->ReadEVBSlotHealth(), "  ");
+			o << "  Read with 0x9370 bit 9 on the same DTC: bit 9 clear + nothing here = "
+			     "fix held.\n";
+			// Two newer diagnostics the hardware agent reads after every run; raw, with the one
+			// field whose meaning is known so far.  Both are SoftReset-clear, so this post-run
+			// EVB Status is the record of them before the next sequence resets the DTC.
+			const uint32_t rxBadEnd =
+			    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBRxBadEnd));
+			const uint32_t txRewindDiag =
+			    readReg(dtc, static_cast<uint16_t>(DTCLib::DTC_Register_EVBTxRewindDiag));
+			// hw agent 2026-11-09: the layout of 0x9264 depends on the bitfile of this DTC;
+			// refused_whole_frames is normal recovery, not an error
+			o << "  0x9264 (RX bad-end verdict) = 0x" << std::hex << std::setw(8)
+			  << std::setfill('0') << rxBadEnd << std::dec << std::setfill(' ') << ": "
+			  << DTCLib::DTC_Registers::FormatEVBRxBadEndText(
+			         DTCLib::DTC_Registers::DecodeEVBRxBadEnd(
+			             rxBadEnd, readReg(dtc, kRegDesignVersion)))
+			  << "\n";
+			o << "  0x9268 (TX rewind diag) = 0x" << std::hex << std::setw(8)
+			  << std::setfill('0') << txRewindDiag << std::dec << std::setfill(' ')
+			  << ": burst-table misses on rewind [31:24] = "
+			  << ((txRewindDiag >> 24) & 0xFFu)
+			  << (((txRewindDiag >> 24) & 0xFFu)
+			          ? "  <- continuation count word skipped on this sender"
+			          : "")
+			  << "\n";
+		}
+		catch(const std::exception& e)
+		{
+			o << "  read failed: " << e.what() << "\n";
+		}
+	}
+	else
+		o << "  Not in this bitfile.\n";
 	o << "\n";
 
 	// TX packet history (hw agent 2026-10-13/14): the log freezes on the first retransmission
@@ -8020,20 +8244,72 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		       type == DTCLib::DTC_EVBStatsType_RxIdleCount;
 	};
 
+	// The idle rows (TX_IDLE 0x7, RX_IDLE 0x8) are indexed by DTC offset (0..N-1, like every
+	// other row) on builds up to 0xd61028a3.  On 0xd6103096 the table read all-zero at those
+	// offsets while a raw sweep found the counters at the absolute MAC addresses (0x2..0x7)
+	// instead.  Read offset-indexed first; if the whole idle row is zero while RxCount is
+	// not, re-read it MAC-indexed and say so, rather than printing a misleading zero row.
+	std::string idleRowAddressingNote;
+	auto        readIdleRowMacIndexed = [&](uint8_t type, std::vector<uint32_t>& values) {
+        for(uint8_t d = 0; d < bramNodes; ++d)
+        {
+            const uint8_t absoluteMac = static_cast<uint8_t>(startNode + d);
+            values[d] =
+                (absoluteMac < MAX_BRAM_SLOTS)
+			               ? dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType(type), absoluteMac)
+			               : 0u;
+        }
+	};
+
 	for(uint8_t t = 0; t < NUM_BRAM_TYPES; ++t)
 	{
-		bool isCounter = (t == DTCLib::DTC_EVBStatsType_RxCount ||
-		                  t == DTCLib::DTC_EVBStatsType_RxMissingPacketCount ||
-		                  t == DTCLib::DTC_EVBStatsType_RxByteCount ||
-		                  t == DTCLib::DTC_EVBStatsType_TxIdleCount ||
-		                  t == DTCLib::DTC_EVBStatsType_RxIdleCount);
-		bool isHex     = !isCounter;  // timestamps, sequence tags
+		bool       isCounter = (t == DTCLib::DTC_EVBStatsType_RxCount ||
+                          t == DTCLib::DTC_EVBStatsType_RxMissingPacketCount ||
+                          t == DTCLib::DTC_EVBStatsType_RxByteCount ||
+                          t == DTCLib::DTC_EVBStatsType_TxIdleCount ||
+                          t == DTCLib::DTC_EVBStatsType_RxIdleCount);
+		bool       isHex     = !isCounter;  // timestamps, sequence tags
+		const bool isIdleRow = (t == DTCLib::DTC_EVBStatsType_TxIdleCount ||
+		                        t == DTCLib::DTC_EVBStatsType_RxIdleCount);
 		o << "  " << std::setw(18) << std::left
 		  << (std::string(bramTypeNames[t]) + (isHex ? "*" : ""));
 
+		std::vector<uint32_t> rowValues(bramNodes, 0u);
+		for(uint8_t d = 0; d < bramNodes; ++d)
+			rowValues[d] = dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType(t), d);
+
+		if(isIdleRow)
+		{
+			bool idleRowAllZero    = true;
+			bool rxCountAnyNonZero = false;
+			for(uint8_t d = 0; d < bramNodes; ++d)
+			{
+				if(rowValues[d] != 0)
+					idleRowAllZero = false;
+				auto rxIt = currentSnapshot.values.find(
+				    (uint16_t(DTCLib::DTC_EVBStatsType_RxCount) << 8) | d);
+				if(rxIt != currentSnapshot.values.end() && rxIt->second != 0)
+					rxCountAnyNonZero = true;
+			}
+			if(idleRowAllZero && rxCountAnyNonZero)
+			{
+				readIdleRowMacIndexed(t, rowValues);
+				bool anyNonZeroByMac = false;
+				for(uint8_t d = 0; d < bramNodes; ++d)
+					if(rowValues[d] != 0)
+						anyNonZeroByMac = true;
+				if(anyNonZeroByMac)
+					idleRowAddressingNote +=
+					    std::string("  NOTE: ") + bramTypeNames[t] +
+					    " read 0 at every DTC offset but is live at the absolute MAC "
+					    "addresses; this bitfile indexes that row by MAC, not by offset "
+					    "(columns shown by MAC).\n";
+			}
+		}
+
 		for(uint8_t d = 0; d < bramNodes; ++d)
 		{
-			uint32_t val = dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType(t), d);
+			uint32_t val                                   = rowValues[d];
 			currentSnapshot.values[(uint16_t(t) << 8) | d] = val;
 			if(isCounter && val == 0xFFFFFFFFu)
 				o << "  " << std::setw(10) << std::right << "SATURATED";
@@ -8048,6 +8324,7 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		o << "\n";
 	}
 	o << "  * = packed hex value (timestamps, sequence tags)\n";
+	o << idleRowAddressingNote;
 	{
 		// A DTC never receives from itself: RxCount[self] must be 0.  Report raw if not.
 		int selfSlot = macAddr - (int)startNode;
@@ -8152,6 +8429,267 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 
 	__SET_ARG_OUT__("Result", "\n" + o.str());
 }  //end EVBStatus()
+
+//========================================================================
+// Short readout for the firmware agent's timing-chain and retransmission checks.
+// Must be run BEFORE SoftReset after each run so the counters are still live.
+// Output is kept well under the ~8172-character log cut so every field reaches the logs.
+void DTCFrontEndInterface::EVBTimingChainReadout(__ARGS__)
+{
+	auto               dtc = getDTC();
+	std::ostringstream o;
+
+	auto hex8 = [](uint32_t v) {
+		std::ostringstream s;
+		s << "0x" << std::hex << std::setw(8) << std::setfill('0') << v;
+		return s.str();
+	};
+
+	o << "=== EVB Timing Chain Readout ===\n";
+
+	// --- CFO link error flags (0x9398) ---
+	const uint32_t cfoLinkError       = readReg(dtc, 0x9398);
+	const int      measuredPosition   = (cfoLinkError >> 16) & 7;
+	const int      permanentOffset    = cfoLinkError & 7;
+	const bool     eventMarkerError   = (cfoLinkError >> 9) & 1;
+	const bool     clockMarkerError   = (cfoLinkError >> 10) & 1;
+	const bool     illegalMarkerError = (cfoLinkError >> 12) & 1;
+	const bool     rxToTxCorruption   = (cfoLinkError >> 13) & 1;
+	o << "  0x9398 CFO link error:    " << hex8(cfoLinkError)
+	  << "  pos=" << measuredPosition << " offset=" << permanentOffset
+	  << " evtMkrErr=" << eventMarkerError << " clkMkrErr=" << clockMarkerError
+	  << " illegalMkr=" << illegalMarkerError << " rxTxCorrupt=" << rxToTxCorruption
+	  << "\n";
+
+	// --- CFO link marker and heartbeat counters ---
+	const uint32_t cfoEventMarkerCount       = readReg(dtc, 0xA418);
+	const uint32_t cfoHeartbeatCount         = readReg(dtc, 0x9668);
+	const uint32_t cfoHeartbeatForwarded     = readReg(dtc, 0x966C);
+	const uint32_t cfoHeartbeatCRCFail       = readReg(dtc, 0x96A8);
+	const uint32_t cfoHeartbeatParseIncomplete = readReg(dtc, 0x96AC);
+	o << "  0xA418 CFO EWM count:     " << (cfoEventMarkerCount & 0xFFFF) << "\n";
+	o << "  0x9668 CFO HB count:      " << (cfoHeartbeatCount & 0xFFFF) << "\n";
+	o << "  0x966C CFO HB forwarded:  " << (cfoHeartbeatForwarded & 0xFFFF) << "\n";
+	o << "  0x96A8 CFO HB CRC fail:   " << (cfoHeartbeatCRCFail & 0xFFFF) << "\n";
+	o << "  0x96AC CFO HB incomplete: " << (cfoHeartbeatParseIncomplete & 0xFFFF) << "\n";
+
+	// --- CFO CDC diagnostics (0x9688) ---
+	const uint32_t cfoCDCDiag         = readReg(dtc, 0x9688);
+	const uint32_t parityMismatch     = (cfoCDCDiag >> 16) & 0xFFFF;
+	const uint32_t batchSlip          = cfoCDCDiag & 0xFFFF;
+	o << "  0x9688 CFO CDC diag:      " << hex8(cfoCDCDiag)
+	  << "  parity=" << parityMismatch << " batchSlip=" << batchSlip << "\n";
+
+	// --- Marker delay offset (0x92B8 [8:0]; moved from 0x915C [7:0]) ---
+	const uint32_t evbPacketControl   = readReg(dtc, 0x915C);
+	o << "  0x915C EVB pkt ctrl:      " << hex8(evbPacketControl) << "\n";
+	o << "  0x92B8 EVB marker delay:  markerDelayOffset=" << dtc->ReadEVBMarkerDelay()
+	  << "\n";
+
+	// --- EVB configuration (0x9158) ---
+	const uint32_t evbConfiguration   = readReg(dtc, 0x9158);
+	o << "  0x9158 EVB config:        " << hex8(evbConfiguration) << "\n";
+
+	// --- EVB error/status (0x9370) ---
+	const uint32_t evbErrorFlags      = readReg(dtc, kRegEVBErrorFlags);
+	o << "  0x9370 EVB error/status:  " << hex8(evbErrorFlags) << "\n";
+
+	// --- Retransmission (0x9174) ---
+	const uint32_t resendCount        = readReg(dtc, 0x9174);
+	o << "  0x9174 resend req/served: " << hex8(resendCount)
+	  << "  requested=" << (resendCount & 0xFFFF)
+	  << " served=" << ((resendCount >> 16) & 0xFFFF) << "\n";
+
+	// --- Travel time row (type 6, 8 sources via 0x9160) ---
+	o << "  TravelTime (6.4ns units):";
+	for(uint8_t sourceOffset = 0; sourceOffset < 8; ++sourceOffset)
+	{
+		const uint32_t travelTime =
+		    dtc->ReadEVBStats(DTCLib::DTC_EVBStatsType(6), sourceOffset);
+		o << "  #" << (int)sourceOffset << "=" << travelTime;
+	}
+	o << "\n";
+
+	// --- Retransmission refusal registers (0x924C-0x927C, new in 0xd6111191) ---
+	o << "  --- Retransmission refusal (first / latest) ---\n";
+	const uint32_t firstRefusalHeader   = readReg(dtc, 0x924C);
+	const uint32_t firstRefusalDetail   = readReg(dtc, 0x9250);
+	const uint32_t firstRefusalAckIndex = readReg(dtc, 0x9254);
+	o << "  0x924C first header:  " << hex8(firstRefusalHeader)
+	  << "  resendReq=" << ((firstRefusalHeader >> 31) & 1)
+	  << " peerEchoSeq=" << ((firstRefusalHeader >> 20) & 0xFF)
+	  << " ackPos=" << (firstRefusalHeader & 0xFFFFF) << "\n";
+	o << "  0x9250 first detail:  " << hex8(firstRefusalDetail)
+	  << "  valid=" << ((firstRefusalDetail >> 31) & 1)
+	  << " kind=" << ((firstRefusalDetail >> 30) & 1)
+	  << ((firstRefusalDetail >> 30) & 1 ? "(rewind)" : "(ack)")
+	  << " ch=" << ((firstRefusalDetail >> 24) & 0x1F)
+	  << " ringReadIdx=" << (firstRefusalDetail & 0xFFFFF) << "\n";
+	o << "  0x9254 first ack idx: " << hex8(firstRefusalAckIndex)
+	  << "  acksRefused=" << ((firstRefusalAckIndex >> 24) & 0xFF)
+	  << " ringAckIdx=" << (firstRefusalAckIndex & 0xFFFFF) << "\n";
+
+	const uint32_t latestRefusalHeader   = readReg(dtc, 0x9258);
+	const uint32_t latestRefusalDetail   = readReg(dtc, 0x9278);
+	const uint32_t latestRefusalAckIndex = readReg(dtc, 0x927C);
+	o << "  0x9258 latest header: " << hex8(latestRefusalHeader)
+	  << "  resendReq=" << ((latestRefusalHeader >> 31) & 1)
+	  << " peerEchoSeq=" << ((latestRefusalHeader >> 20) & 0xFF)
+	  << " ackPos=" << (latestRefusalHeader & 0xFFFFF) << "\n";
+	o << "  0x9278 latest detail: " << hex8(latestRefusalDetail)
+	  << "  valid=" << ((latestRefusalDetail >> 31) & 1)
+	  << " kind=" << ((latestRefusalDetail >> 30) & 1)
+	  << ((latestRefusalDetail >> 30) & 1 ? "(rewind)" : "(ack)")
+	  << " ch=" << ((latestRefusalDetail >> 24) & 0x1F)
+	  << " ringReadIdx=" << (latestRefusalDetail & 0xFFFFF) << "\n";
+	o << "  0x927C latest ack idx:" << hex8(latestRefusalAckIndex)
+	  << "  rewindsRefused=" << ((latestRefusalAckIndex >> 24) & 0xFF)
+	  << " ringAckIdx=" << (latestRefusalAckIndex & 0xFFFFF) << "\n";
+
+	__FE_COUT__ << o.str();
+	__SET_ARG_OUT__("Result", "\n" + o.str());
+}  //end EVBTimingChainReadout()
+
+//========================================================================
+// Marker delay offset and send window offset row as plain numbers, for other FE Macros;
+// with an input value it writes the marker delay offset first.
+void DTCFrontEndInterface::EVBPlanningGapReadOrSet(__ARGS__)
+{
+	const int planningGapInput = __GET_ARG_IN__(
+	    "Planning Gap in 10GbE transmit clocks (0x92C4[9:0]. Reset 254. Default := no change)",
+	    int,
+	    -1);
+	const std::string senderControlInput = __GET_ARG_IN__(
+	    "Sender Control as hex (0x9178 whole word. Bits [23:22] clock markers per send window 0 = 4 1 = 3 2 = 2 3 = 1. Default := no change)",
+	    std::string,
+	    "");
+	if(planningGapInput > 0x3FF)
+	{
+		__FE_SS__ << "Planning gap " << planningGapInput
+		          << " does not fit 0x92C4[9:0]; use 0 to 1023." << __E__;
+		__FE_SS_THROW__;
+	}
+
+	auto               dtc = getDTC();
+	std::ostringstream resultSs;
+	resultSs << "EVB planning gap on " << dtc->getDeviceUID() << "\n";
+
+	if(planningGapInput >= 0)
+	{
+		const int planningGapBefore   = static_cast<int>(dtc->ReadEVBPlanningGap());
+		const int planningGapReadBack = static_cast<int>(
+		    dtc->SetEVBPlanningGap(static_cast<uint16_t>(planningGapInput)));
+		resultSs << "  Wrote 0x92C4 = " << planningGapInput << " (was " << planningGapBefore
+		         << ", read back " << planningGapReadBack << ")"
+		         << (planningGapReadBack != planningGapInput ? "  (READ BACK DIFFERS)" : "")
+		         << "\n";
+	}
+	if(!senderControlInput.empty() && senderControlInput != "Default")
+	{
+		const uint32_t senderControl =
+		    static_cast<uint32_t>(std::stoul(senderControlInput, nullptr, 0));
+		const uint32_t senderControlReadBack = dtc->SetEVBLocalChunkCapRegister(senderControl);
+		// 0x9178 [31:24] can read back a count that was not written, so compare [23:0]
+		resultSs << "  Wrote 0x9178 = 0x" << std::hex << std::setw(8) << std::setfill('0')
+		         << senderControl << " (read back 0x" << std::setw(8) << senderControlReadBack
+		         << std::dec << std::setfill(' ') << ")"
+		         << ((senderControlReadBack & 0x00FFFFFF) != (senderControl & 0x00FFFFFF)
+		                 ? "  (READ BACK DIFFERS)"
+		                 : "")
+		         << "\n";
+	}
+
+	const int      planningGap           = static_cast<int>(dtc->ReadEVBPlanningGap());
+	const uint32_t senderControlNow      = dtc->ReadEVBLocalChunkCapRegister();
+	const int      markersPerSendWindow  =
+	    static_cast<int>(dtc->ReadEVBMarkersPerSendWindow(senderControlNow));
+	__SET_ARG_OUT__("Planning Gap", std::to_string(planningGap));
+	__SET_ARG_OUT__("Markers Per Send Window", std::to_string(markersPerSendWindow));
+	resultSs << "  Now: 0x92C4 planning gap = " << planningGap << " clocks, 0x9178 = 0x" << std::hex
+	         << std::setw(8) << std::setfill('0') << senderControlNow << std::dec
+	         << std::setfill(' ') << ", clock markers per send window = " << markersPerSendWindow
+	         << " (changes take effect at the next SoftReset)\n";
+	__FE_COUT__ << resultSs.str();
+	__SET_ARG_OUT__("Result", "\n" + resultSs.str());
+}  //end EVBPlanningGapReadOrSet()
+
+//========================================================================
+void DTCFrontEndInterface::EVBMarkerDelayReadOrSet(__ARGS__)
+{
+	const int markerDelayOffsetInput = __GET_ARG_IN__(
+	    "Marker Delay Offset (0x92B8[8:0]; 0..300 in 5 ns steps, Default := no change)",
+	    int,
+	    -1);
+	if(markerDelayOffsetInput > 300)
+	{
+		__FE_SS__ << "Marker delay offset " << markerDelayOffsetInput
+		          << " is above the largest value of 0x92B8[8:0]; use 0 to 300." << __E__;
+		__FE_SS_THROW__;
+	}
+
+	auto               dtc = getDTC();
+	std::ostringstream resultSs;
+	resultSs << "EVB marker delay on " << dtc->getDeviceUID() << "\n";
+
+	const auto evbLinkEnabledMode =
+	    dtc->ReadLinkEnabled(DTCLib::DTC_Link_ID::DTC_Link_EVB);
+	const bool evbLinkEnabled =
+	    evbLinkEnabledMode.TransmitEnable && evbLinkEnabledMode.ReceiveEnable;
+	__SET_ARG_OUT__("EVB Link Enabled", std::string(evbLinkEnabled ? "1" : "0"));
+	__SET_ARG_OUT__("EVB Address",
+	                std::to_string(static_cast<int>(dtc->ReadEVBLocalMACAddress())));
+	__SET_ARG_OUT__("EVB Start Node",
+	                std::to_string(static_cast<int>(dtc->ReadEVBStartNode())));
+	__SET_ARG_OUT__(
+	    "EVB Node Count",
+	    std::to_string(static_cast<int>(dtc->ReadEVBNumberOfDestinationNodes())));
+	__SET_ARG_OUT__(
+	    "Markers Per Send Window",
+	    std::to_string(static_cast<int>(dtc->ReadEVBMarkersPerSendWindow())));
+
+	if(!evbLinkEnabled)
+	{
+		// not part of event building (skipped node): nothing is written, also not the 0x9160 address
+		__SET_ARG_OUT__(
+		    "Marker Delay Offset",
+		    std::to_string(static_cast<int>(dtc->ReadEVBMarkerDelay())));
+		__SET_ARG_OUT__("Offset Row", std::string(""));
+		resultSs << "  EVB link is off: not part of event building, nothing written, "
+		            "offset row not read.\n";
+		__FE_COUT__ << resultSs.str();
+		__SET_ARG_OUT__("Result", "\n" + resultSs.str());
+		return;
+	}
+
+	if(markerDelayOffsetInput >= 0)
+	{
+		const int markerDelayBefore   = static_cast<int>(dtc->ReadEVBMarkerDelay());
+		const int markerDelayReadBack = static_cast<int>(
+		    dtc->SetEVBMarkerDelay(static_cast<uint16_t>(markerDelayOffsetInput)));
+		resultSs << "  Wrote 0x92B8[8:0]: marker delay offset = " << markerDelayOffsetInput
+		         << " (" << markerDelayOffsetInput * 5 << " ns; was " << markerDelayBefore
+		         << ", read back " << markerDelayReadBack
+		         << "; takes effect at the next SoftReset)\n";
+	}
+
+	const int markerDelayOffset = static_cast<int>(dtc->ReadEVBMarkerDelay());
+	__SET_ARG_OUT__("Marker Delay Offset", std::to_string(markerDelayOffset));
+
+	std::ostringstream offsetRowSs;
+	bool               firstOffsetRowValue = true;
+	for(const auto& offsetRowValue :
+	    dtc->ReadEVBStatsRow(DTCLib::DTC_EVBStatsType_TravelTime))
+	{
+		offsetRowSs << (firstOffsetRowValue ? "" : " ") << offsetRowValue;
+		firstOffsetRowValue = false;
+	}
+	__SET_ARG_OUT__("Offset Row", offsetRowSs.str());
+
+	resultSs << "  Marker delay offset (0x92B8[8:0]): " << markerDelayOffset << "\n"
+	         << "  Offset row (type 0x6 via 0x9160):  " << offsetRowSs.str() << "\n";
+	__FE_COUT__ << resultSs.str();
+	__SET_ARG_OUT__("Result", "\n" + resultSs.str());
+}  //end EVBMarkerDelayReadOrSet()
 
 //========================================================================
 // Bench check of the link-7 reset (0x9118 bit 7), steps 1-6 of the verification table in
@@ -8460,10 +8998,42 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 	    "");
 	const bool softResetFirst =
 	    __GET_ARG_IN__("SoftReset first (Default := false)", bool, false);
+	const int secondCreditReadInput = __GET_ARG_IN__(
+	    "Second Credit Read (0x9178[16]; 1 = sender reads its send credit again inside "
+	    "its window when it has run out, 0 = off, Default := no change)",
+	    int,
+	    -1);
+	const int markerDelayOffsetInput = __GET_ARG_IN__(
+	    "Marker Delay Offset (0x915C[7:0]; 0..255 in 5 ns steps, delays the clock "
+	    "markers before the EVB sender sees them, needs a SoftReset after, Default := no "
+	    "change)",
+	    int,
+	    -1);
+	const std::string senderControlInput = __GET_ARG_IN__(
+	    "Sender Control (0x9178 whole word, hex: self chunk cap [15:0], second credit "
+	    "read [16], short last frame [17], measured window [18]; load value 0x00000400, "
+	    "Default := no change)",
+	    std::string,
+	    "");
 
 	auto               dtc = getDTC();
 	std::ostringstream o;
 	o << "EVB idle packet setup on " << dtc->getDeviceUID() << "\n";
+
+	// the input keeps its old name (saved sequences use it); the delay now lives in 0x92B8[8:0], 0 to 300
+	if(markerDelayOffsetInput > 300)
+	{
+		__FE_SS__ << "Marker delay offset " << markerDelayOffsetInput
+		          << " is above the largest value of 0x92B8[8:0]; use 0 to 300." << __E__;
+		__FE_SS_THROW__;
+	}
+
+	if(secondCreditReadInput > 1)
+	{
+		__FE_SS__ << "Second credit read input " << secondCreditReadInput
+		          << " is not valid; use 0 (off) or 1 (on)." << __E__;
+		__FE_SS_THROW__;
+	}
 
 	if(deadTimeInput == 0xFFFF)
 	{
@@ -8495,9 +9065,20 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 		                               : dtc->ReadEVBIdlePacketWordCount();
 		const uint8_t  gap =
             gapInput >= 0 ? static_cast<uint8_t>(gapInput) : dtc->ReadEVBInterpacketGap();
-		dtc->SetEVBPacketControlInfo(
-		    idleWords, gap, dtc->ReadEVBLoopbackCalibratedOffset());
+		dtc->SetEVBPacketControlInfo(idleWords, gap, 0);  // [7:0] is no longer used
 		o << "  Wrote 0x915C: idle words = " << idleWords << ", gap = " << (int)gap
+		  << "\n";
+	}
+	if(markerDelayOffsetInput >= 0)
+	{
+		const int markerDelayBefore   = static_cast<int>(dtc->ReadEVBMarkerDelay());
+		const int markerDelayReadBack = static_cast<int>(
+		    dtc->SetEVBMarkerDelay(static_cast<uint16_t>(markerDelayOffsetInput)));
+		o << "  Wrote 0x92B8[8:0]: marker delay offset = " << markerDelayOffsetInput
+		  << " (" << markerDelayOffsetInput * 5 << " ns; was " << markerDelayBefore
+		  << ", read back " << markerDelayReadBack
+		  << "; takes effect at the next SoftReset)"
+		  << (markerDelayReadBack != markerDelayOffsetInput ? "  (READ BACK DIFFERS)" : "")
 		  << "\n";
 	}
 	if(idlesPerWindowInput >= 0)
@@ -8524,6 +9105,40 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 		  << " words (read back " << dtc->ReadEVBLocalChunkCap()
 		  << "; live register, no SoftReset needed; 1..31 act as 32)\n";
 	}
+	if(secondCreditReadInput >= 0)
+	{
+		dtc->SetEVBSecondCreditRead(secondCreditReadInput == 1);
+		const uint32_t localChunkCapRegister = dtc->ReadEVBLocalChunkCapRegister();
+		o << "  Wrote 0x9178[16]: second credit read = " << secondCreditReadInput
+		  << " (read back 0x9178 = 0x" << std::hex << std::setw(8) << std::setfill('0')
+		  << localChunkCapRegister << std::dec << std::setfill(' ') << ")"
+		  << (dtc->ReadEVBSecondCreditRead(localChunkCapRegister) !=
+		              (secondCreditReadInput == 1)
+		          ? "  (READ BACK DIFFERS)"
+		          : "")
+		  << "\n";
+	}
+	if(!senderControlInput.empty() && senderControlInput != "Default")
+	{
+		const uint32_t senderControl =
+		    static_cast<uint32_t>(std::stoul(senderControlInput, nullptr, 0));
+		const uint32_t readBack = dtc->SetEVBLocalChunkCapRegister(senderControl);
+		o << "  Wrote 0x9178 = 0x" << std::hex << std::setw(8) << std::setfill('0')
+		  << senderControl << " (read back 0x" << std::setw(8) << readBack << std::dec
+		  << std::setfill(' ') << "): self chunk cap " << dtc->ReadEVBLocalChunkCap(readBack)
+		  << " words, second credit read "
+		  << (dtc->ReadEVBSecondCreditRead(readBack) ? "ON" : "off")
+		  << ", short last frame " << (dtc->ReadEVBShortLastFrame(readBack) ? "ON" : "off")
+		  << ", measured window " << (dtc->ReadEVBMeasuredWindow(readBack) ? "ON" : "off")
+		  << ", aligned start " << (dtc->ReadEVBAlignedStart(readBack) ? "ON" : "off")
+		  << ", marker fill " << (dtc->ReadEVBMarkerFill(readBack) ? "ON" : "off")
+		  << ", deep prefetch " << (dtc->ReadEVBDeepPrefetch(readBack) ? "ON" : "off")
+		  // 0x9178 [31:24] is a read-only count of missing clock markers, not part of what was written
+		  << ((readBack & 0x00FFFFFF) != (senderControl & 0x00FFFFFF)
+		          ? "  (READ BACK DIFFERS: bit not in this bitfile?)"
+		          : "")
+		  << "\n";
+	}
 	if(!remoteChunkControlInput.empty() && remoteChunkControlInput != "Default")
 	{
 		const uint32_t remoteChunkControl =
@@ -8548,7 +9163,7 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 	const int      numberOfNodes  = dtc->ReadEVBNumberOfDestinationNodes();
 	const auto evbLinkEnable = dtc->ReadLinkEnabled(DTCLib::DTC_Link_ID::DTC_Link_EVB);
 
-	constexpr double windowClocks     = 4 * 254.0;  // 4 CFO markers at 254 clocks each
+	const double     windowClocks     = dtc->ReadEVBMarkersPerSendWindow() * 254.0;  // CFO markers per send window (0x9178[23:22]) at 254 clocks each
 	constexpr double clockNs          = 6.4;        // 156.25 MHz txgbeclk
 	const int        beatsPerIdle     = idleWords + 5 + gap;
 	const int        idlesThatFit     = static_cast<int>(windowClocks / beatsPerIdle);
@@ -10120,6 +10735,11 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			            ? threadStruct->thisDTC_->GetEVBDMABuffersRead()
 			            : 0)
 			    << __E__;
+			kv("EVB Event Tags Seen (DTC cumulative)")
+			    << (threadStruct->thisDTC_
+			            ? threadStruct->thisDTC_->FormatEVBEventTagsSeen()
+			            : std::string("no DTC"))
+			    << __E__;
 			statusSs << "\tDrain-only: SubEvents/Event counts stay 0 by design; Total "
 			            "Subevent Bytes and "
 			            "Average Data Rate below are FAFA chunk payload bytes (subevent "
@@ -10373,6 +10993,24 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 					         << __E__
 					         << threadStruct->thisDTC_->FormatEVBStallCountersText("\t ");
 			}
+			{
+				// one line per snapshot; entry i is for the source DTC with EVB address (start node + i)
+				std::lock_guard<std::mutex> offsetRowLock(
+				    threadStruct->evbOffsetRowLock_);
+				statusSs << "EVB Offset Row during the run (stats type 0x6 via 0x9160, "
+				            "signed clocks, every 5 s while data flows): "
+				         << threadStruct->evbOffsetRowSnapshots_.size() << " snapshot(s)"
+				         << __E__;
+				for(const auto& offsetRowSnapshot : threadStruct->evbOffsetRowSnapshots_)
+				{
+					statusSs << "\t OffsetRow at " << std::fixed << std::setprecision(1)
+					         << offsetRowSnapshot.first << " s:";
+					statusSs.unsetf(std::ios_base::floatfield);
+					for(const auto& offsetRowValue : offsetRowSnapshot.second)
+						statusSs << " " << offsetRowValue;
+					statusSs << __E__;
+				}
+			}
 		}
 		catch(const std::exception& e)
 		{
@@ -10482,6 +11120,46 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			            "full, 20, 21, "
 			            "22 RX buffer high, 23 DMA back-pressure)"
 			         << __E__;
+		}
+		try
+		{
+			// hw agent 2026-11-09: the 0x9264 counts per DTC in the run summary; the layout
+			// depends on the bitfile of this DTC.  refused_whole_frames is normal recovery
+			// and is not part of the run validity.
+			const uint32_t rxBadEnd =
+			    readReg(threadStruct->thisDTC_,
+			            static_cast<uint16_t>(DTCLib::DTC_Register_EVBRxBadEnd));
+			const uint32_t designDate = readReg(threadStruct->thisDTC_, kRegDesignVersion);
+			kv("HW EVB RX frame ends (0x9264)")
+			    << "0x" << std::hex << std::setw(8) << std::setfill('0') << rxBadEnd
+			    << std::dec << std::setfill(' ') << "  "
+			    << DTCLib::DTC_Registers::FormatEVBRxBadEndText(
+			           DTCLib::DTC_Registers::DecodeEVBRxBadEnd(rxBadEnd, designDate))
+			    << __E__;
+		}
+		catch(const std::exception& e)
+		{
+			kv("HW EVB RX frame ends (0x9264)") << "read error: " << e.what() << __E__;
+		}
+		try
+		{
+			// hw agent 2026-11-19: 0x927C [31:24] = rewinds refused by this sender's DDR ring
+			// since SoftReset; must be 0 (stops at 0xff)
+			const uint32_t latestRewindRefusal =
+			    threadStruct->thisDTC_->ReadEVBLatestRewindRefusalRaw();
+			const unsigned rewindsRefused =
+			    DTCLib::DTC_Registers::EVBRewindsRefusedCount(latestRewindRefusal);
+			kv("HW EVB rewinds refused (0x927C[31:24])")
+			    << rewindsRefused << (rewindsRefused ? "  (must be 0)" : "")
+			    << "  raw 0x" << std::hex << std::setw(8) << std::setfill('0')
+			    << latestRewindRefusal << std::dec << std::setfill(' ')
+			    << "  ring acknowledged index " << (latestRewindRefusal & 0xFFFFFu)
+			    << __E__;
+		}
+		catch(const std::exception& e)
+		{
+			kv("HW EVB rewinds refused (0x927C[31:24])")
+			    << "read error: " << e.what() << __E__;
 		}
 		if(threadStruct->evbFirstStickyValid_)
 		{
@@ -11284,6 +11962,10 @@ try
 
 		if(threadStruct->inEVBMode_)
 		{
+			// hw agent 2026-11-06: one poll right after the readers start, before any traffic
+			if(ii == 0)
+				__GEN_COUT_WARN__ << "EVB TX rewind diag at READER START (before traffic): "
+				                  << formatEVBTxRewindDiag(threadStruct->thisDTC_) << __E__;
 			__GEN_COUTT__ << "get the data requested via ->GetEVBDataAsEvents(...)"
 			              << " nextEventWindowTag=" << threadStruct->nextEventWindowTag_
 			              << " iteration=" << ii
@@ -11384,6 +12066,13 @@ try
 						threadStruct->evbTrafficStarted_ = true;
 						threadStruct->evbTrafficStartTime_ =
 						    std::chrono::steady_clock::now();
+						{
+							std::lock_guard<std::mutex> offsetRowLock(
+							    threadStruct->evbOffsetRowLock_);
+							threadStruct->evbOffsetRowSnapshots_.clear();
+							threadStruct->evbOffsetRowLastSnapshotTime_ =
+							    threadStruct->evbTrafficStartTime_;
+						}
 					}
 				}
 				{
@@ -11438,6 +12127,31 @@ try
 						            : std::string("before traffic was seen"))
 						    << __E__;
 					}
+					// hw agent 2026-11-10: whenever a new sticky bit appears on this DTC, log
+					// 0x9264 / 0x9268 / 0x9174 / 0x9274 with the subevent count (the log line
+					// carries the time).  Bits excluded from run validity count here too.
+					const uint32_t stickyBitsNow = evbErr & DTCLib::EVBDefinedErrorMask;
+					const uint32_t newStickyBits =
+					    lastEvbErrValid ? (stickyBitsNow & ~lastEvbErr) : stickyBitsNow;
+					if(newStickyBits)
+						__GEN_COUT_WARN__
+						    << "EVB TX rewind diag at NEW sticky bit(s) 0x" << std::hex
+						    << std::setw(4) << std::setfill('0') << newStickyBits
+						    << " (0x9370 = 0x" << std::setw(8) << evbErr << std::dec
+						    << std::setfill(' ') << "): "
+						    << formatEVBTxRewindDiag(threadStruct->thisDTC_)
+						    << "; iteration #" << ii << ", SubEvents received so far = "
+						    << threadStruct->subeventsCount_ << ", "
+						    << (threadStruct->evbTrafficStarted_
+						            ? std::to_string(
+						                  std::chrono::duration_cast<std::chrono::microseconds>(
+						                      std::chrono::steady_clock::now() -
+						                      threadStruct->evbTrafficStartTime_)
+						                      .count() /
+						                  1000.0) +
+						                  " ms after traffic start"
+						            : std::string("before traffic was seen"))
+						    << __E__;
 				}
 				if(threadStruct->evbTrafficStarted_ &&
 				   !threadStruct->evbStallAtStartValid_)
@@ -11447,6 +12161,11 @@ try
 					                         threadStruct->evbStallAtStartValid_);
 					threadStruct->evbStallLastSnapshotTime_ =
 					    std::chrono::steady_clock::now();
+					__GEN_COUT_WARN__
+					    << "EVB TX rewind diag at FIRST poll after traffic start: "
+					    << formatEVBTxRewindDiag(threadStruct->thisDTC_)
+					    << "; iteration #" << ii << ", SubEvents received so far = "
+					    << threadStruct->subeventsCount_ << __E__;
 				}
 				else if(threadStruct->evbStallAtStartValid_ &&
 				        !threadStruct->evbStallAtEndValid_ &&
@@ -11460,6 +12179,40 @@ try
 					                           threadStruct->evbStallAccumulated_);
 					threadStruct->evbStallLastSnapshotTime_ =
 					    std::chrono::steady_clock::now();
+				}
+				if(threadStruct->evbTrafficStarted_ &&
+				   !threadStruct->evbStallAtEndValid_ &&
+				   std::chrono::steady_clock::now() -
+				           threadStruct->evbOffsetRowLastSnapshotTime_ >
+				       std::chrono::seconds(5))
+				{
+					// send window offset row, every 5 s while data flows (28 values: about 84 register accesses)
+					threadStruct->evbOffsetRowLastSnapshotTime_ =
+					    std::chrono::steady_clock::now();
+					try
+					{
+						std::vector<int32_t> offsetRow =
+						    threadStruct->thisDTC_->ReadEVBStatsRow(
+						        DTCLib::DTC_EVBStatsType_TravelTime);
+						const double secondsSinceFirstData =
+						    std::chrono::duration_cast<std::chrono::milliseconds>(
+						        threadStruct->evbOffsetRowLastSnapshotTime_ -
+						        threadStruct->evbTrafficStartTime_)
+						        .count() /
+						    1000.0;
+						std::lock_guard<std::mutex> offsetRowLock(
+						    threadStruct->evbOffsetRowLock_);
+						threadStruct->evbOffsetRowSnapshots_.emplace_back(
+						    secondsSinceFirstData, std::move(offsetRow));
+						while(threadStruct->evbOffsetRowSnapshots_.size() >
+						      threadStruct->evbOffsetRowSnapshotLimit_)
+							threadStruct->evbOffsetRowSnapshots_.pop_front();
+					}
+					catch(const std::exception& e)
+					{
+						__GEN_COUT_WARN__ << "EVB offset row snapshot failed: " << e.what()
+						                  << __E__;
+					}
 				}
 				const auto check =
 				    DTCLib::CheckEVBStatus(evbErr & ~threadStruct->evbStickyIgnoreMask_,
@@ -11876,6 +12629,12 @@ try
 		threadStruct->fp_ = nullptr;
 	}
 
+	if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
+		__GEN_COUT_WARN__ << "EVB TX rewind diag at END of run: "
+		                  << formatEVBTxRewindDiag(threadStruct->thisDTC_)
+		                  << "; SubEvents received = " << threadStruct->subeventsCount_
+		                  << __E__;
+
 	__GEN_COUT_INFO__
 	    << "Buffer test thread exited. "
 	    << " Events received = " << threadStruct->eventsCount_
@@ -11896,6 +12655,12 @@ catch(...)
 	__COUT_ERR__ << LOCAL_COUT_HDR << "Exception caught in detachedBufferTestThread()."
 	             << __E__;
 	threadStruct->running_ = false;
+
+	if(threadStruct->inEVBMode_ && threadStruct->thisDTC_)
+		__COUT__ << LOCAL_COUT_HDR
+		         << "EVB TX rewind diag at END of run (exception exit): "
+		         << formatEVBTxRewindDiag(threadStruct->thisDTC_)
+		         << "; SubEvents received = " << threadStruct->subeventsCount_ << __E__;
 
 	if(threadStruct->thisDTC_)
 		threadStruct->thisDTC_->GetDevice()->spy(
