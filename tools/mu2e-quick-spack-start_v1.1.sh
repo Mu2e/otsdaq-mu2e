@@ -368,6 +368,11 @@ pushd $Base
 spack mpd select .
 popd
 
+# ninja is installed by Spack but is not on the PATH of the environment view; mb needs it for 'ninja install'
+if [ -x $Base/local/.spack-env/view/bin/ninja ]; then
+  export PATH=$Base/local/.spack-env/view/bin:\$PATH
+fi
+
 if [ -d $Base/local/install ]; then
   export PATH=$Base/local/install/bin:\$PATH
   export LD_LIBRARY_PATH=$Base/local/install/lib:\$LD_LIBRARY_PATH
@@ -463,6 +468,10 @@ if [[ ${opt_develop:-0} -eq 1 ]];then
         spack mpd new-project --force -y --name tdaq-develop -C gcc${gccver:+@${gccver}} cxxstd=20 generator=ninja
     fi
     spack env activate tdaq-develop
+    # the MPD project is selected for each shell, so select it here or the build fails with "Project 'None' not supported"
+    pushd $Base
+    spack mpd select .
+    popd
 
     spack mpd build --clean -j $BUILD_J && spack mpd install
     installStatus=$?

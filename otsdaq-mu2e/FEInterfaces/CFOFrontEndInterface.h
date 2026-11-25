@@ -258,6 +258,8 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 	void LoopbackTest(__ARGS__);
 	void LoopbackTopologyDiscovery(__ARGS__);
 	void TemporaryDiagnosticTest(__ARGS__);
+	void EVBMarkerDelayCalibrate(__ARGS__);
+	void ClockMarkerSpacingReadOrSet(__ARGS__);
 
 	struct ROCLoopbackResult
 	{

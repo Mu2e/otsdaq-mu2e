@@ -12,14 +12,16 @@ Companion to `CFO_Register_Map.md`. Written 2026-11-16 from the firmware source 
 | 2 | **WAIT with data 0xFFFF_FFFF_FFFF means wait for the next RF0.** | treated as a 107 s wait (plan appeared stuck) |
 | 3 | **A tick-count WAIT directly before a wait-for-RF0 is a minimum**: marker on the first RF0 at least that long after the previous marker. | the tick count was discarded |
 | 4 | A GOTO re-chooses the plan like REPEAT does: if the on-spill state changed, the other plan starts at its first line. | GOTO never left the plan |
-| 5 | About 4 instructions are fetched ahead of execution. | about 32 (8 events of the old plan played out after a switch) |
+| 5 | Instructions are fetched at most up to the next MARKER, and no further until that marker is sent. Nothing of the old plan is queued behind a waiting marker. | about 32 fetched ahead (8 events of the old plan played out after a switch) |
 | 6 | **The on-spill bit (event mode bit 32) is forced to 1 for every Heartbeat from the On-Spill plan**, ORed with the bit the run plan sets. | only what the run plan set |
+| 7 | **The event duration in the CFO event record is the exact number of 25 ns ticks from marker to marker.** | one tick short (WAIT 4000 was recorded as 3999) |
 
 Consequences for software:
 
 - **A plan is position independent.** The same instruction words work at any base; nothing is recompiled when a base moves.
 - **Software that wrote absolute GOTO targets for a plan at a non-zero base must subtract the base.** A plan at base 0 is unaffected.
 - A plan built with these rules does not behave the same on older firmware (rules 1 to 3).
+- Software that adds 1 to the recorded event duration to compensate must stop doing so (rule 7).
 - Software does not need to set the on-spill bit in the On-Spill plan, and cannot clear it there (rule 6).
 - The firmware does not know a plan's length. A GOTO target beyond the end of the plan lands in whatever follows it in memory, so the compiler must keep targets inside the plan.
 
@@ -39,7 +41,7 @@ every write, so one address write is enough for a whole plan.
 | 0x9310 | BEAMOFFBASE | where the Off-Spill plan starts, **in instructions** |
 | 0x9314 | RUNPLAN_BRAM_ADDRESS | memory write/read pointer, **in 32-bit words** |
 | 0x9318 | RUNPLAN_BRAM_DATA | write: store one 32-bit word, pointer + 1. Read: return one word, pointer + 1 |
-| 0x9100 | RAWDATA_CONTROL | bit 31 = Soft Reset (self-clearing), bit 2 = accelerator RF0 input enable |
+| 0x9100 | RAWDATA_CONTROL | bit 31 = Soft Reset (self-clearing), bit 0 = Hard Reset (self-clearing; puts registers back to defaults) |
 
 ## Enabling the plans (nothing runs until this is done)
 
@@ -49,7 +51,7 @@ Loading a plan does not start it. Each plan has its own enable register, and bot
 |---|---|
 | Off-Spill plan | 1 to **0x914C** (ENABLEBEAMOFFMODE, bit 0) |
 | On-Spill plan | 1 to **0x9148** (ENABLEBEAMONMODE, bit 0) |
-| RF0 input, needed for the On-Spill plan to ever be chosen | set bit 2 of **0x9100** (RAWDATA_CONTROL), keeping the other bits |
+| RF0 input, needed for the On-Spill plan to ever be chosen | nothing to write: the RF0 input is always active. Bit 2 of 0x9100 ("RF0 input enable") is stored but not connected to anything in the current firmware (corrected 2026-11-24) |
 
 - **Normal operation needs both enables set.** The firmware then switches between the two plans by itself.
 - Off-Spill only: that plan runs all the time, also during spills. On-Spill only: nothing is sent between spills.
@@ -81,7 +83,7 @@ Loading a plan does not start it. Each plan has its own enable register, and bot
    two enable bits, so do it while both are still 0.
    It is required after a plan has stopped at END or with a run plan error.
 7. **Enable.** Write 1 to 0x914C and/or 0x9148. Processing starts as soon as an enable is set.
-   For On-Spill operation the RF0 input must also be enabled (0x9100 bit 2).
+   The RF0 input needs no enable (0x9100 bit 2 is not used by the current firmware).
 
 ## Instruction format
 
@@ -108,7 +110,7 @@ Loading a plan does not start it. Each plan has its own enable register, and bot
 Rules the firmware applies:
 
 - A normal event is `WAIT, HEARTBEAT, MARKER, INC_TAG`. The marker is held until at least 1.3 us after
-  its Heartbeat Packet, so events cannot be closer than about 1.35 us.
+  its Heartbeat Packet, so events cannot be closer than about 1.40 us (1.35 us before the fetch rule 5 change).
 - A WAIT too short for the firmware to meet raises a run plan error and processing stops until a reset.
   This error is not readable in any register today; the symptom is that heartbeat counts stop rising.
 - Every plan must end in REPEAT, GOTO or END. Unwritten memory reads as NOOP and would be run through.
@@ -167,8 +169,8 @@ The 48-bit data of a HEARTBEAT instruction is the event mode sent in the Heartbe
 - On spill means RF0 pulses are arriving: the flag sets after about 22 pulses and clears 2 us after the last.
 - The choice is made only at start, at REPEAT and at GOTO, and a new plan always starts at its first line.
   A plan with a long LOOP therefore keeps running until it reaches its REPEAT or GOTO.
-- Up to about 4 instructions already fetched from the old plan are still carried out after a change
-  (1 or 2 events).
+- An event whose Heartbeat has already been sent is always completed with its marker. Apart from that one
+  event in progress, nothing of the old plan is carried out after a change.
 
 ## Default plans (100 us Off-Spill window, one event per RF0 On-Spill)
 
@@ -209,16 +211,29 @@ The GOTO data stays 2 wherever the plan is loaded.
 | Property | Result |
 |---|---|
 | Off-Spill event windows | all exactly 100.000 us, Heartbeat marked Off-Spill |
-| Last Off-Spill window before the spill | 100.050 to 100.075 us: at least 100 us, ended by the next RF0 |
+| Last Off-Spill window before the spill | 100.075 and 101.375 us in the two spills: at least 100 us, ended by the next RF0 (so up to one RF0 period more) |
 | On-Spill events | one per RF0 (1.7 us), marker 15 to 35 ns after the RF0, Heartbeat marked On-Spill |
 | Last On-Spill window (to the first Off-Spill marker) | exactly 100.000 us |
 | Every marker | carries the mode and tag of its own Heartbeat; tags never repeat or skip |
 | On-spill bit | 1 on all On-Spill plan Heartbeats, 0 on all Off-Spill plan Heartbeats (1495 checked) |
-| Entering the spill | 2 more Off-Spill markers after the on-spill flag rises; first On-Spill marker about 265 us after it |
-| Leaving the spill | 2 On-Spill-marked events after the last RF0-locked one, with no RF0 behind them (windows 2.0 us and 1.35 us), then the 100 us window |
+| Entering the spill | 1 more Off-Spill marker after the on-spill flag rises; first On-Spill marker about 165 us after it |
+| Leaving the spill | exactly 1 On-Spill-marked event after the last RF0-locked one, with no RF0 behind it (see below) |
+| Heartbeat timing in the spill | sent 110 ns after the previous marker; 275 to 295 ns to spare before the next RF0 at a 1695 ns RF0 period |
+| Recorded event duration | equals the marker-to-marker tick count for every event (1607 checked) |
 
-The 2 extra On-Spill events at the end exist because the firmware cannot know the RF0 train has stopped
-until 2 us have passed without a pulse.
+End of every spill, as recorded (ticks of 25 ns):
+
+| Event | Recorded duration | Marked |
+|---|---|---|
+| normal On-Spill events | 67 or 68 (1.675 / 1.700 us) | On-Spill |
+| last event with an RF0 behind it | 81 (2.025 us) | On-Spill |
+| **one event with no RF0 behind it** | **4000 (100 us)** | **On-Spill** |
+| first Off-Spill event | 4000 (100 us) | Off-Spill |
+
+The one beam-less On-Spill event per spill cannot be avoided: its Heartbeat is sent as On-Spill while the
+firmware is still waiting for an RF0, and it only learns 2 us later that none is coming. It then sends the
+marker at once and switches to the Off-Spill plan. **Software can recognise it as the On-Spill event with the
+Off-Spill duration, immediately before the first Off-Spill event.**
 
 ### Register writes for the default plans
 
@@ -254,9 +269,9 @@ Counters to watch afterwards: 0x9240 heartbeats, 0x9244 heartbeats on spill, 0x9
 ## How this was checked
 
 - **Simulated** (`OnOffSpillSwitch_tb`, 12 scenarios pass, 0 fail, 4 info-only): opcodes, plan choice, switching, wait for RF0 with
-  and without a minimum, the default plans, relative GOTO at base 0 and at base 256, the forced on-spill bit (also with an
-  Off-Spill plan that sets it), the 64-bit instruction layout and the instruction-unit base addresses.
-  Logs and the simulated source are in `ai_sim_evidence/` (`onspill_bit`, `relative_goto`, `default_plans`).
+  and without a minimum, the default plans, relative GOTO at base 0 and at base 256, the forced on-spill bit, the recorded event
+  duration (the event record module is in the bench), the 64-bit instruction layout and the instruction-unit base addresses.
+  Logs and the simulated sources are in `ai_sim_evidence/` (`changes_AB`, `onspill_bit`, `relative_goto`, `default_plans`).
 - **From reading the firmware, not simulated here**: the register write path (0x9314 / 0x9318 pointer
   and auto-increment, low word first), read-back through 0x9318, and the enable / Soft Reset behaviour.
   The older bench `ListProcessorWithRingController_TB.v` loads plans the same way (address strobe, then

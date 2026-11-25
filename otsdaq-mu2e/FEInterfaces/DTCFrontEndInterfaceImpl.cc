@@ -1476,6 +1476,50 @@ void DTCFrontEndInterface::registerFEMacros(void)
 
 	//------------------
 	registerFEMacroFunction(
+	    "EVB Planning Gap Read or Set",
+	    static_cast<FEVInterface::frontEndMacroFunction_t>(
+	        &DTCFrontEndInterface::EVBPlanningGapReadOrSet),
+	    std::vector<std::string>{
+	        "Planning Gap in 10GbE transmit clocks (0x92C4[9:0]. Reset 254. Default := no change)",
+	        "Sender Control as hex (0x9178 whole word. Bits [23:22] clock markers per send window 0 = 4 1 = 3 2 = 2 3 = 1. Default := no change)"},
+	    std::vector<std::string>{"Planning Gap", "Markers Per Send Window", "Result"},
+	    1,  // requiredUserPermissions
+	    "*",
+	    "For the CFO clock marker spacing scan. Reads, and with a value in an input first writes and reads back, "
+	    "the gap between clock markers the EVB sender plans its send window with (0x92C4[9:0]) and the sender "
+	    "control word (0x9178, which holds the clock markers per send window). The gap must match the CFO's "
+	    "clock marker spacing: floor(ticks x 25 / 6.206) - 4. Both take effect at the next SoftReset. "
+	    "Write the same values on all DTCs.");
+
+	registerFEMacroFunction(
+	    "EVB Marker Delay Read or Set",
+	    static_cast<FEVInterface::frontEndMacroFunction_t>(
+	        &DTCFrontEndInterface::EVBMarkerDelayReadOrSet),
+	    std::vector<std::string>{
+	        "Marker Delay Offset (0x92B8[8:0]; 0..300 in 5 ns steps, Default := no "
+	        "change)"},
+	    std::vector<std::string>{"EVB Link Enabled",
+	                             "EVB Address",
+	                             "EVB Start Node",
+	                             "EVB Node Count",
+	                             "Markers Per Send Window",
+	                             "Marker Delay Offset",
+	                             "Offset Row",
+	                             "Result"},
+	    1,  // requiredUserPermissions
+	    "*",
+	    "Returns, as plain numbers for other FE Macros (the CFO's 'EVB Marker Delay "
+	    "Calibrate' uses this): whether the EVB link is on, this DTC's EVB address, the "
+	    "start node and node count, the clock markers per send window (0x9178[23:22]), the marker delay offset "
+	    "(0x92B8[8:0]) and the send "
+	    "window offset row (stats type 0x6 via 0x9160, one signed value per DTC of the "
+	    "cluster, as it stands after the last run). With a value in the input it first "
+	    "writes the marker delay offset (takes effect at the next SoftReset) and returns "
+	    "the value read back. A DTC whose EVB link is off is not written and its row is "
+	    "not read.");
+
+	//------------------
+	registerFEMacroFunction(
 	    "EVB Idle Packet Setup",
 	    static_cast<FEVInterface::frontEndMacroFunction_t>(
 	        &DTCFrontEndInterface::SetupEVBIdlePackets),  // feMacroFunction
@@ -7609,8 +7653,7 @@ void DTCFrontEndInterface::EVBInit(__ARGS__)
 		                              : dtc->ReadEVBIdlePacketWordCount();
 		uint8_t  ipg            = (ipgInput >= 0) ? static_cast<uint8_t>(ipgInput)
 		                                          : dtc->ReadEVBInterpacketGap();
-		uint8_t  loopbackOffset = dtc->ReadEVBLoopbackCalibratedOffset();
-		dtc->SetEVBPacketControlInfo(idleWordCount, ipg, loopbackOffset);
+		dtc->SetEVBPacketControlInfo(idleWordCount, ipg, 0);  // [7:0] is no longer used; the marker delay is in 0x92B8
 		__FE_COUT__ << "Set EVB Packet Control (0x915C): Idle Words = "
 		            << (int)idleWordCount << " (8-byte words), IPG = " << (int)ipg
 		            << " txGbE clks." << __E__;
@@ -7881,6 +7924,21 @@ void DTCFrontEndInterface::EVBStatus(__ARGS__)
 		  << (dtc->ReadEVBShortLastFrame(localChunkCapRegister) ? "ON" : "off") << "\n";
 		o << "  Measured window (0x9178 bit 18): "
 		  << (dtc->ReadEVBMeasuredWindow(localChunkCapRegister) ? "ON" : "off") << "\n";
+		o << "  Aligned start (0x9178 bit 19): "
+		  << (dtc->ReadEVBAlignedStart(localChunkCapRegister) ? "ON" : "off") << "\n";
+		o << "  Marker fill (0x9178 bit 20): "
+		  << (dtc->ReadEVBMarkerFill(localChunkCapRegister) ? "ON" : "off") << "\n";
+		o << "  Deep prefetch (0x9178 bit 21): "
+		  << (dtc->ReadEVBDeepPrefetch(localChunkCapRegister) ? "ON" : "off") << "\n";
+		o << "  Clock markers per send window (0x9178[23:22]): "
+		  << static_cast<unsigned>(dtc->ReadEVBMarkersPerSendWindow(localChunkCapRegister))
+		  << "\n";
+		o << "  Missing clock markers since SoftReset (0x92BC): "
+		  << dtc->ReadEVBMissingClockMarkerCountFull() << "\n";
+		o << "  Marker delay (0x92B8[8:0], 5 ns steps): " << dtc->ReadEVBMarkerDelay()
+		  << "\n";
+		o << "  Planning gap (0x92C4[9:0], 10GbE transmit clocks): " << dtc->ReadEVBPlanningGap()
+		  << "\n";
 	}
 	{
 		// Rate arithmetic: an idle frame = (4 + words) beats + gap beats at 156.25 MHz.
@@ -8422,10 +8480,11 @@ void DTCFrontEndInterface::EVBTimingChainReadout(__ARGS__)
 	o << "  0x9688 CFO CDC diag:      " << hex8(cfoCDCDiag)
 	  << "  parity=" << parityMismatch << " batchSlip=" << batchSlip << "\n";
 
-	// --- Marker delay offset (0x915C [7:0]) ---
+	// --- Marker delay offset (0x92B8 [8:0]; moved from 0x915C [7:0]) ---
 	const uint32_t evbPacketControl   = readReg(dtc, 0x915C);
-	o << "  0x915C EVB pkt ctrl:      " << hex8(evbPacketControl)
-	  << "  markerDelayOffset=" << (evbPacketControl & 0xFF) << "\n";
+	o << "  0x915C EVB pkt ctrl:      " << hex8(evbPacketControl) << "\n";
+	o << "  0x92B8 EVB marker delay:  markerDelayOffset=" << dtc->ReadEVBMarkerDelay()
+	  << "\n";
 
 	// --- EVB configuration (0x9158) ---
 	const uint32_t evbConfiguration   = readReg(dtc, 0x9158);
@@ -8490,6 +8549,147 @@ void DTCFrontEndInterface::EVBTimingChainReadout(__ARGS__)
 	__FE_COUT__ << o.str();
 	__SET_ARG_OUT__("Result", "\n" + o.str());
 }  //end EVBTimingChainReadout()
+
+//========================================================================
+// Marker delay offset and send window offset row as plain numbers, for other FE Macros;
+// with an input value it writes the marker delay offset first.
+void DTCFrontEndInterface::EVBPlanningGapReadOrSet(__ARGS__)
+{
+	const int planningGapInput = __GET_ARG_IN__(
+	    "Planning Gap in 10GbE transmit clocks (0x92C4[9:0]. Reset 254. Default := no change)",
+	    int,
+	    -1);
+	const std::string senderControlInput = __GET_ARG_IN__(
+	    "Sender Control as hex (0x9178 whole word. Bits [23:22] clock markers per send window 0 = 4 1 = 3 2 = 2 3 = 1. Default := no change)",
+	    std::string,
+	    "");
+	if(planningGapInput > 0x3FF)
+	{
+		__FE_SS__ << "Planning gap " << planningGapInput
+		          << " does not fit 0x92C4[9:0]; use 0 to 1023." << __E__;
+		__FE_SS_THROW__;
+	}
+
+	auto               dtc = getDTC();
+	std::ostringstream resultSs;
+	resultSs << "EVB planning gap on " << dtc->getDeviceUID() << "\n";
+
+	if(planningGapInput >= 0)
+	{
+		const int planningGapBefore   = static_cast<int>(dtc->ReadEVBPlanningGap());
+		const int planningGapReadBack = static_cast<int>(
+		    dtc->SetEVBPlanningGap(static_cast<uint16_t>(planningGapInput)));
+		resultSs << "  Wrote 0x92C4 = " << planningGapInput << " (was " << planningGapBefore
+		         << ", read back " << planningGapReadBack << ")"
+		         << (planningGapReadBack != planningGapInput ? "  (READ BACK DIFFERS)" : "")
+		         << "\n";
+	}
+	if(!senderControlInput.empty() && senderControlInput != "Default")
+	{
+		const uint32_t senderControl =
+		    static_cast<uint32_t>(std::stoul(senderControlInput, nullptr, 0));
+		const uint32_t senderControlReadBack = dtc->SetEVBLocalChunkCapRegister(senderControl);
+		// 0x9178 [31:24] can read back a count that was not written, so compare [23:0]
+		resultSs << "  Wrote 0x9178 = 0x" << std::hex << std::setw(8) << std::setfill('0')
+		         << senderControl << " (read back 0x" << std::setw(8) << senderControlReadBack
+		         << std::dec << std::setfill(' ') << ")"
+		         << ((senderControlReadBack & 0x00FFFFFF) != (senderControl & 0x00FFFFFF)
+		                 ? "  (READ BACK DIFFERS)"
+		                 : "")
+		         << "\n";
+	}
+
+	const int      planningGap           = static_cast<int>(dtc->ReadEVBPlanningGap());
+	const uint32_t senderControlNow      = dtc->ReadEVBLocalChunkCapRegister();
+	const int      markersPerSendWindow  =
+	    static_cast<int>(dtc->ReadEVBMarkersPerSendWindow(senderControlNow));
+	__SET_ARG_OUT__("Planning Gap", std::to_string(planningGap));
+	__SET_ARG_OUT__("Markers Per Send Window", std::to_string(markersPerSendWindow));
+	resultSs << "  Now: 0x92C4 planning gap = " << planningGap << " clocks, 0x9178 = 0x" << std::hex
+	         << std::setw(8) << std::setfill('0') << senderControlNow << std::dec
+	         << std::setfill(' ') << ", clock markers per send window = " << markersPerSendWindow
+	         << " (changes take effect at the next SoftReset)\n";
+	__FE_COUT__ << resultSs.str();
+	__SET_ARG_OUT__("Result", "\n" + resultSs.str());
+}  //end EVBPlanningGapReadOrSet()
+
+//========================================================================
+void DTCFrontEndInterface::EVBMarkerDelayReadOrSet(__ARGS__)
+{
+	const int markerDelayOffsetInput = __GET_ARG_IN__(
+	    "Marker Delay Offset (0x92B8[8:0]; 0..300 in 5 ns steps, Default := no change)",
+	    int,
+	    -1);
+	if(markerDelayOffsetInput > 300)
+	{
+		__FE_SS__ << "Marker delay offset " << markerDelayOffsetInput
+		          << " is above the largest value of 0x92B8[8:0]; use 0 to 300." << __E__;
+		__FE_SS_THROW__;
+	}
+
+	auto               dtc = getDTC();
+	std::ostringstream resultSs;
+	resultSs << "EVB marker delay on " << dtc->getDeviceUID() << "\n";
+
+	const auto evbLinkEnabledMode =
+	    dtc->ReadLinkEnabled(DTCLib::DTC_Link_ID::DTC_Link_EVB);
+	const bool evbLinkEnabled =
+	    evbLinkEnabledMode.TransmitEnable && evbLinkEnabledMode.ReceiveEnable;
+	__SET_ARG_OUT__("EVB Link Enabled", std::string(evbLinkEnabled ? "1" : "0"));
+	__SET_ARG_OUT__("EVB Address",
+	                std::to_string(static_cast<int>(dtc->ReadEVBLocalMACAddress())));
+	__SET_ARG_OUT__("EVB Start Node",
+	                std::to_string(static_cast<int>(dtc->ReadEVBStartNode())));
+	__SET_ARG_OUT__(
+	    "EVB Node Count",
+	    std::to_string(static_cast<int>(dtc->ReadEVBNumberOfDestinationNodes())));
+	__SET_ARG_OUT__(
+	    "Markers Per Send Window",
+	    std::to_string(static_cast<int>(dtc->ReadEVBMarkersPerSendWindow())));
+
+	if(!evbLinkEnabled)
+	{
+		// not part of event building (skipped node): nothing is written, also not the 0x9160 address
+		__SET_ARG_OUT__(
+		    "Marker Delay Offset",
+		    std::to_string(static_cast<int>(dtc->ReadEVBMarkerDelay())));
+		__SET_ARG_OUT__("Offset Row", std::string(""));
+		resultSs << "  EVB link is off: not part of event building, nothing written, "
+		            "offset row not read.\n";
+		__FE_COUT__ << resultSs.str();
+		__SET_ARG_OUT__("Result", "\n" + resultSs.str());
+		return;
+	}
+
+	if(markerDelayOffsetInput >= 0)
+	{
+		const int markerDelayBefore   = static_cast<int>(dtc->ReadEVBMarkerDelay());
+		const int markerDelayReadBack = static_cast<int>(
+		    dtc->SetEVBMarkerDelay(static_cast<uint16_t>(markerDelayOffsetInput)));
+		resultSs << "  Wrote 0x92B8[8:0]: marker delay offset = " << markerDelayOffsetInput
+		         << " (" << markerDelayOffsetInput * 5 << " ns; was " << markerDelayBefore
+		         << ", read back " << markerDelayReadBack
+		         << "; takes effect at the next SoftReset)\n";
+	}
+
+	const int markerDelayOffset = static_cast<int>(dtc->ReadEVBMarkerDelay());
+	__SET_ARG_OUT__("Marker Delay Offset", std::to_string(markerDelayOffset));
+
+	std::ostringstream offsetRowSs;
+	bool               firstOffsetRowValue = true;
+	for(const auto& offsetRowValue :
+	    dtc->ReadEVBStatsRow(DTCLib::DTC_EVBStatsType_TravelTime))
+	{
+		offsetRowSs << (firstOffsetRowValue ? "" : " ") << offsetRowValue;
+		firstOffsetRowValue = false;
+	}
+	__SET_ARG_OUT__("Offset Row", offsetRowSs.str());
+
+	resultSs << "  Marker delay offset (0x92B8[8:0]): " << markerDelayOffset << "\n"
+	         << "  Offset row (type 0x6 via 0x9160):  " << offsetRowSs.str() << "\n";
+	__FE_COUT__ << resultSs.str();
+	__SET_ARG_OUT__("Result", "\n" + resultSs.str());
+}  //end EVBMarkerDelayReadOrSet()
 
 //========================================================================
 // Bench check of the link-7 reset (0x9118 bit 7), steps 1-6 of the verification table in
@@ -8820,10 +9020,11 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 	std::ostringstream o;
 	o << "EVB idle packet setup on " << dtc->getDeviceUID() << "\n";
 
-	if(markerDelayOffsetInput > 0xFF)
+	// the input keeps its old name (saved sequences use it); the delay now lives in 0x92B8[8:0], 0 to 300
+	if(markerDelayOffsetInput > 300)
 	{
 		__FE_SS__ << "Marker delay offset " << markerDelayOffsetInput
-		          << " does not fit 0x915C[7:0]; use 0 to 255." << __E__;
+		          << " is above the largest value of 0x92B8[8:0]; use 0 to 300." << __E__;
 		__FE_SS_THROW__;
 	}
 
@@ -8864,25 +9065,20 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 		                               : dtc->ReadEVBIdlePacketWordCount();
 		const uint8_t  gap =
             gapInput >= 0 ? static_cast<uint8_t>(gapInput) : dtc->ReadEVBInterpacketGap();
-		dtc->SetEVBPacketControlInfo(
-		    idleWords, gap, dtc->ReadEVBLoopbackCalibratedOffset());
+		dtc->SetEVBPacketControlInfo(idleWords, gap, 0);  // [7:0] is no longer used
 		o << "  Wrote 0x915C: idle words = " << idleWords << ", gap = " << (int)gap
 		  << "\n";
 	}
 	if(markerDelayOffsetInput >= 0)
 	{
-		const uint32_t packetControlBefore = dtc->ReadEVBPacketControlRaw();
-		const uint32_t packetControlAfter  = dtc->SetEVBLoopbackCalibratedOffset(
-		    static_cast<uint8_t>(markerDelayOffsetInput));
-		const uint32_t packetControlExpected =
-		    (packetControlBefore & 0xFFFFFF00u) |
-		    static_cast<uint32_t>(markerDelayOffsetInput);
-		o << "  Wrote 0x915C[7:0]: marker delay offset = " << markerDelayOffsetInput
-		  << " (" << markerDelayOffsetInput * 5 << " ns; 0x915C was 0x" << std::hex
-		  << std::setw(8) << std::setfill('0') << packetControlBefore
-		  << ", read back 0x" << std::setw(8) << packetControlAfter << std::dec
-		  << std::setfill(' ') << "; takes effect at the next SoftReset)"
-		  << (packetControlAfter != packetControlExpected ? "  (READ BACK DIFFERS)" : "")
+		const int markerDelayBefore   = static_cast<int>(dtc->ReadEVBMarkerDelay());
+		const int markerDelayReadBack = static_cast<int>(
+		    dtc->SetEVBMarkerDelay(static_cast<uint16_t>(markerDelayOffsetInput)));
+		o << "  Wrote 0x92B8[8:0]: marker delay offset = " << markerDelayOffsetInput
+		  << " (" << markerDelayOffsetInput * 5 << " ns; was " << markerDelayBefore
+		  << ", read back " << markerDelayReadBack
+		  << "; takes effect at the next SoftReset)"
+		  << (markerDelayReadBack != markerDelayOffsetInput ? "  (READ BACK DIFFERS)" : "")
 		  << "\n";
 	}
 	if(idlesPerWindowInput >= 0)
@@ -8934,7 +9130,11 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 		  << (dtc->ReadEVBSecondCreditRead(readBack) ? "ON" : "off")
 		  << ", short last frame " << (dtc->ReadEVBShortLastFrame(readBack) ? "ON" : "off")
 		  << ", measured window " << (dtc->ReadEVBMeasuredWindow(readBack) ? "ON" : "off")
-		  << (readBack != senderControl
+		  << ", aligned start " << (dtc->ReadEVBAlignedStart(readBack) ? "ON" : "off")
+		  << ", marker fill " << (dtc->ReadEVBMarkerFill(readBack) ? "ON" : "off")
+		  << ", deep prefetch " << (dtc->ReadEVBDeepPrefetch(readBack) ? "ON" : "off")
+		  // 0x9178 [31:24] is a read-only count of missing clock markers, not part of what was written
+		  << ((readBack & 0x00FFFFFF) != (senderControl & 0x00FFFFFF)
 		          ? "  (READ BACK DIFFERS: bit not in this bitfile?)"
 		          : "")
 		  << "\n";
@@ -8963,7 +9163,7 @@ void DTCFrontEndInterface::SetupEVBIdlePackets(__ARGS__)
 	const int      numberOfNodes  = dtc->ReadEVBNumberOfDestinationNodes();
 	const auto evbLinkEnable = dtc->ReadLinkEnabled(DTCLib::DTC_Link_ID::DTC_Link_EVB);
 
-	constexpr double windowClocks     = 4 * 254.0;  // 4 CFO markers at 254 clocks each
+	const double     windowClocks     = dtc->ReadEVBMarkersPerSendWindow() * 254.0;  // CFO markers per send window (0x9178[23:22]) at 254 clocks each
 	constexpr double clockNs          = 6.4;        // 156.25 MHz txgbeclk
 	const int        beatsPerIdle     = idleWords + 5 + gap;
 	const int        idlesThatFit     = static_cast<int>(windowClocks / beatsPerIdle);
@@ -10535,6 +10735,11 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 			            ? threadStruct->thisDTC_->GetEVBDMABuffersRead()
 			            : 0)
 			    << __E__;
+			kv("EVB Event Tags Seen (DTC cumulative)")
+			    << (threadStruct->thisDTC_
+			            ? threadStruct->thisDTC_->FormatEVBEventTagsSeen()
+			            : std::string("no DTC"))
+			    << __E__;
 			statusSs << "\tDrain-only: SubEvents/Event counts stay 0 by design; Total "
 			            "Subevent Bytes and "
 			            "Average Data Rate below are FAFA chunk payload bytes (subevent "
@@ -10787,6 +10992,24 @@ std::string DTCFrontEndInterface::getDetachedBufferTestEVBStatus(
 					            "run snapshot)..."
 					         << __E__
 					         << threadStruct->thisDTC_->FormatEVBStallCountersText("\t ");
+			}
+			{
+				// one line per snapshot; entry i is for the source DTC with EVB address (start node + i)
+				std::lock_guard<std::mutex> offsetRowLock(
+				    threadStruct->evbOffsetRowLock_);
+				statusSs << "EVB Offset Row during the run (stats type 0x6 via 0x9160, "
+				            "signed clocks, every 5 s while data flows): "
+				         << threadStruct->evbOffsetRowSnapshots_.size() << " snapshot(s)"
+				         << __E__;
+				for(const auto& offsetRowSnapshot : threadStruct->evbOffsetRowSnapshots_)
+				{
+					statusSs << "\t OffsetRow at " << std::fixed << std::setprecision(1)
+					         << offsetRowSnapshot.first << " s:";
+					statusSs.unsetf(std::ios_base::floatfield);
+					for(const auto& offsetRowValue : offsetRowSnapshot.second)
+						statusSs << " " << offsetRowValue;
+					statusSs << __E__;
+				}
 			}
 		}
 		catch(const std::exception& e)
@@ -11843,6 +12066,13 @@ try
 						threadStruct->evbTrafficStarted_ = true;
 						threadStruct->evbTrafficStartTime_ =
 						    std::chrono::steady_clock::now();
+						{
+							std::lock_guard<std::mutex> offsetRowLock(
+							    threadStruct->evbOffsetRowLock_);
+							threadStruct->evbOffsetRowSnapshots_.clear();
+							threadStruct->evbOffsetRowLastSnapshotTime_ =
+							    threadStruct->evbTrafficStartTime_;
+						}
 					}
 				}
 				{
@@ -11949,6 +12179,40 @@ try
 					                           threadStruct->evbStallAccumulated_);
 					threadStruct->evbStallLastSnapshotTime_ =
 					    std::chrono::steady_clock::now();
+				}
+				if(threadStruct->evbTrafficStarted_ &&
+				   !threadStruct->evbStallAtEndValid_ &&
+				   std::chrono::steady_clock::now() -
+				           threadStruct->evbOffsetRowLastSnapshotTime_ >
+				       std::chrono::seconds(5))
+				{
+					// send window offset row, every 5 s while data flows (28 values: about 84 register accesses)
+					threadStruct->evbOffsetRowLastSnapshotTime_ =
+					    std::chrono::steady_clock::now();
+					try
+					{
+						std::vector<int32_t> offsetRow =
+						    threadStruct->thisDTC_->ReadEVBStatsRow(
+						        DTCLib::DTC_EVBStatsType_TravelTime);
+						const double secondsSinceFirstData =
+						    std::chrono::duration_cast<std::chrono::milliseconds>(
+						        threadStruct->evbOffsetRowLastSnapshotTime_ -
+						        threadStruct->evbTrafficStartTime_)
+						        .count() /
+						    1000.0;
+						std::lock_guard<std::mutex> offsetRowLock(
+						    threadStruct->evbOffsetRowLock_);
+						threadStruct->evbOffsetRowSnapshots_.emplace_back(
+						    secondsSinceFirstData, std::move(offsetRow));
+						while(threadStruct->evbOffsetRowSnapshots_.size() >
+						      threadStruct->evbOffsetRowSnapshotLimit_)
+							threadStruct->evbOffsetRowSnapshots_.pop_front();
+					}
+					catch(const std::exception& e)
+					{
+						__GEN_COUT_WARN__ << "EVB offset row snapshot failed: " << e.what()
+						                  << __E__;
+					}
 				}
 				const auto check =
 				    DTCLib::CheckEVBStatus(evbErr & ~threadStruct->evbStickyIgnoreMask_,

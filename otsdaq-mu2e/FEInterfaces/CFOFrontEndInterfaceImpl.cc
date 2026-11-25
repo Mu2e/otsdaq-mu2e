@@ -1,6 +1,9 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <iomanip>
+#include <map>
+#include <sstream>
 #include "otsdaq-mu2e/FEInterfaces/CFOFrontEndInterface.h"
 #include "otsdaq/ConfigurationInterface/ConfigurationManagerRW.h"
 #include "otsdaq/Macros/InterfacePluginMacros.h"
@@ -626,6 +629,48 @@ void CFOFrontEndInterface::registerFEMacros(void)
 		1,
 		"*",
 		"Diagnostic: calls 'Get Link Lock Status' on Calo01_DTC1 via runFrontEndMacro."
+	);
+	registerFEMacroFunction(
+		"Clock Marker Spacing Read or Set",
+		static_cast<FEVInterface::frontEndMacroFunction_t>(
+			&CFOFrontEndInterface::ClockMarkerSpacingReadOrSet),
+		std::vector<std::string>{
+			"Clock Marker Spacing in 25 ns ticks (0x915C. 61 to 140. Default := no change)"
+		},
+		std::vector<std::string>{"Clock Marker Spacing", "Clock Markers Enabled", "On Spill Heartbeat Count", "Off Spill Heartbeat Count", "Response"},
+		1,
+		"*",
+		"Reads, and with a value in the input first writes and reads back, the gap between the CFO's clock "
+		"markers (0x915C, in 25 ns ticks, firmware default 65 = 1625 ns, EVB setting 62 = 1550 ns). Refuses values below 61. Also returns whether "
+		"clock markers are enabled (0x9100 bit 1) and the Heartbeat Packets sent on spill (0x9244) and off spill "
+		"(0x9248): if the on spill count grew during a run, RF0 was present. Stop the data flow before "
+		"writing, and write the matching planning gap on every DTC (DTC FE Macro 'EVB Planning Gap Read or Set')."
+	);
+	registerFEMacroFunction(
+		"EVB Marker Delay Calibrate",
+		static_cast<FEVInterface::frontEndMacroFunction_t>(
+			&CFOFrontEndInterface::EVBMarkerDelayCalibrate),
+		std::vector<std::string>{
+			"Write Marker Delays (Default := true)",
+			"Set All Marker Delays to 0 Instead (Default := false)",
+			"Send Window Length in clocks (Default := clock markers per send window from the DTCs' 0x9178[23:22] x CFO 0x915C ticks x 25 / 6.206)"
+		},
+		std::vector<std::string>{"Response"},
+		1,
+		"*",
+		"Lines up the EVB send windows of all DTCs of this subsystem. Uses the send window "
+		"offset rows (stats type 0x6) as they stand after the last run: it starts no run "
+		"and sends no SoftReset. Reads every DTC with the DTC FE Macro 'EVB Marker Delay "
+		"Read or Set', computes each DTC's window offset (with the loop of three check), "
+		"takes out the marker delay each DTC has now (it must have been in effect during "
+		"the last run), computes delay = (largest offset - own offset) x 6.2 / 5, capped "
+		"at 300, writes it to 0x92B8[8:0] of each DTC and reads it back. The send window "
+		"length follows the clock markers per send window the DTCs report (0x9178[23:22]); "
+		"run it again after every bitfile load and whenever that setting changes. DTCs whose EVB "
+		"link is off (skipped nodes) are left alone. Nothing is written when the check "
+		"fails or a row is not filled. New delays take effect at the next SoftReset, so "
+		"follow with a run to verify. With 'Set All Marker Delays to 0' it only writes 0 "
+		"to every DTC (first step after recabling or a change of the DTC list)."
 	);
 	// clang-format on
 
@@ -7416,5 +7461,532 @@ void CFOFrontEndInterface::TemporaryDiagnosticTest(__ARGS__)
 
 	__SET_ARG_OUT__("Response", ostr.str());
 }  //end TemporaryDiagnosticTest()
+
+//=====================================================================================
+// Computes and writes the EVB marker delay (0x915C[7:0]) of every DTC of this subsystem
+// from the send window offset rows left by the last run.  For a pair of DTCs A, B and
+// window W:  a = row for source A read at B;  b = row for source B read at A;
+//   travel time = ((a + b) mod W) / 2;  offset = (a - travel time) folded into -W/2..+W/2
+//   = clocks by which A's windows open later than B's.
+// The pair formula cannot tell the travel time from travel time + W/2; the sum of the
+// offsets around three DTCs decides: near 0 = as computed, near +-W/2 = add W/2.
+void CFOFrontEndInterface::ClockMarkerSpacingReadOrSet(__ARGS__)
+{
+	const int clockMarkerSpacingInput = __GET_ARG_IN__(
+	    "Clock Marker Spacing in 25 ns ticks (0x915C. 61 to 140. Default := no change)",
+	    int,
+	    -1);
+	// the firmware accepts 40 to 140; below 61 is not allowed by the CFO firmware agent, so it is refused here
+	if(clockMarkerSpacingInput >= 0 &&
+	   (clockMarkerSpacingInput < 61 || clockMarkerSpacingInput > 140))
+	{
+		__FE_SS__ << "Clock marker spacing " << clockMarkerSpacingInput
+		          << " ticks is not allowed; use 61 to 140. Nothing written." << __E__;
+		__FE_SS_THROW__;
+	}
+
+	std::ostringstream responseSs;
+	const uint32_t     clockMarkerSpacingBefore = thisCFO_->ReadClockMarkerSpacing();
+	if(clockMarkerSpacingInput >= 0)
+	{
+		if(clockMarkerSpacingBefore == 0)
+		{
+			__FE_SS__ << "CFO 0x915C reads 0: this CFO firmware has no clock marker spacing "
+			             "register. Nothing written."
+			          << __E__;
+			__FE_SS_THROW__;
+		}
+		thisCFO_->SetClockMarkerSpacing(static_cast<uint32_t>(clockMarkerSpacingInput));
+		const uint32_t clockMarkerSpacingReadBack = thisCFO_->ReadClockMarkerSpacing();
+		responseSs << "Wrote CFO 0x915C = " << clockMarkerSpacingInput << " (was "
+		           << clockMarkerSpacingBefore << ", read back " << clockMarkerSpacingReadBack << ")"
+		           << (clockMarkerSpacingReadBack != static_cast<uint32_t>(clockMarkerSpacingInput)
+		                   ? "  (READ BACK DIFFERS)"
+		                   : "")
+		           << "\n";
+	}
+
+	const uint32_t clockMarkerSpacing = thisCFO_->ReadClockMarkerSpacing();
+	const bool     clockMarkersEnabled   = thisCFO_->ReadEmbeddedClockMarkerEnable();
+	const uint32_t onSpillHeartbeatCount  = thisCFO_->ReadTransmitOnSpillHeartbeatPacketCount();
+	const uint32_t offSpillHeartbeatCount = thisCFO_->ReadTransmitOffSpillHeartbeatPacketCount();
+	responseSs << "CFO 0x915C clock marker spacing = " << clockMarkerSpacing << " ticks ("
+	           << clockMarkerSpacing * 25 << " ns)"
+	           << (clockMarkerSpacing == 0 ? "  (0 = this firmware has no such register)" : "")
+	           << "\n"
+	           << "CFO 0x9100 bit 1 clock markers enabled = " << (clockMarkersEnabled ? 1 : 0) << "\n"
+	           << "CFO 0x9244 Heartbeat Packets sent on spill = " << onSpillHeartbeatCount << "\n"
+	           << "CFO 0x9248 Heartbeat Packets sent off spill = " << offSpillHeartbeatCount << "\n"
+	           // low 16 bits count; 100001 shows as 34465 (0x86A1).  Read after the last event and before any CFO Halt or reset.
+	           << "CFO 0x9260 Event Window Markers issued (low 16 bits) = "
+	           << (thisCFO_->ReadTransmitEventWindowMarkerCount() & 0xFFFF) << "\n"
+	           << "CFO 0x9240 Heartbeat Packets issued (low 16 bits) = "
+	           << (thisCFO_->ReadTransmitHeartbeatPacketCount() & 0xFFFF) << "\n";
+	__SET_ARG_OUT__("Clock Marker Spacing", std::to_string(clockMarkerSpacing));
+	__SET_ARG_OUT__("Clock Markers Enabled", std::string(clockMarkersEnabled ? "1" : "0"));
+	__SET_ARG_OUT__("On Spill Heartbeat Count", std::to_string(onSpillHeartbeatCount));
+	__SET_ARG_OUT__("Off Spill Heartbeat Count", std::to_string(offSpillHeartbeatCount));
+	__FE_COUT__ << responseSs.str() << __E__;
+	__SET_ARG_OUT__("Response", responseSs.str());
+}  //end ClockMarkerSpacingReadOrSet()
+
+//========================================================================
+void CFOFrontEndInterface::EVBMarkerDelayCalibrate(__ARGS__)
+{
+	const bool writeMarkerDelays =
+	    __GET_ARG_IN__("Write Marker Delays (Default := true)", bool, true);
+	const bool setAllMarkerDelaysToZero = __GET_ARG_IN__(
+	    "Set All Marker Delays to 0 Instead (Default := false)", bool, false);
+	// 0 = take the length from the clock markers per send window that the DTCs report
+	double windowClocks = __GET_ARG_IN__(
+	    "Send Window Length in clocks (Default := clock markers per send window from the DTCs' "
+	    "0x9178[23:22] x CFO 0x915C ticks x 25 / 6.206)",
+	    double,
+	    0.0);
+	if(windowClocks < 0)
+	{
+		__FE_SS__ << "Send window length must be above 0 clocks." << __E__;
+		__FE_SS_THROW__;
+	}
+	const bool windowClocksFromDTCs = windowClocks == 0;
+
+	const std::string dtcMacroName = "EVB Marker Delay Read or Set";
+	const std::string dtcMacroInputName =
+	    "Marker Delay Offset (0x92B8[8:0]; 0..300 in 5 ns steps, Default := no change)";
+	const double nanosecondsPerOffsetClock = 6.2;
+	const double nanosecondsPerDelayStep   = 5.0;
+	const int    largestMarkerDelay        = 300;
+	const double loopSumTolerance          = 80.0;
+
+	struct ClusterDTC
+	{
+		std::string          uid;
+		int                  evbAddress        = 0;
+		int                  markerDelayBefore = 0;
+		std::vector<int32_t> offsetRow;
+		bool                 offsetKnown         = false;
+		double               measuredOffset      = 0;  // against the reference DTC, with the present delays
+		double               offsetWithoutDelay  = 0;
+		int                  markerDelayNew      = 0;
+		bool                 markerDelayCapped   = false;
+		int                  markerDelayReadBack = -1;
+	};
+
+	// runs the DTC macro on one DTC; a negative value only reads
+	auto runDTCMacro = [&](const std::string&                             dtcUID,
+	                       int                                            markerDelayToWrite,
+	                       std::vector<FEVInterface::frontEndMacroArg_t>& dtcArgsOut) {
+		std::vector<FEVInterface::frontEndMacroArg_t> dtcArgsIn;
+		dtcArgsIn.emplace_back(dtcMacroInputName,
+		                       markerDelayToWrite < 0
+		                           ? std::string("Default")
+		                           : std::to_string(markerDelayToWrite));
+		try
+		{
+			runSubsystemFrontEndMacro(dtcUID, dtcMacroName, dtcArgsIn, dtcArgsOut);
+		}
+		catch(const std::exception& e)
+		{
+			__FE_SS__ << "FE Macro '" << dtcMacroName << "' failed on DTC " << dtcUID
+			          << ": " << e.what() << __E__;
+			__FE_SS_THROW__;
+		}
+	};
+	auto numberOfArgument = [](std::vector<FEVInterface::frontEndMacroArg_t>& dtcArgsOut,
+	                           const std::string&                             argumentName) {
+		return std::stoi(FEVInterface::getFEMacroArgument(dtcArgsOut, argumentName));
+	};
+	auto fold = [&](double value) {
+		return std::fmod(std::fmod(value + windowClocks / 2, windowClocks) + windowClocks,
+		                 windowClocks) -
+		       windowClocks / 2;
+	};
+	auto medianOf = [](std::vector<double> values) {
+		std::sort(values.begin(), values.end());
+		const size_t middle = values.size() / 2;
+		return values.size() % 2 ? values[middle]
+		                         : (values[middle - 1] + values[middle]) / 2;
+	};
+
+	std::ostringstream responseSs;
+	responseSs << "\nEVB Marker Delay Calibrate\n";
+
+	//==================== read every DTC
+	std::vector<ClusterDTC>  clusterDTCs;  // sorted by EVB address below
+	std::vector<std::string> leftOutDTCs;
+	int                      evbStartNode = -1, evbNodeCount = -1;
+	int                      markersPerSendWindow = -1;
+	for(const auto& dtcUID : getSubsystemFEUIDsOfPlugin("DTCFrontEndInterface"))
+	{
+		std::vector<FEVInterface::frontEndMacroArg_t> dtcArgsOut;
+		runDTCMacro(dtcUID, -1, dtcArgsOut);
+		if(numberOfArgument(dtcArgsOut, "EVB Link Enabled") != 1)
+		{
+			leftOutDTCs.push_back(dtcUID);
+			continue;
+		}
+		ClusterDTC clusterDTC;
+		clusterDTC.uid               = dtcUID;
+		clusterDTC.evbAddress        = numberOfArgument(dtcArgsOut, "EVB Address");
+		clusterDTC.markerDelayBefore = numberOfArgument(dtcArgsOut, "Marker Delay Offset");
+		std::istringstream offsetRowStream(
+		    FEVInterface::getFEMacroArgument(dtcArgsOut, "Offset Row"));
+		int32_t offsetRowValue;
+		while(offsetRowStream >> offsetRowValue)
+			clusterDTC.offsetRow.push_back(offsetRowValue);
+
+		const int startNodeOfDTC = numberOfArgument(dtcArgsOut, "EVB Start Node");
+		const int nodeCountOfDTC = numberOfArgument(dtcArgsOut, "EVB Node Count");
+		if(evbStartNode == -1)
+		{
+			evbStartNode = startNodeOfDTC;
+			evbNodeCount = nodeCountOfDTC;
+		}
+		else if(startNodeOfDTC != evbStartNode || nodeCountOfDTC != evbNodeCount)
+		{
+			__FE_SS__ << "DTC " << dtcUID << " has EVB start node " << startNodeOfDTC
+			          << " and node count " << nodeCountOfDTC
+			          << ", other DTCs have start node " << evbStartNode
+			          << " and node count " << evbNodeCount
+			          << ". Run EVB Init on all DTCs first. Nothing was written." << __E__;
+			__FE_SS_THROW__;
+		}
+		const int markersPerSendWindowOfDTC =
+		    numberOfArgument(dtcArgsOut, "Markers Per Send Window");
+		if(markersPerSendWindow == -1)
+			markersPerSendWindow = markersPerSendWindowOfDTC;
+		else if(markersPerSendWindowOfDTC != markersPerSendWindow)
+		{
+			__FE_SS__ << "DTC " << dtcUID << " has " << markersPerSendWindowOfDTC
+			          << " clock markers per send window (0x9178[23:22]), other DTCs have "
+			          << markersPerSendWindow
+			          << ". Write the same 0x9178 on all DTCs first. Nothing was written."
+			          << __E__;
+			__FE_SS_THROW__;
+		}
+		clusterDTCs.push_back(clusterDTC);
+	}
+	std::sort(clusterDTCs.begin(),
+	          clusterDTCs.end(),
+	          [](const ClusterDTC& first, const ClusterDTC& second) {
+		          return first.evbAddress < second.evbAddress;
+	          });
+
+	responseSs << "DTCs in event building: " << clusterDTCs.size()
+	           << " (start node " << evbStartNode << ", node count " << evbNodeCount
+	           << ")\n";
+	if(!clusterDTCs.empty() && windowClocksFromDTCs)
+	{
+		// window = clock markers per send window x clock marker spacing; the spacing is CFO 0x915C in
+		// 25 ns ticks (reads 0 on CFO firmware without the register, which sends a marker every 65 ticks)
+		// and the DTC counts in 10GbE transmit clocks of 6.206 ns
+		uint32_t clockMarkerSpacingTicks = thisCFO_->ReadClockMarkerSpacing();
+		if(clockMarkerSpacingTicks == 0)
+			clockMarkerSpacingTicks = 65;
+		if(markersPerSendWindow >= 2 && markersPerSendWindow <= 4)
+			windowClocks = markersPerSendWindow * clockMarkerSpacingTicks * 25.0 / 6.206;
+		else
+		{
+			__FE_SS__ << "The DTCs report " << markersPerSendWindow
+			          << " clock markers per send window (0x9178[23:22] = 3), which is "
+			             "not to be used. Nothing was written."
+			          << __E__;
+			__FE_SS_THROW__;
+		}
+	}
+	responseSs << "Clock markers per send window: " << markersPerSendWindow
+	           << ", CFO clock marker spacing (0x915C): " << thisCFO_->ReadClockMarkerSpacing()
+	           << " ticks, send window length used: " << windowClocks << " clocks"
+	           << (windowClocksFromDTCs ? "" : " (given as input)") << "\n";
+	responseSs << "DTCs left alone (EVB link off): " << leftOutDTCs.size();
+	for(const auto& leftOutDTC : leftOutDTCs)
+		responseSs << " " << leftOutDTC;
+	responseSs << "\n";
+
+	if(clusterDTCs.empty())
+	{
+		__FE_SS__ << "No DTC of this subsystem has its EVB link on. Nothing was written."
+		          << __E__;
+		__FE_SS_THROW__;
+	}
+
+	//==================== only set every delay to 0
+	if(setAllMarkerDelaysToZero)
+	{
+		bool allZero = true;
+		for(auto& clusterDTC : clusterDTCs)
+		{
+			std::vector<FEVInterface::frontEndMacroArg_t> dtcArgsOut;
+			runDTCMacro(clusterDTC.uid, 0, dtcArgsOut);
+			clusterDTC.markerDelayReadBack =
+			    numberOfArgument(dtcArgsOut, "Marker Delay Offset");
+			if(clusterDTC.markerDelayReadBack != 0)
+				allZero = false;
+			responseSs << "  " << std::left << std::setw(16) << clusterDTC.uid
+			           << std::right << " marker delay was " << std::setw(3)
+			           << clusterDTC.markerDelayBefore << ", wrote 0, read back "
+			           << clusterDTC.markerDelayReadBack
+			           << (clusterDTC.markerDelayReadBack != 0 ? "  (READ BACK DIFFERS)"
+			                                                   : "")
+			           << "\n";
+		}
+		responseSs << (allZero ? "All marker delays are 0."
+		                       : "NOT ALL MARKER DELAYS READ BACK 0.")
+		           << " Takes effect at the next SoftReset.\n";
+		__FE_COUT__ << responseSs.str() << __E__;
+		__SET_ARG_OUT__("Response", responseSs.str());
+		return;
+	}
+
+	//==================== checks on the rows
+	if(clusterDTCs.size() < 3)
+	{
+		__FE_SS__ << "Need at least 3 DTCs in event building for the loop of three "
+		             "check, found "
+		          << clusterDTCs.size() << ". Nothing was written." << __E__;
+		__FE_SS_THROW__;
+	}
+	for(size_t i = 0; i < clusterDTCs.size(); ++i)
+	{
+		const int rowIndex = clusterDTCs[i].evbAddress - evbStartNode;
+		if(rowIndex < 0 || rowIndex >= evbNodeCount ||
+		   static_cast<int>(clusterDTCs[i].offsetRow.size()) != evbNodeCount)
+		{
+			__FE_SS__ << "DTC " << clusterDTCs[i].uid << " has EVB address "
+			          << clusterDTCs[i].evbAddress << " and an offset row of "
+			          << clusterDTCs[i].offsetRow.size()
+			          << " values; that does not fit start node " << evbStartNode
+			          << " and node count " << evbNodeCount << ". Nothing was written."
+			          << __E__;
+			__FE_SS_THROW__;
+		}
+		if(i > 0 && clusterDTCs[i].evbAddress == clusterDTCs[i - 1].evbAddress)
+		{
+			__FE_SS__ << "DTCs " << clusterDTCs[i - 1].uid << " and "
+			          << clusterDTCs[i].uid << " have the same EVB address "
+			          << clusterDTCs[i].evbAddress << ". Nothing was written." << __E__;
+			__FE_SS_THROW__;
+		}
+	}
+
+	// travel time of a pair, before the half window decision; false when a row is not filled
+	auto pairTravelTime = [&](size_t firstIndex, size_t secondIndex, double& travelTime) {
+		const int32_t rowAtSecond = clusterDTCs[secondIndex].offsetRow
+		                                [clusterDTCs[firstIndex].evbAddress - evbStartNode];
+		const int32_t rowAtFirst = clusterDTCs[firstIndex].offsetRow
+		                               [clusterDTCs[secondIndex].evbAddress - evbStartNode];
+		if(rowAtSecond == 0 || rowAtFirst == 0)
+			return false;
+		travelTime = std::fmod(std::fmod(static_cast<double>(rowAtSecond) + rowAtFirst,
+		                                 windowClocks) +
+		                           windowClocks,
+		                       windowClocks) /
+		             2;
+		return true;
+	};
+	// clocks by which the first DTC's windows open later than the second's
+	auto pairOffset = [&](size_t  firstIndex,
+	                      size_t  secondIndex,
+	                      double  travelTimeAddition,
+	                      double& offset) {
+		double travelTime;
+		if(!pairTravelTime(firstIndex, secondIndex, travelTime))
+			return false;
+		offset = fold(clusterDTCs[secondIndex].offsetRow
+		                  [clusterDTCs[firstIndex].evbAddress - evbStartNode] -
+		              (travelTime + travelTimeAddition));
+		return true;
+	};
+
+	//==================== loop of three check
+	const size_t dtcCount       = clusterDTCs.size();
+	const size_t loopStride     = dtcCount / 3;
+	size_t       loopSumCount   = 0, nearZeroCount = 0, nearHalfWindowCount = 0;
+	responseSs << "Loop of three check (sum of the three offsets, folded):\n";
+	for(size_t i = 0; i < dtcCount; i += 3)
+	{
+		const size_t firstIndex  = i;
+		const size_t secondIndex = (i + loopStride) % dtcCount;
+		const size_t thirdIndex  = (i + 2 * loopStride) % dtcCount;
+		double       firstOffset, secondOffset, thirdOffset;
+		if(!pairOffset(firstIndex, secondIndex, 0, firstOffset) ||
+		   !pairOffset(secondIndex, thirdIndex, 0, secondOffset) ||
+		   !pairOffset(thirdIndex, firstIndex, 0, thirdOffset))
+			continue;
+		const double loopSum = fold(firstOffset + secondOffset + thirdOffset);
+		++loopSumCount;
+		if(std::abs(loopSum) <= loopSumTolerance)
+			++nearZeroCount;
+		else if(std::abs(loopSum) >= windowClocks / 2 - loopSumTolerance)
+			++nearHalfWindowCount;
+		responseSs << "  " << clusterDTCs[firstIndex].uid << ", "
+		           << clusterDTCs[secondIndex].uid << ", " << clusterDTCs[thirdIndex].uid
+		           << ": " << std::showpos << std::lround(loopSum) << std::noshowpos
+		           << "\n";
+	}
+	double travelTimeAddition = 0;
+	bool   loopCheckPassed    = true;
+	if(loopSumCount > 0 && nearZeroCount == loopSumCount)
+		responseSs << "  -> all near 0: travel time as computed.\n";
+	else if(loopSumCount > 0 && nearHalfWindowCount == loopSumCount)
+	{
+		travelTimeAddition = windowClocks / 2;
+		responseSs << "  -> all near half a window: " << windowClocks / 2
+		           << " clocks added to every travel time.\n";
+	}
+	else
+	{
+		loopCheckPassed = false;
+		responseSs << "  -> NOT DECIDED (" << nearZeroCount << " near 0, "
+		           << nearHalfWindowCount << " near half a window, of " << loopSumCount
+		           << " sums).\n";
+	}
+
+	//==================== offset of every DTC against the reference (lowest EVB address)
+	std::vector<double> travelTimes;
+	for(size_t firstIndex = 0; firstIndex < dtcCount; ++firstIndex)
+		for(size_t secondIndex = firstIndex + 1; secondIndex < dtcCount; ++secondIndex)
+		{
+			double travelTime;
+			if(pairTravelTime(firstIndex, secondIndex, travelTime))
+				travelTimes.push_back(travelTime + travelTimeAddition);
+		}
+
+	const size_t referenceIndex               = 0;
+	clusterDTCs[referenceIndex].offsetKnown   = true;
+	clusterDTCs[referenceIndex].measuredOffset = 0;
+	bool allOffsetsKnown                      = true;
+	for(size_t i = 0; i < dtcCount; ++i)
+	{
+		if(i == referenceIndex)
+			continue;
+		// through every third DTC: (this against other) - (reference against other), median
+		std::vector<double> offsetsThroughOthers;
+		for(size_t otherIndex = 0; otherIndex < dtcCount; ++otherIndex)
+		{
+			if(otherIndex == i || otherIndex == referenceIndex)
+				continue;
+			double thisAgainstOther, referenceAgainstOther;
+			if(pairOffset(i, otherIndex, travelTimeAddition, thisAgainstOther) &&
+			   pairOffset(
+			       referenceIndex, otherIndex, travelTimeAddition, referenceAgainstOther))
+				offsetsThroughOthers.push_back(
+				    fold(thisAgainstOther - referenceAgainstOther));
+		}
+		if(offsetsThroughOthers.empty())
+		{
+			allOffsetsKnown = false;
+			continue;
+		}
+		clusterDTCs[i].offsetKnown    = true;
+		clusterDTCs[i].measuredOffset = medianOf(offsetsThroughOthers);
+	}
+
+	//==================== new delays: take out the present delay, then line up on the latest DTC
+	double largestOffsetWithoutDelay = 0;
+	bool   largestOffsetSet          = false;
+	for(auto& clusterDTC : clusterDTCs)
+	{
+		if(!clusterDTC.offsetKnown)
+			continue;
+		// a delay moves the windows later; a short span is expected, so no fold here
+		clusterDTC.offsetWithoutDelay =
+		    clusterDTC.measuredOffset - clusterDTC.markerDelayBefore *
+		                                    nanosecondsPerDelayStep /
+		                                    nanosecondsPerOffsetClock;
+		if(!largestOffsetSet ||
+		   clusterDTC.offsetWithoutDelay > largestOffsetWithoutDelay)
+			largestOffsetWithoutDelay = clusterDTC.offsetWithoutDelay;
+		largestOffsetSet = true;
+	}
+	size_t cappedCount = 0;
+	for(auto& clusterDTC : clusterDTCs)
+	{
+		if(!clusterDTC.offsetKnown)
+			continue;
+		const long markerDelayWanted = std::lround(
+		    (largestOffsetWithoutDelay - clusterDTC.offsetWithoutDelay) *
+		    nanosecondsPerOffsetClock / nanosecondsPerDelayStep);
+		clusterDTC.markerDelayCapped = markerDelayWanted > largestMarkerDelay;
+		clusterDTC.markerDelayNew    = clusterDTC.markerDelayCapped
+		                                   ? largestMarkerDelay
+		                                   : static_cast<int>(markerDelayWanted);
+		if(clusterDTC.markerDelayCapped)
+			++cappedCount;
+	}
+
+	//==================== write and read back
+	const bool willWrite = writeMarkerDelays && loopCheckPassed && allOffsetsKnown;
+	bool       allReadBacksMatch = true;
+	if(willWrite)
+		for(auto& clusterDTC : clusterDTCs)
+		{
+			std::vector<FEVInterface::frontEndMacroArg_t> dtcArgsOut;
+			runDTCMacro(clusterDTC.uid, clusterDTC.markerDelayNew, dtcArgsOut);
+			clusterDTC.markerDelayReadBack =
+			    numberOfArgument(dtcArgsOut, "Marker Delay Offset");
+			if(clusterDTC.markerDelayReadBack != clusterDTC.markerDelayNew)
+				allReadBacksMatch = false;
+		}
+
+	//==================== report
+	if(!travelTimes.empty())
+		responseSs << "Travel time over all pairs: median " << std::fixed
+		           << std::setprecision(1) << medianOf(travelTimes) << " clocks\n";
+	responseSs << "Offsets are against " << clusterDTCs[referenceIndex].uid
+	           << ", in clocks; delays in 5 ns steps.\n";
+	responseSs << "  " << std::left << std::setw(16) << "DTC" << std::right
+	           << std::setw(8) << "address" << std::setw(10) << "offset" << std::setw(11)
+	           << "delay now" << std::setw(16) << "offset no delay" << std::setw(11)
+	           << "new delay" << std::setw(11) << "read back"
+	           << "\n";
+	for(const auto& clusterDTC : clusterDTCs)
+	{
+		responseSs << "  " << std::left << std::setw(16) << clusterDTC.uid << std::right
+		           << std::setw(8) << clusterDTC.evbAddress;
+		if(!clusterDTC.offsetKnown)
+		{
+			responseSs << "   OFFSET ROWS NOT FILLED (delay now "
+			           << clusterDTC.markerDelayBefore << ")\n";
+			continue;
+		}
+		responseSs << std::setw(10) << std::showpos
+		           << std::lround(clusterDTC.measuredOffset) << std::noshowpos
+		           << std::setw(11) << clusterDTC.markerDelayBefore << std::setw(16)
+		           << std::showpos << std::lround(clusterDTC.offsetWithoutDelay)
+		           << std::noshowpos << std::setw(11) << clusterDTC.markerDelayNew;
+		if(willWrite)
+			responseSs << std::setw(11) << clusterDTC.markerDelayReadBack
+			           << (clusterDTC.markerDelayReadBack != clusterDTC.markerDelayNew
+			                   ? "  (READ BACK DIFFERS)"
+			                   : "");
+		else
+			responseSs << std::setw(11) << "-";
+		if(clusterDTC.markerDelayCapped)
+			responseSs << "  (capped at " << largestMarkerDelay << ")";
+		responseSs << "\n";
+	}
+	if(cappedCount)
+		responseSs << cappedCount << " DTC(s) need more than " << largestMarkerDelay
+		           << " and were capped.\n";
+
+	if(willWrite)
+		responseSs << (allReadBacksMatch
+		                   ? "Marker delays written and read back on all "
+		                   : "MARKER DELAYS WRITTEN BUT NOT ALL READ BACK THE SAME, on ")
+		           << clusterDTCs.size()
+		           << " DTCs. They take effect at the next SoftReset: follow with a "
+		              "run to verify.\n";
+	else if(!loopCheckPassed)
+		responseSs << "NOTHING WRITTEN: the loop of three check did not decide.\n";
+	else if(!allOffsetsKnown)
+		responseSs << "NOTHING WRITTEN: offset rows are not filled on every DTC (was "
+		              "there a run since the last SoftReset?).\n";
+	else
+		responseSs << "Nothing written (Write Marker Delays is false).\n";
+
+	__FE_COUT__ << responseSs.str() << __E__;
+	__SET_ARG_OUT__("Response", responseSs.str());
+}  //end EVBMarkerDelayCalibrate()
 
 // DEFINE_OTS_INTERFACE(CFOFrontEndInterface)

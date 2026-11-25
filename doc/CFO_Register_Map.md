@@ -56,7 +56,7 @@ NWL DMA Back-End). All registers are 32 bits wide.
 | 0x9150 | RAWDATA_PKT_SIZE | Ring packet length (bits 15:0). |
 | 0x9154 | RUNPLAN_SUBRUN_EVT_LIMIT | Run-plan subrun event limit. (Formerly CLOCK40MHZINTERVAL — Deprecated.) |
 | 0x9158 | RUNPLAN_SUBRUN_PRED_OFFSET | Run-plan subrun predecessor offset. |
-| 0x915C | — | Reserved |
+| 0x915C | CLOCK_MARKER_SPACING | Spacing of the 40 MHz clock markers on the links, in 25 ns ticks (bits 7:0). Default 65 (1625 ns). Writes are clamped to 40..140 (1.0 to 3.5 us); reads return the clamped value. A new value is used from the next clock marker on: one gap at the old length, then every gap at the new length. One schedule is shared by all 8 links. A clock marker whose tick is taken by an event window marker or a loopback marker is skipped (not sent late) and the schedule does not move. |
 | 0x9160 | RAWDATA_SERDESREFCLKFREQ | SERDES reference clock frequency setting (default 0x09502F90 = 156.25 MHz). |
 | 0x9164 | RAWDATA_SERDESREFCLKCONT | SERDES reference oscillator control; bit 31 = oscillator reset. |
 | 0x9168 | RAWDATA_SERDESREFCLKCONFLOW | SERDES oscillator IIC0 interface: bits 31:16 = address, bits 15:8 = write data, bits 7:0 = read data (RO). |
