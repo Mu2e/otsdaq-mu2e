@@ -86,6 +86,7 @@ class CFOFrontEndInterface : public CFOandDTCCoreVInterface
 		std::vector<std::pair<uint64_t, uint64_t>> mismatchedEventTagJumps_;
 
 		std::atomic<uint64_t> offspillEventsCount_ = 0, onspillEventsCount_ = 0;
+		std::atomic<uint64_t> nullEventsCount_ = 0;  // event mode 0; these are also counted in offspillEventsCount_
 		// histograms of event width seen in the CFO event records: event duration field value --> number of events
 		std::map<uint16_t /* event duration */, uint64_t /* events count */> offspillEventDurationCounts_, onspillEventDurationCounts_;
 

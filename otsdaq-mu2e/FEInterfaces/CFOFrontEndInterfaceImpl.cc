@@ -4129,6 +4129,7 @@ std::string CFOFrontEndInterface::getDetachedBufferTestStatus(
 		statusSs << "Subevents count:" << threadStruct->subeventsCount_ << __E__;
 		statusSs << "Off-Spill events count:" << threadStruct->offspillEventsCount_ << __E__;
 		statusSs << "On-Spill events count:" << threadStruct->onspillEventsCount_ << __E__;
+		statusSs << "Null events count (included in Off-Spill):" << threadStruct->nullEventsCount_ << __E__;
 		for(int i = 0; i < 2; ++i)
 		{
 			const auto& eventDurationCounts = (i == 1)
@@ -4654,6 +4655,8 @@ void CFOFrontEndInterface::handleDetachedSubevent(
 	    sizeof(CFOLib::CFO_EventRecord);  //for subevent header
 
 	// count Off-Spill and On-Spill events, and histogram the event width from the CFO event record
+	if(subevent->GetEventRecord().event_mode == 0)
+		++(threadStruct->nullEventsCount_);
 	if(subevent->GetEventMode().isOnSpillFlagSet())
 	{
 		++(threadStruct->onspillEventsCount_);
@@ -4791,6 +4794,7 @@ try
 		threadStruct->mismatchedEventTagJumps_.clear();
 		threadStruct->offspillEventsCount_ = 0;
 		threadStruct->onspillEventsCount_ = 0;
+		threadStruct->nullEventsCount_ = 0;
 		threadStruct->offspillEventDurationCounts_.clear();
 		threadStruct->onspillEventDurationCounts_.clear();
 		threadStruct->previousEventIsValid_ = false;
@@ -4809,6 +4813,17 @@ try
 
 	uint64_t                                        lastCount = 0;
 	std::vector<std::unique_ptr<CFOLib::CFO_Event>> subevents;
+
+	// The Metric Manager caps the points it keeps per metric between reports, so
+	// send one count delta per second instead of one point per event.
+	uint64_t lastOnSpill = 0, lastOffSpill = 0, lastNull = 0;
+	auto     lastMetricTime   = std::chrono::steady_clock::now();
+	auto     sendEventsMetric = [](const std::string& name, uint64_t count, uint64_t& lastSentCount) {
+		//counters may have been reset since the last send
+		uint64_t delta = count >= lastSentCount ? count - lastSentCount : count;
+		lastSentCount  = count;
+		metricMan->sendMetric(name, delta, "events", 3, artdaq::MetricMode::Rate);
+	};
 
 	//------------------------
 	while(!threadStruct->exitThread_)
@@ -4869,6 +4884,7 @@ try
 						threadStruct->mismatchedEventTagJumps_.clear();
 						threadStruct->offspillEventsCount_ = 0;
 						threadStruct->onspillEventsCount_ = 0;
+						threadStruct->nullEventsCount_ = 0;
 						threadStruct->offspillEventDurationCounts_.clear();
 						threadStruct->onspillEventDurationCounts_.clear();
 						threadStruct->previousEventIsValid_ = false;
@@ -4944,6 +4960,20 @@ try
 				// threadStruct->thisCFO_->GetDevice()->spy(DTC_DMA_Engine_DAQ, 3 /* for once */ | 8 /* for wide view */ | 16 /* for stack trace */);
 			}
 		}  // end Sub Event handling
+
+		if(std::chrono::steady_clock::now() - lastMetricTime >= std::chrono::seconds(1))
+		{
+			lastMetricTime = std::chrono::steady_clock::now();
+			if(metricMan && metricMan->Running())
+			{
+				const uint64_t nullCount = threadStruct->nullEventsCount_;
+				const uint64_t offCount  = threadStruct->offspillEventsCount_;
+				sendEventsMetric("CFO On-Spill Events", threadStruct->onspillEventsCount_, lastOnSpill);
+				// same meaning as the CFODataReceiver metric: Off-Spill without null events
+				sendEventsMetric("CFO Off-Spill Events", offCount >= nullCount ? offCount - nullCount : 0, lastOffSpill);
+				sendEventsMetric("CFO Null Events", nullCount, lastNull);
+			}
+		}
 
 		if(threadStruct->fp_)
 			fflush(threadStruct->fp_);
