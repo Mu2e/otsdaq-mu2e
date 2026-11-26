@@ -3,539 +3,261 @@
 <head>
     <title>Plot</title>
 
-
-
+    <link href='/WebPath/css/fonts.css?family=Inconsolata:400' rel='stylesheet' type='text/css'>
+    <link href='/WebPath/css/fonts.css?family=Comfortaa:400' rel='stylesheet' type='text/css'>
     <link rel="stylesheet" type="text/css" href="/WebPath/UserWebPath/css/DCSMonitoringPages/Plot.css">
 
     <script type="text/JavaScript" src="/WebPath/js/Globals.js"></script>
     <script type="text/JavaScript" src="/WebPath/js/Debug.js"></script>
     <script type="text/JavaScript" src="/WebPath/js/DesktopContent.js"></script>
-    <script type="text/JavaScript" src="/WebPath/js/widgetLibrary.js"></script>
-    <script type="text/JavaScript" src="/WebPath/js/js_lib/ConfigurationAPI.js"></script>
-    <script type="text/JavaScript" src="/WebPath/js/js_lib/SlowControlsAPI.js"></script>
-
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
-    <!-- <script type="text/javascript" src="/WebPath/html/widgets/libraries/plotly-1.27.1.min.js"></script> -->
-    <!-- <script type="text/javascript" src="/WebPath/UserWebPath/js/plotly-1.27.1.min.js"></script> -->
-    <script type="text/javascript" src="/WebPath/UserWebPath/js/plotly-3.0.1.min.js"></script>
+    <script type="text/JavaScript" src="/WebPath/UserWebPath/js/DCSChart.js"></script>
 
     <script>
 
         //functions:
         //	init()
-        //	getPvSet()
-        //	makeMainPage()
-        //	drawGraph()
-        //	makeGraph()
-
-        //	getPvHistory(widget, parameters)
-        //	pvHistoryReqHandler(req, passParams)
-
-        //	drawNewValue(widget, pvName, pvValue, pvTime, pvStatus, pvSeverity)
-        //	drawNewGraphValue(widget, pvName, pvValue, pvTime, pvStatus, pvSeverity)
-
-        //	generateUID()
-        //	generateUIDHandlerFunction(req)
-        //	pollServer()
-        //	updateRefreshInterval()
-        //	pollServerHandlerFunction(req)
-
-
-        //top-level scope (global) variables:
-
-        var page_ = page_ || {}; 	//define the page object if needed
-        //	page_.widgets = {
-        //		<widgetID> : <widget object := x, y,
-        //			w, h, pvList{}, attributes{},
-        //			displayName, loaded,
-        //			el /*iframe element*/
-        //	}
-
+        //	getPvNames()
+        //	makeRangeButtons()
+        //	makeLegend()
+        //	toggleSeries(series)
+        //	setRange(seconds)
+        //	zoom(fromTime, toTime)
+        //	fetchHistory()
+        //	seriesHandler(pv, reply, errStr)
+        //	doneHandler()
+        //	chartDrawn(chart, readout)
+        //
         //====================== start high-level behavior description
         //
-        //	High-level description of page interactions:
+        //	Trend of one or more pvs, read from the archiver database (chart of DCSChart.js).
+        //	The pvs are given by the url parameter pv_names (or pv_name), that is one of:
+        //		- a pv name
+        //		- a JSON string with a pv name
+        //		- a JSON array of pv names, or of objects with the pv name as key (e.g. [{"my pv":0}])
         //
-        //	- page init() is called by DesktopContent.js:
-        //		* make Page_ to collect all objects to show PVs
-        //		* makeMainPage()
-        //		* pollServer()
-        //		* generateUID()
-        //
-        //	- setupPvParams(settings)
-        //		* Pass alarm thresholds, etc associated with pvList to widget content
-        //
-        //	- drawNewValue()
-        //		* Update widget drawing based on new value (and append to history if needed)
+        //	The chart shows the last hours until now and is refreshed periodically,
+        //	or the fixed time range selected by dragging the mouse in the chart.
         //
         //====================== end high-level behavior description
-
-
-        var refreshRate_ = 60000; //set default to refresh every 15 seconds (ms)
-        var timerVariable_;
-
-        var UID_ = 0;
-        var timeToPoll_ = false;
-
-        var datalist_;
-
-        page_.createPage = function () {
-
-            this.name = "MyPage";
-            this.widgets = {};
-            this.addPV = function (pv) {
-                console.log("Reached " + pv);
-            }
-        }
-
-        var pvName_ = [];
-
+        //
         /////////////////////////////////////////////////////////////////////////////////////////
         /////////////////////////////////////////////////////////////////////////////////////////
+
+        var RANGE_PRESETS = [["1 h", 3600], ["6 h", 21600], ["12 h", 43200], ["24 h", 86400], ["7 d", 604800], ["14 d", 1209600], ["30 d", 2592000]];
+        var DEFAULT_SECONDS = 21600;
+        var TEMPERATURE_VALID_RANGE = [-50, 200]; //degrees, for the pvs with "temp" in the name: a value out of this range is a bad reading and is not plotted
+        var REFRESH_MS = 15000; 	//at least, a long time range is refreshed less often
+
+        var _chart;
+        var _seriesOfPv = {}; 		//pv name => series of the chart, that also has valueEl and itemEl of the legend
+        var _view = {
+            seconds: DEFAULT_SECONDS, 	//the chart shows the last seconds, or 0 if it shows the fixed time range
+            batch: null, timer: 0, loading: false, problem: "", units: ""
+        };
 
 
         //=====================================================================================
         //init called once body has loaded
         function init() {
             Debug.log("init() was called");
-            var parameterPvNames = DesktopContent.getParameter(0, "pv_names");
-            page_.createPage();
 
-            //get command string if opening a new window
-            var cmdStr = DesktopContent.getParameter(2); //from  location.search
-            if (cmdStr && cmdStr != "") {
-                //do incoming commands!
-                Debug.log("cmdStr=" + cmdStr);
-                //replace %22 with "
-                cmdStr = cmdStr.replace(/%22/g, "\"");
+            var pvNames = getPvNames();
+            document.getElementById("title").textContent = pvNames.length == 1 ? pvNames[0] : pvNames.length + " pvs";
+            document.title = pvNames.length == 1 ? pvNames[0] : "Plot";
+
+            _chart = DCSChart.create(document.getElementById("plot"), {
+                band: pvNames.length == 1, 		//with more lines the ranges would overlap
+                highlightNearest: pvNames.length > 1,
+                onDraw: chartDrawn, onZoom: zoom
+            });
+            for (var i = 0; i < pvNames.length; ++i) {
+                if (_seriesOfPv[pvNames[i]]) continue; //twice the same pv
+                var series = { name: pvNames[i], color: DCSChart.COLORS[i % DCSChart.COLORS.length],
+                    dashed: i >= DCSChart.COLORS.length, points: [] };
+                _chart.series.push(series);
+                _seriesOfPv[pvNames[i]] = series;
             }
 
-            var autoUpdate = document.getElementById("autoupdate");
-            autoupdate.checked = true;
-            makeMainPage(parameterPvNames);
-            generateUID();
+            makeRangeButtons();
+            makeLegend();
+            window.addEventListener("resize", function () { DCSChart.draw(_chart); });
+
+            if (!pvNames.length) {
+                _view.problem = "No pv to plot: the url parameter pv_names is missing";
+                DCSChart.draw(_chart);
+                return;
+            }
+            setRange(_view.seconds);
         } //end init()
 
+        //=====================================================================================
+        //getPvNames ~~
+        //	returns the array of the pv names given by the url parameters
+        function getPvNames() {
+            var parameter = DesktopContent.getParameter(0, "pv_names") || DesktopContent.getParameter(0, "pv_name");
+            if (!parameter) return [];
+
+            var names = parameter; //a pv name, if it is not JSON
+            try {
+                names = JSON.parse(parameter);
+            }
+            catch (e) { }
+
+            if (!Array.isArray(names)) names = [names];
+            return names.map(function (name) {
+                return String(name !== null && typeof name == "object" ? Object.keys(name)[0] : name);
+            });
+        } //end getPvNames()
 
         //=====================================================================================
-        //Make main page here
-        function makeMainPage(pvNames) {
-            pvNames = JSON.parse(decodeURIComponent(pvNames));
-
-            var plot = document.getElementById('plot');
-            var widgetObject = {};
-
-            if (Array.isArray(pvNames)) {
-                pvName_ = pvNames.map(obj => Object.keys(obj)[0]);
-            }
-            else {
-                pvName_[0] = pvNames;
-            }
-
-            widgetObject.pvList = pvName_;
-            widgetObject.pvSettings = {};
-            widgetObject.el = plot;
-            page_.widgets[0] = widgetObject;
-            SlowControlsAPI.setupPvParams(0, page_.widgets[0]);
-
-            var actualTime = Math.floor(Date.now()) / 1000;
-            var startTime = actualTime - 6 * 3600;
-            drawGraph(0, startTime, actualTime);
-        } //end makeMainPage()
-
-
-        var actualGraphId_;
-        var plotTimeData_ = {};
-        var plotValueData_ = {};
-        var plotPvList_ = {};
-        var plotParameters_ = { class: "", "show_labels": "false", "background_color": "transparent", "trace_type": "scattergl", "trace_mode": "lines" };
-        //=====================================================================================
-        function drawGraph(widget, startTime, endTime) {
-            var i = 0;
-            plotPvList_ = {};
-
-            for (pv in page_.widgets[widget].pvList) {
-                plotTimeData_[page_.widgets[widget].pvList[pv]] = [];
-                plotValueData_[page_.widgets[widget].pvList[pv]] = [];
-                plotPvList_[page_.widgets[widget].pvList[pv]] = i;
-                i++;
-            }
-
-            initializeGraph();
-            getPvHistory(widget, plotParameters_, startTime, endTime);
-            actualGraphId_ = widget;
-        } //end drawGraph()
-
+        //makeRangeButtons ~~
+        //	one button for each time range
+        function makeRangeButtons() {
+            var buttonsEl = document.getElementById("rangeButtons");
+            RANGE_PRESETS.forEach(function (preset) {
+                var buttonEl = buttonsEl.appendChild(document.createElement("button"));
+                buttonEl.textContent = preset[0];
+                buttonEl.rangeSeconds = preset[1];
+                buttonEl.onclick = setRange.bind(null, preset[1]);
+            });
+        } //end makeRangeButtons()
 
         //=====================================================================================
-        function initializeGraph() {
-            var plot = document.getElementById("plot");
-            var plotColor = "black";
+        //makeLegend ~~
+        //	one entry for each pv, with its value: a click hides or shows the line
+        function makeLegend() {
+            var legendEl = document.getElementById("legend");
+            _chart.series.forEach(function (series) {
+                var itemEl = series.itemEl = legendEl.appendChild(document.createElement("button"));
+                itemEl.className = "legendItem";
+                itemEl.title = "Click to hide or show";
+                itemEl.onclick = toggleSeries.bind(null, series);
 
-            var traces = [];
-            for (pv in plotPvList_) {
-                traces.push({ y: [], type: plotParameters_["trace_type"], mode: plotParameters_["trace_mode"], visible: true });
-            }
-
-            Plotly.newPlot(plot.id
-                , traces
-                , {
-                    xaxis: { title: 'time', 'titlefont': { size: 10 }, showticklabels: true },
-                    yaxis: { title: 'amplitude', titlefont: { size: 10 }, zeroline: true }
-                    , margin: { l: 45, r: 10, b: 70, t: 20 }
-                    //, showlegend: true
-                    , legend: {
-                        x: 0
-                        //  , y: -150
-                        , "orientation": "h"
-                        , font: {
-                            family: 'sans-serif'
-                            , size: 8
-                            , color: '#000'
-                        }
-                        , bgcolor: 'rgba(0,0,0,0)'
-                    }
-                    , plot_bgcolor: plotParameters_["background_color"]
-                    , paper_bgcolor: plotParameters_["background_color"]
-                }, { responsive: true });
-
-            Plotly.relayout(plot, {
-                width: window.innerWidth - 50
-                , height: window.innerHeight - 100,
-            }
-            );
-
-            console.log("makeGraph() reached");
-        } //end initializeGraph()
-
+                var swatchEl = itemEl.appendChild(document.createElement("span"));
+                swatchEl.className = "swatch";
+                swatchEl.style.backgroundColor = series.color;
+                itemEl.appendChild(document.createElement("span")).textContent = series.name;
+                series.valueEl = itemEl.appendChild(document.createElement("span"));
+                series.valueEl.className = "legendValue";
+            });
+        } //end makeLegend()
 
         //=====================================================================================
-        function getPvHistory(widget, parameters, startTime, endTime) {
-            var pvList = "";
+        function toggleSeries(series) {
+            series.hidden = !series.hidden;
+            series.itemEl.classList.toggle("hidden", series.hidden);
+            DCSChart.draw(_chart);
+        } //end toggleSeries()
 
-            if (page_.widgets[widget] === undefined) {
-                Debug.log("Illegal widget UID (not found in widget list) received from child widget frame: " +
-                    widget, Debug.HIGH_PRIORITY);
+        //=====================================================================================
+        //setRange ~~
+        //	the chart shows the last seconds until now, and is refreshed periodically
+        function setRange(seconds) {
+            _view.seconds = seconds;
+            var buttonEls = document.getElementById("rangeButtons").children;
+            for (var i = 0; i < buttonEls.length; ++i)
+                buttonEls[i].classList.toggle("active", buttonEls[i].rangeSeconds == seconds);
+            fetchHistory();
+        } //end setRange()
+
+        //=====================================================================================
+        //zoom ~~
+        //	called when a time range (ms) was selected with the mouse in the chart:
+        //	the chart shows it, until a range button is clicked
+        function zoom(fromTime, toTime) {
+            _chart.viewFrom = fromTime;
+            _chart.viewTo = toTime;
+            setRange(0);
+        } //end zoom()
+
+        //=====================================================================================
+        //fetchHistory ~~
+        //	starts to read from the archiver the history of the pvs
+        function fetchHistory() {
+            window.clearTimeout(_view.timer);
+            if (_view.batch) _view.batch.cancelled = true; //ignore the replies to the previous requests
+
+            if (_view.seconds) {
+                _chart.viewTo = Date.now();
+                _chart.viewFrom = _chart.viewTo - _view.seconds * 1000;
+            }
+
+            _view.loading = true;
+            _view.problem = "";
+            _view.batch = DCSChart.fetchHistory(Object.keys(_seriesOfPv), _chart.viewFrom / 1000, _chart.viewTo / 1000,
+                seriesHandler, doneHandler);
+            DCSChart.draw(_chart);
+        } //end fetchHistory()
+
+        //=====================================================================================
+        //seriesHandler ~~
+        //	called with the history of each pv
+        function seriesHandler(pv, reply, errStr) {
+            if (errStr) {
+                _view.problem = "History request failed: " + errStr;
                 return;
             }
+            if (reply.archiveProblem) _view.problem = "Archiver history of " + pv + ": " + reply.archiveProblem;
 
-            for (var pv in page_.widgets[widget].pvList) {
-                pvList += page_.widgets[widget].pvList[pv] + ",";
+            if (/temp/i.test(pv))
+                DCSChart.keepRange(reply.points, TEMPERATURE_VALID_RANGE[0], TEMPERATURE_VALID_RANGE[1]);
+            _seriesOfPv[pv].points = reply.points;
+            _seriesOfPv[pv].units = reply.units || "";
+            if (_chart.series.length == 1) { //the limits are shown only for one pv
+                _chart.lowLimit = typeof reply.lowLimit == "number" ? reply.lowLimit : NaN;
+                _chart.highLimit = typeof reply.highLimit == "number" ? reply.highLimit : NaN;
             }
-
-            var passParams = [widget, parameters];
-            DesktopContent.XMLHttpRequest("Request?RequestType=getPvArchiverData",
-                //post data
-                "pvList=" + pvList +
-                "&id=" + widget +
-                "&startTime=" + startTime +
-                "&endTime=" + endTime,
-                pvHistoryReqHandler /*handler*/,
-                passParams /*parameter*/);
-            console.log("get history for widget! pvList: " + pvList);
-        } //end getPVHistory()
-
+            DCSChart.draw(_chart);
+        } //end seriesHandler()
 
         //=====================================================================================
-        function pvHistoryReqHandler(req, passParams) {
-            var jsonArr = req.responseXML.getElementsByTagName("JSON");
-            console.log("pvHistoryReqHandler()", jsonArr);
+        //doneHandler ~~
+        //	called when the history of all the pvs was read
+        function doneHandler() {
+            _view.loading = false;
+            DCSChart.draw(_chart);
 
-            var id = passParams[0];
-            var parameters = passParams[1];
-            console.log("id: " + id + " parameter: " + parameters);
-
-            var _pvName, _pvStatus, _pvSeverity;
-            for (var i = jsonArr.length - 1; i >= 0; i--) {
-                var history = JSON.parse(DesktopContent.getXMLValue(jsonArr[i]));
-
-                for (var pvName in history) {
-                    console.log(pvName);
-                    console.log(history[pvName].Timestamp + " " + history[pvName].Value);
-                    var date = new Date(history[pvName].Timestamp * 1000);
-                    if (plotTimeData_[pvName] !== undefined && plotTimeData_[pvName].length)
-                        if ((date <= plotTimeData_[pvName][plotTimeData_.length - 1])) {
-                            console.log("Plot pvHistoryReqHandler(): no value to add: last data time is major of actual date, CONTINUE"); continue;
-                        }
-
-                    if (plotTimeData_[pvName] !== undefined) plotTimeData_[pvName].push(date);
-                    if (plotValueData_[pvName] !== undefined) plotValueData_[pvName].push(history[pvName].Value);
-                    if (i == jsonArr.length - 1) {
-                        _pvName = pvName;
-                        _pvStatus = history[pvName].Status;
-                        _pvSeverity = history[pvName].Severity;
-                    }
-                }
-            }
-
-            //
-            drawGraphFromArray((_pvName, _pvStatus, _pvSeverity));
-        } //end pvHistoryReqHandler()
-
+            if (_view.seconds) //a long time range changes slowly
+                _view.timer = window.setTimeout(fetchHistory, Math.max(REFRESH_MS, _view.seconds * 1000 / 400));
+        } //end doneHandler()
 
         //=====================================================================================
-        //plot a new value of a PV
-        function drawGraphFromArray(pvName, pvStatus, pvSeverity) {
-            var plot = document.getElementById("plot");
-            var plotColor = "black";
-            if (pvSeverity == "MAJOR")
-                plotColor = "red";
-            else if (pvSeverity == "MINOR")
-                plotColor = "orange";
-            else if (pvSeverity == "INVALID")
-                plotColor = "darkgrey";
+        //chartDrawn ~~
+        //	called after the chart was drawn: shows the values at the mouse position, or the latest ones
+        function chartDrawn(chart, readout) {
+            chart.series.forEach(function (series, s) {
+                var value = readout.values[s];
+                series.valueEl.textContent = DCSChart.valueText(value) + (value !== null && series.units ? " " + series.units : "");
+                series.itemEl.classList.toggle("nearest", series == readout.nearest);
+            });
+
+            var noteEl = document.getElementById("note");
+            noteEl.classList.toggle("problem", !!_view.problem);
+            if (_view.problem)
+                noteEl.textContent = _view.problem;
+            else if (_view.loading && !readout.hasData)
+                noteEl.textContent = "loading...";
+            else if (!readout.hasData)
+                noteEl.textContent = "no archived values in this time range";
             else
-                plotColor = "green";
-
-            if (Object.getOwnPropertyNames(plotPvList_).length == 1)
-                Plotly.relayout(plot, {
-                    title: {
-                        text: pvName + "<br>Status: " + pvStatus + " Severity: " + pvSeverity
-                        , font: { size: 12, color: plotColor }
-                    }
-                });
-
-            var ntraces = [];
-            var traces = [];
-
-            var xval = [];
-            var yval = [];
-
-            var i = 0;
-
-            for (pv in plotPvList_) {
-                ntraces.push(i);
-
-                if (plotTimeData_[pv] !== undefined && plotValueData_[pv] !== undefined) {
-                    xval = plotTimeData_[pv];
-                    yval = plotValueData_[pv];
-                }
-                var trace = { x: xval, y: yval, type: plotParameters_["trace_type"], mode: plotParameters_["trace_mode"], name: pv, visible: (plot.data[i].visible == true) ? true : 'legendonly' };
-                traces.push(trace);
-                i++;
-            }
-
-            if (ntraces.length) Plotly.deleteTraces(plot, ntraces);
-            if (traces.length) Plotly.addTraces(plot, traces);
-            console.log("drawNewGraphValue() executed, pv: " + pvName);
-        } //end drawNewValue()
-
-
-        //=====================================================================================
-        //Plot a new value of a PV
-        function drawNewValue(serverResponse) {
-            var pvTime, pvValue, pvTime, pvStatus, pvSeverity;
-            var lastPlotTime = {};
-            var dataBuffer = 100;
-
-            var ntraces = [];
-            var traces = [];
-
-            var xval = [];
-            var yval = [];
-
-            var i = 0;
-            var pvDate;
-            for (pvName in serverResponse) {
-                pvValue = serverResponse[pvName].Value;
-                pvTime = serverResponse[pvName].Timestamp;
-                pvStatus = serverResponse[pvName].Status;
-                pvSeverity = serverResponse[pvName].Severity;
-
-                if (pvTime > lastPlotTime[pvName]) {
-                    lastPlotTime[pvName] = pvTime;
-                    pvDate = new Date(pvTime * 1000);
-                }
-                else
-                    pvDate = new Date();
-
-                if (plotTimeData_[pvName] !== undefined && plotTimeData_[pvName].length)
-                    if ((pvDate <= plotTimeData_[pvName][plotTimeData_.length - 1])) {
-                        console.log("Plot drawNewGraphValue(): no value to add: last data time is major of actual date, CONTINUE"); continue;
-                    }
-
-                if (plotTimeData_[pvName] !== undefined && plotValueData_[pvName] !== undefined) {
-                    plotTimeData_[pvName].push(pvDate);
-                    if (plotTimeData_[pvName].lenght > dataBuffer) plotTimeData_[pvName].shift();
-
-                    plotValueData_[pvName].push(pvValue);
-                    if (plotValueData_[pvName].lenght > dataBuffer) plotValueData_[pvName].shift();
-                }
-
-                console.log("Plot newValue() reached", pvName, pvDate, pvValue);
-                //console.log(plotTimeData_);
-                //console.log(plotValueData_);
-                var plot = document.getElementById("plot");
-                var plotColor = "black";
-                if (Object.getOwnPropertyNames(serverResponse).length == 1) {
-                    if (pvSeverity == "MAJOR")
-                        plotColor = "red";
-                    else if (pvSeverity == "MINOR")
-                        plotColor = "orange";
-                    else if (pvSeverity == "INVALID")
-                        plotColor = "darkgrey";
-                    else
-                        plotColor = "green";
-
-                    Plotly.relayout(plot, {
-                        title: {
-                            text: pvName + "<br>Status: " + pvStatus + " Severity: " + pvSeverity
-                            , font: { size: 12, color: plotColor }
-                        }
-                    });
-                }
-
-                ntraces.push(i);
-
-                if (plotTimeData_[pvName] !== undefined && plotValueData_[pvName] !== undefined) {
-                    xval = plotTimeData_[pvName];
-                    yval = plotValueData_[pvName];
-                }
-                var trace = { x: xval, y: yval, type: plotParameters_["trace_type"], mode: plotParameters_["trace_mode"], name: pvName, visible: (plot.data[i].visible == true) ? true : 'legendonly' };
-                traces.push(trace);
-                i++;
-            }
-
-            if (ntraces.length) Plotly.deleteTraces(plot, ntraces);
-            if (traces.length) Plotly.addTraces(plot, traces);
-            console.log("drawNewGraphValue() executed, pv: " + pvName);
-        } //end drawNewValue()
-
-
-        //=====================================================================================
-        function generateUID() {
-            UID_ = 0;
-            window.clearTimeout(timerVariable_);
-
-            var autoUpdate = document.getElementById("autoupdate");
-            if (!autoupdate.checked) return;
-
-            //BEGIN Put all pvs in a JSON and send to server
-            var pvList = "";
-            //console.log("page: ", page_);
-            for (var widget in page_.widgets) {
-                console.log("generateUID: " + page_.widgets[widget] + " " + page_.widgets[widget].pvList);
-
-                for (var pv in page_.widgets[widget].pvList) {
-                    pvList += page_.widgets[widget].pvList[pv] + ",";
-                }
-            }
-
-            //END Put all pvs in a JSON and send to server
-            DesktopContent.XMLHttpRequest(
-                "Request?RequestType=generateUID",
-                "pvList=" + pvList,
-                generateUIDHandlerFunction);//, undefined, undefined, "sequence");
-        } //end generateUID(
-
-
-        //=====================================================================================
-        function generateUIDHandlerFunction(req) {
-            var uid = JSON.parse(DesktopContent.getXMLValue(req, "JSON"));
-
-            if (uid.message != "-1")
-                UID_ = uid.message;
-            else {
-                UID_ = "";
-                Debug.log("Unable to generate UID!", Debug.HIGH_PRIORITY);
-            }
-
-            pollServer();
-        } //end generateUIDHandlerFunction()
-
-
-        //=====================================================================================
-        function pollServer() {
-            Debug.log("pollServer: polling server!");
-            console.log("pollServer(): ", page_.widgets);
-            if (page_.widgets) {
-                DesktopContent.XMLHttpRequest(
-                    "Request?RequestType=poll&uid=" + UID_,
-                    "",
-                    pollServerHandlerFunction /*returnHandler*/,
-                    0 /*reqParam*/,
-                    0 /*progressHandler*/,
-                    0 /*callHandlerOnErr*/,
-                    true /*doNoShowLoadingOverlay*/);
-            }
-        } //end pollServer())
-
-
-        //=====================================================================================
-        function pollServerHandlerFunction(req) {
-            Debug.log("pollServerHandlerFunction() was called. Req: " + req.responseText);
-
-            var jsonStr = DesktopContent.getXMLValue(req, "JSON");
-            jsonStr = jsonStr.replace(/\s/g, ''); //hack for removing whitespace
-            if (!jsonStr || jsonStr == "")
-                return;
-
-            Debug.log(jsonStr);
-
-            var serverResponse;
-
-            serverResponse = JSON.parse(jsonStr);
-
-            Debug.log(serverResponse);
-
-            if (serverResponse.message == "NOT_FOUND") {
-                console.log("Have to generate new UID!");
-                generateUID();
-            }
-            else {
-                drawNewValue(serverResponse);
-            }
-
-            timerVariable_ = window.setTimeout(pollServer, refreshRate_);
-        } //end pollServerHandlerFunction()
-
-
-        //=====================================================================================
-        function showGraphPeriod(period /*days*/) {
-            var actualTime;
-            var startTime;
-            if (period == 0) {
-                var layout = document.getElementById('plot')._fullLayout;
-                const xRange = layout.xaxis.range;
-                actualTime = Math.floor(new Date(xRange[1])) / 1000;
-                startTime = Math.floor(new Date(xRange[0])) / 1000;
-            }
-            else {
-                actualTime = Math.floor(Date.now()) / 1000;
-                startTime = actualTime - period * 24 * 3600;
-            }
-            drawGraph(0, startTime, actualTime);
-        } //end showGraphPeriod()
-
-
-        //=====================================================================================
-        window.onresize = function () {
-            Plotly.relayout(document.getElementById("plot"),
-                {
-                    width: (window.innerWidth - 50),
-                    height: (window.innerHeight - 100)
-                });
-            //console.log("window.onresize Plotly.relayout");
-        };
-
+                noteEl.textContent = (readout.pointerInPlot ? "values at " : "latest values, ") + DCSChart.timeText(readout.time) +
+                    (_view.seconds ? "" : "  -  fixed time range, click a period to follow again");
+        } //end chartDrawn()
 
     </script>
 </head>
 
 <body onload='//init() called by DesktopContent.js'>
-    <div class="mainBlockContainer" id="mainBlock">
-        <div class="topContainer">
-            Show period
-            <button class='timeButton' onclick='showGraphPeriod(0.5)'>12 h</button>
-            <button class='timeButton' onclick='showGraphPeriod(1)'>1 day</button>
-            <button class='timeButton' onclick='showGraphPeriod(7)'>1 week</button>
-            <button class='timeButton' onclick='showGraphPeriod(15)'>2 weeks</button>
-            <button class='timeButton' onclick='showGraphPeriod(30)'>1 month</button>
-            <button class='timeButton' onclick='showGraphPeriod(0)'>update on range</button>
-            <label><input type="checkbox" id="autoupdate" onclick="generateUID()">   Auto update</label>
-        </div>
-        <div class="bottomContainer">
-            <div class="plotContainer" id="plot"></div>
-        </div>
-    </div> <!-- end main block container -->
+
+    <div id="header">
+        <span id="title"></span>
+        <span id="rangeButtons"></span>
+        <span class="hint">from the archiver, local time - drag in the chart to zoom</span>
+        <div id="note"></div>
+    </div>
+
+    <div id="plot"></div>
+    <div id="legend"></div>
+
 </body>
 </html>
