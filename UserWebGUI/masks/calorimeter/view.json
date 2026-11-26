@@ -1,0 +1,25 @@
+{
+	"title": "Calorimeter",
+	"pv": "Mu2e:CALO:{system}:{disk}:{channel}:{kind}",
+	"selectors": [
+		{ "label": "System", "options": [
+			{ "label": "HV", "values": { "system": "HV" } },
+			{ "label": "LV", "values": { "system": "LV" } }
+		] },
+		{ "label": "Quantity", "options": [
+			{ "label": "Voltage", "values": { "kind": "GET{system}" } },
+			{ "label": "Current", "values": { "kind": "GETI" } },
+			{ "label": "Set voltage", "values": { "kind": "SET{system}" } },
+			{ "label": "Set current", "values": { "kind": "SETI" } },
+			{ "label": "Status", "values": { "kind": "STAT" } },
+			{ "label": "Check", "values": { "kind": "CHECK" } },
+			{ "label": "Enabled", "values": { "kind": "ENABLED" } }
+		] }
+	],
+	"panels": [
+		{ "title": "Disk 0", "mask": "disk.csv", "values": { "disk": "D0" },
+			"image": { "file": "disk.jpg", "left": 0.02, "top": 0.022, "width": 0.96, "height": 0.865 } },
+		{ "title": "Disk 1", "mask": "disk.csv", "values": { "disk": "D1" },
+			"image": { "file": "disk.jpg", "left": 0.02, "top": 0.022, "width": 0.96, "height": 0.865 } }
+	]
+}

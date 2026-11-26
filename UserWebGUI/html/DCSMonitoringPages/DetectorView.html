@@ -1,0 +1,736 @@
+<!DOCTYPE HTML>
+<html lang="en">
+<head>
+    <title>Detector view</title>
+
+    <link href='/WebPath/css/fonts.css?family=Inconsolata:400' rel='stylesheet' type='text/css'>
+    <link href='/WebPath/css/fonts.css?family=Comfortaa:400' rel='stylesheet' type='text/css'>
+    <link rel="stylesheet" type="text/css" href="/WebPath/UserWebPath/css/DCSMonitoringPages/DetectorView.css">
+
+    <script type="text/JavaScript" src="/WebPath/js/Globals.js"></script>
+    <script type="text/JavaScript" src="/WebPath/js/Debug.js"></script>
+    <script type="text/JavaScript" src="/WebPath/js/DesktopContent.js"></script>
+
+    <script>
+
+        //functions:
+        //	init()
+        //	addEl(parentEl, tag, className, text)
+        //
+        //	view and masks, static files:
+        //		loadFile(file, handler)
+        //		viewHandler(text)
+        //		maskHandler(file, text)
+        //		parseMask(text)
+        //		fail(problem)
+        //
+        //	page:
+        //		makeSelectors()
+        //		select(selectorIndex, optionIndex)
+        //		togglePicture()
+        //		makePanels()
+        //		makePanel(panel)
+        //		expand(template, values)
+        //		assignPvs()
+        //
+        //	drawing:
+        //		stateOf(pvName)
+        //		valueText(value)
+        //		toolTipText(pvName)
+        //		drawAll()
+        //		drawPanel(panel)
+        //		drawEdges(panel, context, onlyKey)
+        //		cellAt(panel, event)
+        //		hover(panel, key, event)
+        //		drawGraph(pvName)
+        //
+        //	live values:
+        //		getPvSettings()
+        //		pvSettingsHandler(req, generation)
+        //		generateUID()
+        //		generateUIDHandler(req, generation, errStr)
+        //		pollServer()
+        //		pollServerHandler(req, generation, errStr)
+        //		showStatus(problem)
+        //
+        //====================== start high-level behavior description
+        //
+        //	Generic stop light view of a detector, with no code specific to the detector:
+        //	the url parameter view (e.g. ?view=calorimeter) is the name of a folder in
+        //	UserWebGUI/masks, with the file view.json and the files that it refers to.
+        //
+        //	A mask is a csv file in the format of the 2D stop light widget of the Slow Controls
+        //	Dashboard: one line for each row of the grid, cells separated by ; or by comma,
+        //	each cell is -1 (empty) or the key of a channel. All the cells with the same key
+        //	are drawn as one area, with the color of the alarm severity of the pv of the channel.
+        //
+        //	view.json:
+        //		title 		title of the page
+        //		pv 			template of the pv names, e.g. "Mu2e:CALO:{system}:{disk}:{channel}:{kind}":
+        //					{channel} is the key in the mask, the other fields come from the
+        //					values of the panel and of the selected options.
+        //					Without template, the keys in the masks are the pv names.
+        //		selectors 	optional array of { label, options: [{ label, values: { field: text, ... } }] }:
+        //					one row of buttons for each selector, the first option is the default.
+        //					A value may hold other fields, e.g. "GET{system}".
+        //		panels 		array of { title, mask, values, pv, aspect, image }:
+        //					mask is the csv file, values and pv (template of this panel) are optional.
+        //					image is optional: { file, left, top, width, height } is the picture drawn
+        //					behind the grid and the area of the grid, as fractions of the picture.
+        //					Without image, aspect is width / height of the grid (default: square cells).
+        //
+        //	- init() is called by DesktopContent.js: view.json and the masks are loaded,
+        //		then the page is built and assignPvs() sets the pv of each channel
+        //	- generateUID() registers the pv list at the server, then pollServer() is called
+        //		periodically: only the pvs that changed are returned
+        //	- select() of another option changes the pvs and registers the new list
+        //	- a click on a channel opens the plot of its pv
+        //
+        //====================== end high-level behavior description
+        //
+        /////////////////////////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////////////////////////
+
+        var MASKS_PATH = "/WebPath/UserWebPath/masks/";
+        var POLL_PERIOD_MS = 5000;
+        var STALE_SECONDS = 86400; 			//a pv not updated for longer is shown as stale
+        var EMPTY_CELL = "-1";
+        var EXPAND_PASSES = 4; 				//a value of a field may hold other fields
+        var PICTURE_CELL_ALPHA = 0.8; 		//the picture is visible through the cells
+
+        var SEVERITY_CLASS = { "NO_ALARM": "ok", "MINOR": "minor", "MAJOR": "major", "INVALID": "invalid" };
+        var STATE_COLOR = {
+            "ok": "rgb(0, 200, 0)", "minor": "rgb(255, 225, 0)", "major": "rgb(255, 40, 40)",
+            "invalid": "rgb(255, 0, 255)", "stale": "rgb(130, 130, 130)", "unknown": "rgb(70, 76, 88)"
+        };
+        var EDGE_COLOR = "rgb(28, 31, 37)";
+        var HOVER_COLOR = "white";
+
+        var _viewPath = ""; 	//folder of the view, with / at the end
+        var _view = null; 		//the content of view.json
+        var _masks = {}; 		//mask file => array of rows, each an array of keys (null if empty cell)
+        var _masksToLoad = 0;
+        var _selection = []; 	//for each selector, the index of the selected option
+        var _showPicture = true;
+        var _panels = []; 		//{ config, rows, keys, pvOfKey, boxOfKey, stageEl, canvasEl, noteEl, hoverKey }
+        var _pvs = {}; 			//pv name => { value, time, status, severity }
+        var _pvSettings = {}; 	//pv name => { Units, Upper_Alarm_Limit, ... }
+        var _generation = 0; 	//incremented when the pv list changes, to ignore the replies about the old list
+        var _uid = "";
+        var _pollTimer = 0;
+        var _lastPollTime = 0;
+
+
+        //=====================================================================================
+        //init called once body has loaded
+        function init() {
+            Debug.log("init() was called");
+
+            var viewName = DesktopContent.getParameter(0, "view") || "";
+            if (!/^[\w\-]+$/.test(viewName)) {
+                fail("No view to show: the url parameter view is missing or illegal");
+                return;
+            }
+            _viewPath = MASKS_PATH + viewName + "/";
+
+            loadFile("view.json", viewHandler);
+            window.addEventListener("resize", drawAll);
+        } //end init()
+
+        //=====================================================================================
+        //addEl ~~
+        //	returns a new element appended to parentEl
+        function addEl(parentEl, tag, className, text) {
+            var el = parentEl.appendChild(document.createElement(tag));
+            if (className) el.className = className;
+            if (text !== undefined) el.textContent = text;
+            return el;
+        } //end addEl()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //view and masks, static files
+
+        //=====================================================================================
+        //loadFile ~~
+        //	reads a file of the view folder and calls handler(text)
+        function loadFile(file, handler) {
+            var req = new XMLHttpRequest();
+            req.onload = function () {
+                if (req.status == 200) handler(req.responseText);
+                else fail("Unable to load " + _viewPath + file + " (http status " + req.status + ")");
+            };
+            req.onerror = function () { fail("Unable to load " + _viewPath + file); };
+            req.open("GET", _viewPath + file + "?time=" + Date.now()); //do not use a cached copy
+            req.overrideMimeType("text/plain");
+            req.send();
+        } //end loadFile()
+
+        //=====================================================================================
+        //viewHandler ~~
+        //	called with the text of view.json: loads the masks of the panels
+        function viewHandler(text) {
+            try {
+                _view = JSON.parse(text);
+                if (!Array.isArray(_view.panels) || !_view.panels.length) throw "no panels";
+            }
+            catch (e) {
+                fail("Illegal view.json: " + e);
+                return;
+            }
+            _view.selectors = _view.selectors || [];
+
+            document.getElementById("title").textContent = _view.title || "Detector view";
+            document.title = _view.title || "Detector view";
+
+            var files = [];
+            for (var p = 0; p < _view.panels.length; ++p)
+                if (files.indexOf(_view.panels[p].mask) == -1)
+                    files.push(_view.panels[p].mask);
+
+            _masksToLoad = files.length;
+            for (var f = 0; f < files.length; ++f) {
+                if (!/^[\w\-.]+$/.test(files[f])) {
+                    fail("Illegal mask file name in view.json: " + files[f]);
+                    return;
+                }
+                loadFile(files[f], maskHandler.bind(null, files[f]));
+            }
+        } //end viewHandler()
+
+        //=====================================================================================
+        //maskHandler ~~
+        //	called with the text of a mask: when all are loaded the page is built
+        function maskHandler(file, text) {
+            _masks[file] = parseMask(text);
+            if (!_masks[file].length) {
+                fail("The mask " + file + " is empty");
+                return;
+            }
+            if (--_masksToLoad) return;
+
+            makeSelectors();
+            makePanels();
+            assignPvs();
+        } //end maskHandler()
+
+        //=====================================================================================
+        //parseMask ~~
+        //	returns the rows of the csv mask, each an array of keys (null for the empty cells)
+        function parseMask(text) {
+            var delimiter = text.indexOf(";") != -1 ? ";" : ",";
+            var lines = text.split(/\r?\n/);
+            var rows = [];
+            for (var i = 0; i < lines.length; ++i) {
+                if (!lines[i].trim()) continue;
+                rows.push(lines[i].split(delimiter).map(function (cell) {
+                    cell = cell.trim();
+                    return cell && cell != EMPTY_CELL ? cell : null;
+                }));
+            }
+            return rows;
+        } //end parseMask()
+
+        //=====================================================================================
+        function fail(problem) {
+            Debug.log(problem);
+            showStatus(problem);
+        } //end fail()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //page
+
+        //=====================================================================================
+        //makeSelectors ~~
+        //	one row of buttons for each selector of the view, and the button of the pictures
+        function makeSelectors() {
+            var selectorsEl = document.getElementById("selectors");
+
+            for (var s = 0; s < _view.selectors.length; ++s) {
+                var selectorEl = addEl(selectorsEl, "span", "selector");
+                addEl(selectorEl, "span", "selectorLabel", _view.selectors[s].label);
+                for (var o = 0; o < _view.selectors[s].options.length; ++o)
+                    addEl(selectorEl, "button", o ? "" : "active", _view.selectors[s].options[o].label).onclick = select.bind(null, s, o);
+                _view.selectors[s].el = selectorEl;
+                _selection.push(0);
+            }
+
+            var hasPicture = _view.panels.some(function (panel) { return panel.image; });
+            if (hasPicture) {
+                var pictureEl = addEl(selectorsEl, "span", "selector");
+                addEl(pictureEl, "span", "selectorLabel", "Picture");
+                var buttonEl = addEl(pictureEl, "button", "active", "show");
+                buttonEl.id = "pictureButton";
+                buttonEl.onclick = togglePicture;
+            }
+        } //end makeSelectors()
+
+        //=====================================================================================
+        //select ~~
+        //	selects an option of a selector: the channels show other pvs
+        function select(selectorIndex, optionIndex) {
+            _selection[selectorIndex] = optionIndex;
+            var buttonEls = _view.selectors[selectorIndex].el.getElementsByTagName("button");
+            for (var o = 0; o < buttonEls.length; ++o)
+                buttonEls[o].classList.toggle("active", o == optionIndex);
+            assignPvs();
+        } //end select()
+
+        //=====================================================================================
+        //togglePicture ~~
+        //	shows or hides the pictures behind the grids
+        function togglePicture() {
+            _showPicture = !_showPicture;
+            document.getElementById("pictureButton").classList.toggle("active", _showPicture);
+            for (var p = 0; p < _panels.length; ++p)
+                if (_panels[p].imageEl)
+                    _panels[p].imageEl.style.visibility = _showPicture ? "" : "hidden";
+            drawAll();
+        } //end togglePicture()
+
+        //=====================================================================================
+        function makePanels() {
+            for (var p = 0; p < _view.panels.length; ++p)
+                makePanel(_view.panels[p]);
+        } //end makePanels()
+
+        //=====================================================================================
+        //makePanel ~~
+        //	builds a panel: title, grid drawn in a canvas (over the picture, if any)
+        //	and one box with the value for each channel
+        function makePanel(config) {
+            var rows = _masks[config.mask];
+            var panel = { config: config, rows: rows, keys: [], pvOfKey: {}, boxOfKey: {}, hoverKey: null };
+            panel.columnCount = Math.max.apply(null, rows.map(function (row) { return row.length; }));
+            for (var y = 0; y < rows.length; ++y)
+                for (var x = 0; x < rows[y].length; ++x)
+                    if (rows[y][x] && panel.keys.indexOf(rows[y][x]) == -1)
+                        panel.keys.push(rows[y][x]);
+            panel.keys.sort();
+
+            var panelEl = addEl(document.getElementById("panels"), "div", "panel");
+            addEl(panelEl, "span", "panelTitle", config.title);
+            panel.noteEl = addEl(panelEl, "span", "panelNote");
+
+            panel.stageEl = addEl(panelEl, "div", "stage");
+            if (config.image) {
+                panel.imageEl = addEl(panel.stageEl, "img");
+                panel.imageEl.alt = "";
+                panel.imageEl.onload = drawPanel.bind(null, panel);
+                panel.imageEl.src = _viewPath + config.image.file;
+            }
+            else
+                panel.stageEl.style.aspectRatio = config.aspect || panel.columnCount / rows.length;
+
+            panel.canvasEl = addEl(panel.stageEl, "canvas");
+            panel.canvasEl.onmousemove = function (event) { hover(panel, cellAt(panel, event), event); };
+            panel.canvasEl.onmouseleave = function () { hover(panel, null); };
+            panel.canvasEl.onclick = function (event) {
+                var key = cellAt(panel, event);
+                if (key) drawGraph(panel.pvOfKey[key]);
+            };
+
+            var boxesEl = addEl(panelEl, "div", "boxes");
+            panel.keys.forEach(function (key) {
+                var boxEl = panel.boxOfKey[key] = addEl(boxesEl, "button");
+                boxEl.labelEl = addEl(boxEl, "span", "", key);
+                boxEl.valueEl = addEl(boxEl, "span");
+                boxEl.onclick = function () { drawGraph(panel.pvOfKey[key]); };
+                boxEl.onmouseenter = function () { hover(panel, key); };
+                boxEl.onmouseleave = function () { hover(panel, null); };
+            });
+
+            _panels.push(panel);
+        } //end makePanel()
+
+        //=====================================================================================
+        //expand ~~
+        //	returns the template with each {field} replaced by its value
+        function expand(template, values) {
+            for (var pass = 0; pass < EXPAND_PASSES && template.indexOf("{") != -1; ++pass)
+                template = template.replace(/\{(\w+)\}/g, function (match, field) {
+                    return values[field] !== undefined ? values[field] : match;
+                });
+            return template;
+        } //end expand()
+
+        //=====================================================================================
+        //assignPvs ~~
+        //	sets the pv of each channel of each panel, from the selected options,
+        //	and registers the new pv list at the server
+        function assignPvs() {
+            var oldPvs = _pvs;
+            _pvs = {};
+
+            for (var p = 0; p < _panels.length; ++p) {
+                var panel = _panels[p];
+                var template = panel.config.pv !== undefined ? panel.config.pv : _view.pv;
+
+                var values = {};
+                for (var s = 0; s < _view.selectors.length; ++s)
+                    Object.assign(values, _view.selectors[s].options[_selection[s]].values);
+                Object.assign(values, panel.config.values);
+
+                for (var k = 0; k < panel.keys.length; ++k) {
+                    values.channel = panel.keys[k];
+                    var pvName = template ? expand(template, values) : panel.keys[k];
+                    panel.pvOfKey[panel.keys[k]] = pvName;
+                    _pvs[pvName] = oldPvs[pvName] || {}; //keep the values of the pvs that are still shown
+                }
+            }
+
+            ++_generation;
+            drawAll();
+            getPvSettings();
+            generateUID();
+        } //end assignPvs()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //drawing
+
+        //=====================================================================================
+        //stateOf ~~
+        //	returns the state of the pv, that is the name of its css class and of its color
+        function stateOf(pvName) {
+            var pv = _pvs[pvName];
+            if (!pv || pv.time === undefined) return "unknown";
+            if (!(Date.now() / 1000 - pv.time < STALE_SECONDS)) return "stale";
+            return SEVERITY_CLASS[pv.severity] || "unknown";
+        } //end stateOf()
+
+        //=====================================================================================
+        //valueText ~~
+        //	returns the short text of a value
+        function valueText(value) {
+            if (value === undefined) return "-";
+            var number = Number(value);
+            if (value === "" || isNaN(number)) return String(value);
+            return String(Number.parseFloat(number.toPrecision(5)));
+        } //end valueText()
+
+        //=====================================================================================
+        function toolTipText(pvName) {
+            var pv = _pvs[pvName];
+            var settings = _pvSettings[pvName];
+
+            var toolTip = pvName;
+            if (!pv || pv.time === undefined)
+                toolTip += "\nNo value received yet";
+            else
+                toolTip += "\nValue: " + pv.value + (settings && settings.Units ? " " + settings.Units : "") +
+                    "\nTime: " + new Date(pv.time * 1000).toLocaleString("en-GB") + (stateOf(pvName) == "stale" ? " (stale)" : "") +
+                    "\nStatus: " + pv.status +
+                    "\nSeverity: " + pv.severity;
+            if (settings && settings.Upper_Alarm_Limit !== undefined)
+                toolTip += "\nWarning limits: " + Number.parseFloat(settings.Lower_Warning_Limit) + " to " + Number.parseFloat(settings.Upper_Warning_Limit) +
+                    "\nAlarm limits: " + Number.parseFloat(settings.Lower_Alarm_Limit) + " to " + Number.parseFloat(settings.Upper_Alarm_Limit);
+            return toolTip;
+        } //end toolTipText()
+
+        //=====================================================================================
+        function drawAll() {
+            for (var p = 0; p < _panels.length; ++p)
+                drawPanel(_panels[p]);
+        } //end drawAll()
+
+        //=====================================================================================
+        //drawPanel ~~
+        //	draws the grid of the panel and updates the boxes of its channels
+        function drawPanel(panel) {
+            var canvasEl = panel.canvasEl;
+            var scale = window.devicePixelRatio || 1;
+            var width = panel.stageEl.clientWidth, height = panel.stageEl.clientHeight;
+            if (!width || !height) return; //e.g. the picture is not loaded yet
+
+            canvasEl.width = Math.round(width * scale);
+            canvasEl.height = Math.round(height * scale);
+            var context = canvasEl.getContext("2d");
+            context.scale(scale, scale);
+
+            //the area of the grid
+            var image = panel.config.image;
+            panel.gridLeft = image ? image.left * width : 0;
+            panel.gridTop = image ? image.top * height : 0;
+            panel.cellWidth = (image ? image.width * width : width) / panel.columnCount;
+            panel.cellHeight = (image ? image.height * height : height) / panel.rows.length;
+
+            context.translate(panel.gridLeft, panel.gridTop);
+
+            //the cells
+            var stateOfKey = {};
+            var counts = {};
+            for (var k = 0; k < panel.keys.length; ++k) {
+                var state = stateOfKey[panel.keys[k]] = stateOf(panel.pvOfKey[panel.keys[k]]);
+                counts[state] = (counts[state] || 0) + 1;
+            }
+            context.globalAlpha = image && _showPicture ? PICTURE_CELL_ALPHA : 1;
+            for (var y = 0; y < panel.rows.length; ++y)
+                for (var x = 0; x < panel.rows[y].length; ++x) {
+                    var key = panel.rows[y][x];
+                    if (!key) continue;
+                    context.fillStyle = STATE_COLOR[stateOfKey[key]];
+                    //no gap between the cells
+                    var left = Math.floor(x * panel.cellWidth), top = Math.floor(y * panel.cellHeight);
+                    context.fillRect(left, top, Math.ceil((x + 1) * panel.cellWidth) - left, Math.ceil((y + 1) * panel.cellHeight) - top);
+                }
+            context.globalAlpha = 1;
+
+            //the borders of the channels
+            context.strokeStyle = EDGE_COLOR;
+            context.lineWidth = 1;
+            drawEdges(panel, context, null);
+            if (panel.hoverKey) {
+                context.strokeStyle = HOVER_COLOR;
+                context.lineWidth = 2;
+                drawEdges(panel, context, panel.hoverKey);
+            }
+
+            //the boxes
+            for (var k = 0; k < panel.keys.length; ++k) {
+                var key = panel.keys[k];
+                var pvName = panel.pvOfKey[key];
+                var boxEl = panel.boxOfKey[key];
+                boxEl.className = "pv " + stateOfKey[key] + (key == panel.hoverKey ? " highlight" : "");
+                boxEl.valueEl.textContent = valueText((_pvs[pvName] || {}).value);
+                boxEl.title = toolTipText(pvName);
+            }
+
+            panel.noteEl.textContent = panel.keys.length + " channels" +
+                (counts.major ? ", " + counts.major + " alarm" : "") +
+                (counts.minor ? ", " + counts.minor + " warning" : "") +
+                (counts.invalid ? ", " + counts.invalid + " invalid" : "");
+        } //end drawPanel()
+
+        //=====================================================================================
+        //drawEdges ~~
+        //	draws the lines between the cells of different channels,
+        //	or only the border of the channel onlyKey
+        function drawEdges(panel, context, onlyKey) {
+            var rows = panel.rows;
+            var cellWidth = panel.cellWidth, cellHeight = panel.cellHeight;
+
+            context.beginPath();
+            for (var y = 0; y < rows.length; ++y)
+                for (var x = 0; x < rows[y].length; ++x) {
+                    var key = rows[y][x];
+                    if (!key || (onlyKey && key != onlyKey)) continue;
+
+                    var left = Math.round(x * cellWidth), right = Math.round((x + 1) * cellWidth);
+                    var top = Math.round(y * cellHeight), bottom = Math.round((y + 1) * cellHeight);
+                    if (x == 0 || rows[y][x - 1] != key) { context.moveTo(left, top); context.lineTo(left, bottom); }
+                    if (rows[y][x + 1] != key) { context.moveTo(right, top); context.lineTo(right, bottom); }
+                    if (y == 0 || rows[y - 1][x] != key) { context.moveTo(left, top); context.lineTo(right, top); }
+                    if (y == rows.length - 1 || rows[y + 1][x] != key) { context.moveTo(left, bottom); context.lineTo(right, bottom); }
+                }
+            context.stroke();
+        } //end drawEdges()
+
+        //=====================================================================================
+        //cellAt ~~
+        //	returns the key of the channel at the mouse position, or null
+        function cellAt(panel, event) {
+            var rect = panel.canvasEl.getBoundingClientRect();
+            var x = Math.floor((event.clientX - rect.left - panel.gridLeft) / panel.cellWidth);
+            var y = Math.floor((event.clientY - rect.top - panel.gridTop) / panel.cellHeight);
+            return (panel.rows[y] && panel.rows[y][x]) || null;
+        } //end cellAt()
+
+        //=====================================================================================
+        //hover ~~
+        //	highlights the channel of the panel (none if key is null) and,
+        //	if the mouse is in the grid (event is given), shows its tooltip at the mouse
+        function hover(panel, key, event) {
+            var toolTipEl = document.getElementById("toolTip");
+            if (key && event) {
+                toolTipEl.textContent = toolTipText(panel.pvOfKey[key]);
+                toolTipEl.style.display = "block";
+                var flip = event.clientX > window.innerWidth / 2; //keep it in the window
+                toolTipEl.style.left = flip ? "" : (event.clientX + 14) + "px";
+                toolTipEl.style.right = flip ? (window.innerWidth - event.clientX + 14) + "px" : "";
+                toolTipEl.style.top = (event.clientY + 14) + "px";
+            }
+            else
+                toolTipEl.style.display = "none";
+
+            panel.canvasEl.style.cursor = key ? "pointer" : "default";
+            if (key == panel.hoverKey) return;
+            panel.hoverKey = key;
+            drawPanel(panel);
+        } //end hover()
+
+        //=====================================================================================
+        //drawGraph ~~
+        //	opens the plot of the pv in a new window
+        function drawGraph(pvName) {
+            var url = location.origin + "/WebPath/UserWebPath/html/DCSMonitoringPages/Plot.html?urn=" +
+                DesktopContent._localUrnLid + "&pv_names=" + encodeURIComponent(pvName);
+            DesktopContent.openNewWindow("Plot", pvName, url, false);
+        } //end drawGraph()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //live values
+
+        //=====================================================================================
+        //getPvSettings ~~
+        //	requests units and limits of all the pvs, they are only used in the tooltips
+        function getPvSettings() {
+            DesktopContent.XMLHttpRequest("Request?RequestType=getPVSettings",
+                "pvList=" + Object.keys(_pvs).join(",") + "," + //the server expects a comma after each pv
+                "&id=0",
+                pvSettingsHandler /*returnHandler*/,
+                _generation /*reqParam*/,
+                0 /*progressHandler*/,
+                0 /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end getPvSettings()
+
+        //=====================================================================================
+        function pvSettingsHandler(req, generation) {
+            if (generation != _generation) return; //the pv list has changed
+            try {
+                _pvSettings = JSON.parse(DesktopContent.getXMLValue(req, "JSON"));
+            }
+            catch (e) {
+                Debug.log("Illegal pv settings from server: " + e);
+                return;
+            }
+            drawAll();
+        } //end pvSettingsHandler()
+
+        //=====================================================================================
+        //generateUID ~~
+        //	registers the list of pvs at the server, the returned uid is then used to poll
+        function generateUID() {
+            _uid = "";
+            window.clearTimeout(_pollTimer);
+
+            DesktopContent.XMLHttpRequest("Request?RequestType=generateUID",
+                "pvList=" + Object.keys(_pvs).join(",") + ",",
+                generateUIDHandler /*returnHandler*/,
+                _generation /*reqParam*/,
+                0 /*progressHandler*/,
+                true /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end generateUID()
+
+        //=====================================================================================
+        function generateUIDHandler(req, generation, errStr) {
+            if (generation != _generation) return; //the pv list has changed
+
+            if (!errStr) {
+                try {
+                    var uid = JSON.parse(DesktopContent.getXMLValue(req, "JSON")).message;
+                    if (uid == "-1") errStr = "Unable to generate UID";
+                    else _uid = uid;
+                }
+                catch (e) {
+                    errStr = "Illegal response from server: " + e;
+                }
+            }
+
+            if (errStr) { //try again later
+                showStatus(errStr);
+                _pollTimer = window.setTimeout(generateUID, POLL_PERIOD_MS);
+                return;
+            }
+            pollServer();
+        } //end generateUIDHandler()
+
+        //=====================================================================================
+        function pollServer() {
+            DesktopContent.XMLHttpRequest("Request?RequestType=poll&uid=" + _uid,
+                "",
+                pollServerHandler /*returnHandler*/,
+                _generation /*reqParam*/,
+                0 /*progressHandler*/,
+                true /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end pollServer()
+
+        //=====================================================================================
+        //pollServerHandler ~~
+        //	the server returns only the pvs that changed since the last poll
+        function pollServerHandler(req, generation, errStr) {
+            if (generation != _generation) return; //the pv list has changed
+
+            var response;
+            if (!errStr) {
+                try {
+                    var jsonStr = DesktopContent.getXMLValue(req, "JSON") || "";
+                    response = JSON.parse(jsonStr.replace(/\s/g, "")); //the values may hold whitespace that is illegal in JSON
+                }
+                catch (e) {
+                    errStr = "Illegal response from server: " + e;
+                }
+            }
+
+            if (!errStr && response.message == "NOT_FOUND") { //e.g. the server was restarted
+                Debug.log("Have to generate new UID!");
+                generateUID();
+                return;
+            }
+
+            if (!errStr) {
+                for (var pvName in response) {
+                    var pv = _pvs[pvName];
+                    if (!pv) continue;
+                    pv.value = response[pvName].Value;
+                    pv.time = response[pvName].Timestamp;
+                    pv.status = response[pvName].Status;
+                    pv.severity = response[pvName].Severity;
+                }
+                _lastPollTime = Date.now();
+            }
+
+            //draw also the pvs that did not change, since they may have become stale
+            drawAll();
+            showStatus(errStr);
+
+            _pollTimer = window.setTimeout(pollServer, POLL_PERIOD_MS);
+        } //end pollServerHandler()
+
+        //=====================================================================================
+        //showStatus ~~
+        //	shows in the header the time of the last poll and the count of pvs in alarm, or the problem
+        function showStatus(problem) {
+            var statusEl = document.getElementById("status");
+            statusEl.classList.toggle("problem", !!problem);
+            if (problem) {
+                statusEl.textContent = problem;
+                return;
+            }
+
+            var majorCount = 0, minorCount = 0;
+            for (var pvName in _pvs) {
+                var state = stateOf(pvName);
+                if (state == "major") ++majorCount;
+                if (state == "minor") ++minorCount;
+            }
+            statusEl.textContent = majorCount + " alarm, " + minorCount + " warning  -  updated " +
+                new Date(_lastPollTime).toLocaleTimeString("en-GB");
+        } //end showStatus()
+
+    </script>
+</head>
+
+<body onload='//init() called by DesktopContent.js'>
+
+    <div id="header">
+        <span id="title">Detector view</span>
+        <span id="status"></span>
+        <div id="legend">
+            <span class="swatch ok"></span>No alarm
+            <span class="swatch minor"></span>Warning
+            <span class="swatch major"></span>Alarm
+            <span class="swatch invalid"></span>Invalid
+            <span class="swatch stale"></span>Stale
+            <span class="swatch unknown"></span>Undefined state
+            <span class="hint">click a channel to plot it</span>
+        </div>
+    </div>
+
+    <div id="selectors"></div>
+    <div id="panels"></div>
+    <div id="toolTip"></div>
+
+</body>
+</html>
