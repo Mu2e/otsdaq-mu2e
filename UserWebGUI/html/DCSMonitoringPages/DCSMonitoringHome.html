@@ -22,20 +22,30 @@
         /////////////////////////////////////////////////////////////////////////////////////////
 
         var PAGES_PATH = "/WebPath/UserWebPath/html/DCSMonitoringPages/";
+        var GRAFANA_URL = "http://localhost:3000/d/";
+        var GRAFANA_FOLDER_URL = "http://localhost:3000/dashboards/f/";
 
         //one tile per subsystem: without a url the subsystem has no page yet,
         //	the urls must be the same as in the menu of DCSMonitoring.html to have the menu entry selected
         var SUBSYSTEMS = [
-            { name: "Beam info" },
-            { name: "Magnetic field" },
-            { name: "Trigger" },
-            { name: "DAQ", url: PAGES_PATH + "daq/DaqRoomHealth.html" },
-            { name: "STM" },
-            { name: "ExtMon" },
-            { name: "Tracker" },
+            { name: "Beam info", url: GRAFANA_URL + "deg41o77g2tkowd/mu2e-accel-acnet",
+                image: "/WebPath/UserWebPath/images/beam_preview.jpg" },
+            { name: "Solenoid", image: "/WebPath/UserWebPath/images/solenoid_preview.jpg" },
+            { name: "Hall", url: GRAFANA_URL + "dfg2k0w6k5n280b/mc-2-hall",
+                image: "/WebPath/UserWebPath/images/hall_preview.jpg" },
+            { name: "Trigger", url: GRAFANA_URL + "deg0gb152gv18gd/trigger",
+                image: "/WebPath/UserWebPath/images/trigger_preview.jpg" },
+            { name: "DAQ", url: PAGES_PATH + "daq/DaqRoomHealth.html",
+                image: "/WebPath/UserWebPath/images/daq_preview.jpg" },
+            { name: "STM", url: GRAFANA_URL + "a00484dd-afc1-45e2-92ed-0a2679dbd49/mu2estm",
+                image: "/WebPath/UserWebPath/images/stm_preview.jpg" },
+            { name: "ExtMon", image: "/WebPath/UserWebPath/images/extmon_preview.jpg" },
+            { name: "Tracker", url: GRAFANA_FOLDER_URL + "afljliedwq874a/tracker",
+                image: "/WebPath/UserWebPath/images/tracker_preview.jpg" },
             { name: "Calorimeter", url: PAGES_PATH + "DetectorView.html?view=calorimeter",
                 image: "/WebPath/UserWebPath/images/calorimeter_preview.jpg" },
-            { name: "CRV" },
+            { name: "CRV", url: GRAFANA_URL + "dbfws2vt05u328c/crv-slow-controls",
+                image: "/WebPath/UserWebPath/images/crv_preview.jpg" },
         ];
 
 

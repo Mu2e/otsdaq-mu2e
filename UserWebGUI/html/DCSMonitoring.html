@@ -19,6 +19,7 @@
         //	makeMenu()
         //	makeMenuItem(parentEl, item)
         //	toggleGroup(groupEl)
+        //	toggleMenu(hidden)
         //	openPage(url)
         //
         /////////////////////////////////////////////////////////////////////////////////////////
@@ -26,28 +27,49 @@
 
         var PAGES_PATH = "/WebPath/UserWebPath/html/DCSMonitoringPages/";
         var HOME_PAGE = PAGES_PATH + "DCSMonitoringHome.html";
+        var GRAFANA_URL = "http://localhost:3000/d/"; //dashboards of Grafana
+        var GRAFANA_FOLDER_URL = "http://localhost:3000/dashboards/f/";
 
         //the sidebar menu: an entry with a url opens a page in the main frame,
         //	an entry with items is a collapsible group, an empty group is shown as not available yet
         var MENU = [
             { name: "Home", url: HOME_PAGE },
+            { name: "Beam info", items: [
+                { name: "Accelerator - Grafana", url: GRAFANA_URL + "deg41o77g2tkowd/mu2e-accel-acnet" },
+            ] },
+            { name: "Solenoid", items: [] },
+            { name: "Hall", items: [
+                { name: "MC-2 Hall - Grafana", url: GRAFANA_URL + "dfg2k0w6k5n280b/mc-2-hall" },
+            ] },
+            { name: "Trigger", items: [
+                { name: "Trigger - Grafana", url: GRAFANA_URL + "deg0gb152gv18gd/trigger" },
+            ] },
             { name: "DAQ", items: [
                 { name: "DAQ-Room health", url: PAGES_PATH + "daq/DaqRoomHealth.html" },
                 { name: "DAQ-Room - Grafana", url: "http://localhost:3000/dashboards/f/repository-2710b1e/mu2e-tdaq-grafana-dashboards" },
             ] },
             { name: "DCS", items: [
                 { name: "Archiver status", url: "http://localhost:4812/main" },
-                { name: "Dashboard", url: "/WebPath/html/SlowControlsDashboard.html?page_name=private/calo_2.bob" },
             ] },
-            { name: "STM", items: [] },
-            { name: "CRV", items: [] },
+            { name: "STM", items: [
+                { name: "STM - Grafana", url: GRAFANA_URL + "a00484dd-afc1-45e2-92ed-0a2679dbd49/mu2estm" },
+            ] },
+            { name: "ExtMon", items: [] },
+            { name: "CRV", items: [
+                { name: "CRV Slow Controls - Grafana", url: GRAFANA_URL + "dbfws2vt05u328c/crv-slow-controls" },
+            ] },
             { name: "ECAL", items: [
                 { name: "Ecal main", url: PAGES_PATH + "DetectorView.html?view=calorimeter" },
+                { name: "Calorimeter (iFIX) - Grafana", url: GRAFANA_URL + "adtrg4t/calorimeter-ifix" },
+                { name: "Calo temperatures - Grafana", url: GRAFANA_URL + "dbfhl3lkxydedcd/calo-temperatures-monitor" },
             ] },
-            { name: "TRK", items: [] },
+            { name: "TRK", items: [
+                { name: "Tracker - Grafana", url: GRAFANA_FOLDER_URL + "afljliedwq874a/tracker" },
+            ] },
         ];
 
         var CLOCK_PERIOD_MS = 1000;
+        var MENU_HIDDEN_KEY = "DCSMonitoring.menuHidden"; //the browser remembers if the menu was hidden
 
         var _menuItemEls = []; //the elements of the menu entries that open a page, each has a pageUrl
 
@@ -61,6 +83,9 @@
             window.setInterval(updateClock, CLOCK_PERIOD_MS);
 
             makeMenu();
+            var hidden = false;
+            try { hidden = window.localStorage.getItem(MENU_HIDDEN_KEY) == "1"; } catch (e) {}
+            toggleMenu(hidden);
             openPage(HOME_PAGE);
         } //end init()
 
@@ -129,6 +154,15 @@
         } //end toggleGroup()
 
         //=====================================================================================
+        //toggleMenu ~~
+        //	hides or shows the sidebar menu, if hidden is undefined then it is toggled
+        function toggleMenu(hidden) {
+            hidden = document.getElementById("side").classList.toggle("hidden", hidden);
+            document.getElementById("menuButton").title = hidden ? "Show the menu" : "Hide the menu";
+            try { window.localStorage.setItem(MENU_HIDDEN_KEY, hidden ? "1" : "0"); } catch (e) {}
+        } //end toggleMenu()
+
+        //=====================================================================================
         //openPage ~~
         //	opens url in the main frame and marks its menu entry as selected
         //	Note: also called by the pages in the main frame (e.g. DCSMonitoringHome.html)
@@ -154,13 +188,14 @@
 <body onload='//init() called by DesktopContent.js'>
 
     <div id="header">
-        <span id="title">DCS Monitoring</span>
+        <button id="menuButton" onclick="toggleMenu()">&#9776;</button>
+        <span id="title" class="homeLink" title="Home" onclick="openPage(HOME_PAGE)">DCS Monitoring</span>
         <span id="status">Fermilab time <span id="clock"></span></span>
     </div>
 
     <div id="content">
         <div id="side">
-            <div id="logo">
+            <div id="logo" class="homeLink" title="Home" onclick="openPage(HOME_PAGE)">
                 <img src="/WebPath/images/iconImages/mu2e_logo_oval_small.png" alt="Mu2e">
                 <img src="/WebPath/images/otsdaqIcons/logo.png" alt="otsdaq">
             </div>

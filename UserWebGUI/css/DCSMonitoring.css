@@ -8,12 +8,18 @@ body 				{ margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direc
 /* top bar */
 #header 			{ flex: none; padding: 8px 12px; background-color: rgb(28, 31, 37); }
 #title 				{ font-family: 'Comfortaa', sans-serif; font-size: 18px; }
+#menuButton 		{ margin-right: 8px; padding: 0 7px; font-size: 16px; line-height: 22px; vertical-align: top; cursor: pointer;
+					  border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 4px; background-color: rgb(55, 60, 70); color: inherit; }
+/* title and logos go back to the home page */
+.homeLink 			{ cursor: pointer; }
+#menuButton:hover 	{ background-color: rgb(70, 76, 88); }
 #status 			{ float: right; font-size: 12px; color: rgb(170, 170, 170); padding-top: 6px; }
 
 /* sidebar and main frame fill the rest of the window */
 #content 			{ flex: 1; min-height: 0; display: flex; }
 #side 				{ flex: none; width: 200px; overflow-x: hidden; overflow-y: auto; background-color: rgb(28, 31, 37);
 					  border-top: 1px solid rgb(60, 65, 75); }
+#side.hidden 		{ display: none; }
 #mainFrame 			{ flex: 1; min-width: 0; height: 100%; border: none; background-color: white; }
 
 #logo 				{ padding: 12px 8px; text-align: center; }
