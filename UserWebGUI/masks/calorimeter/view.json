@@ -13,7 +13,7 @@
 			{ "label": "Set current", "values": { "kind": "SETI" } },
 			{ "label": "Status", "values": { "kind": "STAT" } },
 			{ "label": "Check", "values": { "kind": "CHECK" } },
-			{ "label": "Enabled", "values": { "kind": "ENABLED" } }
+			{ "label": "Enable", "values": { "kind": "ENABLE" } }
 		] }
 	],
 	"panels": [
