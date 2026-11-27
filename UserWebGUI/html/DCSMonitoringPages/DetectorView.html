@@ -68,6 +68,16 @@
         //		pollServerHandler(req, generation, errStr)
         //		showStatus(problem)
         //
+        //	commands, only for the users that the server allows:
+        //		getCommandInfo()
+        //		commandInfoHandler(req, generation)
+        //		commandState(panel, key)
+        //		askCommand(panel, keys, on)
+        //		sendCommand(panel, keys, on)
+        //		commandHandler(req, command, errStr)
+        //		showDialog(title, text, buttons)
+        //		closeDialog()
+        //
         //====================== start high-level behavior description
         //
         //	Generic stop light view of a detector, with no code specific to the detector:
@@ -98,6 +108,11 @@
         //					detail is optional: a pv with a text that is shown when pv is in alarm.
         //					alive is optional: a pv that is 0 when the value of pv is not maintained
         //					(e.g. its source is not running), then the text notAlive is shown as a warning.
+        //		command 	optional { name, pv, state, onValue, offValue, onState, offState }: the channels can be
+        //					switched on and off by writing onValue (default 1) or offValue (default 0) to pv,
+        //					a template like the one of the pv names; state is the template of the pv that
+        //					then becomes onState (default ON) or offState (default OFF).
+        //					name (a template, e.g. "{system}") is what is switched, for the texts.
         //
         //	- init() is called by DesktopContent.js: view.json and the masks are loaded,
         //		then the page is built and assignPvs() sets the pv of each channel
@@ -109,6 +124,10 @@
         //		selected by dragging the mouse in a chart
         //	- a click on a channel (in the grid, in the boxes or in the chart) selects its line in the
         //		chart of the panel, another click on it clears the selection
+        //	- if the view has a command and the server allows the user (see getCommandInfo()), a double
+        //		click on a channel asks to switch it on or off, and each panel has the buttons to switch
+        //		all its channels. The server decides if each channel can be switched (e.g. it refuses
+        //		to switch on without the permit of an interlock), the page shows what was refused
         //
         //====================== end high-level behavior description
         //
@@ -125,6 +144,8 @@
         var EMPTY_CELL = "-1";
         var EXPAND_PASSES = 4; 				//a value of a field may hold other fields
         var PICTURE_CELL_ALPHA = 0.8; 		//the picture is visible through the cells
+        var COMMAND_TIMEOUT_MS = 20000; 	//a channel that did not switch within this time after the command is reported
+        var MAX_REFUSED_SHOWN = 6; 			//refused channels listed in the dialog
 
         var SEVERITY_CLASS = { "NO_ALARM": "ok", "MINOR": "minor", "MAJOR": "major", "INVALID": "invalid" };
         var STATE_COLOR = {
@@ -140,9 +161,12 @@
         var _masksToLoad = 0;
         var _selection = []; 	//for each selector, the index of the selected option
         var _showPicture = true;
-        var _panels = []; 		//{ config, rows, keys, pvOfKey, boxOfKey, stageEl, canvasEl, noteEl, hoverKey, selectedKey, chart, chartNoteEl, nearestKey }
+        var _panels = []; 		//{ config, rows, keys, pvOfKey, boxOfKey, stageEl, canvasEl, noteEl, hoverKey, selectedKey, chart, chartNoteEl, nearestKey,
+        						//	commandEl, commandName, commandOfKey, pendingOfKey, failedCount }
         var _pvs = {}; 			//pv name => { value, time, status, severity }
         var _indicatorPvs = {}; //pv name => { value, time, status, severity }, the pvs of the indicators
+        var _statePvs = {}; 	//pv name => { value, time, status, severity }, the state pvs of the commands
+        var _canCommand = false; //the server allows the user to switch the channels
         var _pvSettings = {}; 	//pv name => { Units, Upper_Alarm_Limit, ... }
         var _generation = 0; 	//incremented when the pv list changes, to ignore the replies about the old list
         var _uid = "";
@@ -216,6 +240,7 @@
             }
             _view.selectors = _view.selectors || [];
             _view.indicators = _view.indicators || [];
+            if (_view.command && !_view.command.pv) _view.command = null;
 
             document.getElementById("title").textContent = _view.title || "Detector view";
             document.title = _view.title || "Detector view";
@@ -372,7 +397,8 @@
         //	and one box with the value for each channel
         function makePanel(config) {
             var rows = _masks[config.mask];
-            var panel = { config: config, rows: rows, keys: [], pvOfKey: {}, boxOfKey: {}, hoverKey: null };
+            var panel = { config: config, rows: rows, keys: [], pvOfKey: {}, boxOfKey: {}, hoverKey: null,
+                commandName: "", commandOfKey: {}, pendingOfKey: {}, failedCount: 0 };
             panel.columnCount = Math.max.apply(null, rows.map(function (row) { return row.length; }));
             for (var y = 0; y < rows.length; ++y)
                 for (var x = 0; x < rows[y].length; ++x)
@@ -383,6 +409,12 @@
             var panelEl = addEl(document.getElementById("panels"), "div", "panel");
             addEl(panelEl, "span", "panelTitle", config.title);
             panel.noteEl = addEl(panelEl, "span", "panelNote");
+
+            //the buttons to switch all the channels, shown if the server allows the user
+            panel.commandEl = addEl(panelEl, "span", "commands");
+            panel.commandEl.style.display = "none";
+            addEl(panel.commandEl, "button", "", "all ON").onclick = function () { askCommand(panel, panel.keys, true /*on*/); };
+            addEl(panel.commandEl, "button", "", "all OFF").onclick = function () { askCommand(panel, panel.keys, false /*on*/); };
 
             panel.stageEl = addEl(panelEl, "div", "stage");
             if (config.image) {
@@ -398,6 +430,7 @@
             panel.canvasEl.onmousemove = function (event) { hover(panel, cellAt(panel, event), event); };
             panel.canvasEl.onmouseleave = function () { hover(panel, null); };
             panel.canvasEl.onclick = function (event) { selectKey(panel, cellAt(panel, event)); };
+            panel.canvasEl.ondblclick = function (event) { askCommand(panel, [cellAt(panel, event)]); };
 
             var boxesEl = addEl(panelEl, "div", "boxes");
             panel.keys.forEach(function (key) {
@@ -405,6 +438,7 @@
                 boxEl.labelEl = addEl(boxEl, "span", "", key);
                 boxEl.valueEl = addEl(boxEl, "span");
                 boxEl.onclick = function () { selectKey(panel, key); };
+                boxEl.ondblclick = function () { askCommand(panel, [key]); };
                 boxEl.onmouseenter = function () { hover(panel, key); };
                 boxEl.onmouseleave = function () { hover(panel, null); };
             });
@@ -442,8 +476,9 @@
         //	sets the pv of each channel of each panel, from the selected options,
         //	and registers the new pv list at the server
         function assignPvs() {
-            var oldPvs = _pvs;
+            var oldPvs = _pvs, oldStatePvs = _statePvs;
             _pvs = {};
+            _statePvs = {};
 
             for (var p = 0; p < _panels.length; ++p) {
                 var panel = _panels[p];
@@ -459,7 +494,19 @@
                     var pvName = template ? expand(template, values) : panel.keys[k];
                     panel.pvOfKey[panel.keys[k]] = pvName;
                     _pvs[pvName] = oldPvs[pvName] || {}; //keep the values of the pvs that are still shown
+
+                    if (!_view.command) continue;
+                    var command = panel.commandOfKey[panel.keys[k]] = { pv: expand(_view.command.pv, values), statePv: expand(_view.command.state || "", values) };
+                    if (command.statePv) _statePvs[command.statePv] = oldStatePvs[command.statePv] || {};
                 }
+
+                //the commands of the other pvs are not awaited any more
+                panel.pendingOfKey = {};
+                panel.failedCount = 0;
+                panel.commandName = _view.command ? expand(_view.command.name || "", values) : "";
+                var buttonEls = panel.commandEl.getElementsByTagName("button");
+                buttonEls[0].textContent = (panel.commandName + " all ON").trim();
+                buttonEls[1].textContent = (panel.commandName + " all OFF").trim();
             }
 
             ++_generation;
@@ -468,6 +515,7 @@
             fetchTrends();
             getPvSettings();
             generateUID();
+            getCommandInfo();
         } //end assignPvs()
 
         /////////////////////////////////////////////////////////////////////////////////////////
@@ -477,7 +525,7 @@
         //stateOf ~~
         //	returns the state of the pv, that is the name of its css class and of its color
         function stateOf(pvName) {
-            var pv = _pvs[pvName] || _indicatorPvs[pvName];
+            var pv = _pvs[pvName] || _indicatorPvs[pvName] || _statePvs[pvName];
             if (!pv || pv.time === undefined) return "unknown";
             if (!(Date.now() / 1000 - pv.time < STALE_SECONDS)) return "stale";
             return SEVERITY_CLASS[pv.severity] || "unknown";
@@ -495,7 +543,7 @@
 
         //=====================================================================================
         function toolTipText(pvName) {
-            var pv = _pvs[pvName] || _indicatorPvs[pvName];
+            var pv = _pvs[pvName] || _indicatorPvs[pvName] || _statePvs[pvName];
             var settings = _pvSettings[pvName];
 
             var toolTip = pvName;
@@ -611,10 +659,27 @@
                 boxEl.title = toolTipText(pvName);
             }
 
+            //the channels that were commanded: done when their state is the commanded one
+            var pendingCount = 0;
+            for (var key in panel.pendingOfKey) {
+                var pending = panel.pendingOfKey[key];
+                if (commandState(panel, key) == (pending.on ? "on" : "off"))
+                    delete panel.pendingOfKey[key];
+                else if (Date.now() > pending.until) {
+                    delete panel.pendingOfKey[key];
+                    ++panel.failedCount;
+                }
+                else
+                    ++pendingCount;
+            }
+
             panel.noteEl.textContent = panel.keys.length + " channels" +
                 (counts.major ? ", " + counts.major + " alarm" : "") +
                 (counts.minor ? ", " + counts.minor + " warning" : "") +
-                (counts.invalid ? ", " + counts.invalid + " invalid" : "");
+                (counts.invalid ? ", " + counts.invalid + " invalid" : "") +
+                (pendingCount ? ", waiting for " + pendingCount + " to switch" : "") +
+                (panel.failedCount ? ", " + panel.failedCount + " did not switch" : "");
+            panel.noteEl.classList.toggle("problem", !!panel.failedCount);
         } //end drawPanel()
 
         //=====================================================================================
@@ -861,7 +926,7 @@
             window.clearTimeout(_pollTimer);
 
             DesktopContent.XMLHttpRequest("Request?RequestType=generateUID",
-                "pvList=" + Object.keys(_pvs).concat(Object.keys(_indicatorPvs)).join(",") + ",",
+                "pvList=" + Object.keys(_pvs).concat(Object.keys(_indicatorPvs), Object.keys(_statePvs)).join(",") + ",",
                 generateUIDHandler /*returnHandler*/,
                 _generation /*reqParam*/,
                 0 /*progressHandler*/,
@@ -928,7 +993,7 @@
 
             if (!errStr) {
                 for (var pvName in response) {
-                    var pvs = [_pvs[pvName], _indicatorPvs[pvName]];
+                    var pvs = [_pvs[pvName], _indicatorPvs[pvName], _statePvs[pvName]];
                     for (var i = 0; i < pvs.length; ++i) {
                         if (!pvs[i]) continue;
                         pvs[i].value = response[pvName].Value;
@@ -968,6 +1033,171 @@
                 new Date(_lastPollTime).toLocaleTimeString("en-GB");
         } //end showStatus()
 
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //commands
+
+        //=====================================================================================
+        //getCommandInfo ~~
+        //	asks the server if the user may switch the channels, the server also
+        //	prepares the connection to the pvs of the commands
+        function getCommandInfo() {
+            if (!_view.command) return;
+
+            var commandPvs = [];
+            for (var p = 0; p < _panels.length; ++p)
+                for (var key in _panels[p].commandOfKey)
+                    commandPvs.push(_panels[p].commandOfKey[key].pv);
+
+            DesktopContent.XMLHttpRequest("Request?RequestType=getChannelCommandInfo",
+                "pvList=" + commandPvs.join(","),
+                commandInfoHandler /*returnHandler*/,
+                _generation /*reqParam*/,
+                0 /*progressHandler*/,
+                0 /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end getCommandInfo()
+
+        //=====================================================================================
+        //commandInfoHandler ~~
+        //	shows the command buttons if the server allows the user
+        function commandInfoHandler(req, generation) {
+            if (generation != _generation) return; //the pv list has changed
+
+            var reply = {};
+            try { reply = JSON.parse(decodeURIComponent(DesktopContent.getXMLValue(req, "JSON"))); }
+            catch (e) { Debug.log("Illegal command info from server: " + e); }
+            Debug.log("Commands " + (reply.canCommand ? "allowed" : "not allowed: " + reply.reason));
+
+            _canCommand = !!reply.canCommand;
+            for (var p = 0; p < _panels.length; ++p)
+                _panels[p].commandEl.style.display = _canCommand ? "" : "none";
+            document.getElementById("commandHint").style.display = _canCommand ? "" : "none";
+        } //end commandInfoHandler()
+
+        //=====================================================================================
+        //commandState ~~
+        //	returns "on" or "off" from the state pv of the command of the channel, or "" if not known
+        function commandState(panel, key) {
+            var command = panel.commandOfKey[key];
+            if (!command || stateOf(command.statePv) == "unknown" || stateOf(command.statePv) == "stale") return "";
+
+            var value = String(_statePvs[command.statePv].value);
+            if (value == (_view.command.onState || "ON")) return "on";
+            if (value == (_view.command.offState || "OFF")) return "off";
+            return "";
+        } //end commandState()
+
+        //=====================================================================================
+        //askCommand ~~
+        //	asks to confirm the switch of the channels of the panel:
+        //	on is true or false for all the channels, or undefined to choose for one channel
+        function askCommand(panel, keys, on) {
+            if (!_canCommand || !keys.length || !keys[0]) return;
+            var name = (panel.commandName + " " + panel.config.title).trim();
+
+            if (on === undefined) {
+                var state = commandState(panel, keys[0]);
+                showDialog(name + " " + keys[0],
+                    panel.commandOfKey[keys[0]].pv + "\nNow: " + (state ? state.toUpperCase() : "state not known"),
+                    [{ label: "Switch ON", className: "on", disabled: state == "on", handler: sendCommand.bind(null, panel, keys, true /*on*/) },
+                     { label: "Switch OFF", className: "off", disabled: state == "off", handler: sendCommand.bind(null, panel, keys, false /*on*/) },
+                     { label: "Cancel" }]);
+                return;
+            }
+
+            //only the channels that are not in the state already
+            var target = on ? "on" : "off";
+            keys = keys.filter(function (key) { return commandState(panel, key) != target; });
+            if (!keys.length) {
+                showDialog(name, "All the channels are " + target.toUpperCase() + " already.", [{ label: "Close" }]);
+                return;
+            }
+            showDialog(name, "Switch " + target.toUpperCase() + " " + keys.length + " channels?\n" + keys.join(" "),
+                [{ label: "Switch " + target.toUpperCase() + " " + keys.length + " channels", className: target, handler: sendCommand.bind(null, panel, keys, on) },
+                 { label: "Cancel" }]);
+        } //end askCommand()
+
+        //=====================================================================================
+        //sendCommand ~~
+        //	sends the confirmed command to the server
+        function sendCommand(panel, keys, on) {
+            var value = on ? (_view.command.onValue !== undefined ? _view.command.onValue : 1) :
+                (_view.command.offValue !== undefined ? _view.command.offValue : 0);
+            var title = (panel.commandName + " " + panel.config.title).trim() + (keys.length == 1 ? " " + keys[0] : "");
+            showDialog(title, "Sending the command...", []);
+
+            DesktopContent.XMLHttpRequest("Request?RequestType=setChannelValues",
+                "pvList=" + keys.map(function (key) { return panel.commandOfKey[key].pv; }).join(",") +
+                "&value=" + encodeURIComponent(value),
+                commandHandler /*returnHandler*/,
+                { panel: panel, keys: keys, on: on, title: title, generation: _generation } /*reqParam*/,
+                0 /*progressHandler*/,
+                true /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end sendCommand()
+
+        //=====================================================================================
+        //commandHandler ~~
+        //	shows what the server refused, the channels that were commanded are followed until they switch
+        function commandHandler(req, command, errStr) {
+            var reply;
+            if (!errStr) {
+                try { reply = JSON.parse(decodeURIComponent(DesktopContent.getXMLValue(req, "JSON"))); }
+                catch (e) { errStr = DesktopContent.getXMLValue(req, "Error") || "Illegal response from server: " + e; }
+            }
+            if (errStr) {
+                showDialog(command.title, "The command failed: " + errStr, [{ label: "Close" }]);
+                return;
+            }
+
+            var panel = command.panel;
+            var refusedPvs = {};
+            var text = reply.writtenCount + " of " + command.keys.length + " channels commanded to switch " + (command.on ? "ON" : "OFF") + ".";
+            for (var r = 0; r < reply.refused.length; ++r) {
+                refusedPvs[reply.refused[r].pv] = true;
+                if (r < MAX_REFUSED_SHOWN) text += "\n\nRefused " + reply.refused[r].pv + ":\n" + reply.refused[r].reason;
+            }
+            if (reply.refused.length > MAX_REFUSED_SHOWN)
+                text += "\n\n... and " + (reply.refused.length - MAX_REFUSED_SHOWN) + " more refused";
+
+            if (command.generation == _generation) { //else other pvs are shown now
+                panel.failedCount = 0;
+                for (var k = 0; k < command.keys.length; ++k)
+                    if (!refusedPvs[panel.commandOfKey[command.keys[k]].pv])
+                        panel.pendingOfKey[command.keys[k]] = { on: command.on, until: Date.now() + COMMAND_TIMEOUT_MS };
+                drawPanel(panel);
+            }
+
+            if (reply.refused.length) showDialog(command.title, text, [{ label: "Close" }]);
+            else closeDialog();
+        } //end commandHandler()
+
+        //=====================================================================================
+        //showDialog ~~
+        //	shows the dialog with one button for each of buttons { label, className, disabled, handler }:
+        //	a button closes the dialog and calls its handler, if any
+        function showDialog(title, text, buttons) {
+            document.getElementById("dialogTitle").textContent = title;
+            document.getElementById("dialogText").textContent = text;
+
+            var buttonsEl = document.getElementById("dialogButtons");
+            buttonsEl.textContent = "";
+            buttons.forEach(function (button) {
+                var buttonEl = addEl(buttonsEl, "button", button.className || "", button.label);
+                buttonEl.disabled = !!button.disabled;
+                buttonEl.onclick = function () {
+                    closeDialog();
+                    if (button.handler) button.handler();
+                };
+            });
+            document.getElementById("dialog").style.display = "flex";
+        } //end showDialog()
+
+        //=====================================================================================
+        function closeDialog() {
+            document.getElementById("dialog").style.display = "none";
+        } //end closeDialog()
+
     </script>
 </head>
 
@@ -984,12 +1214,21 @@
             <span class="swatch stale"></span>Stale
             <span class="swatch unknown"></span>Undefined state
             <span class="hint">click a channel to select its line in the chart</span>
+            <span class="hint" id="commandHint" style="display: none">double click a channel to switch it on or off</span>
         </div>
     </div>
 
     <div id="selectors"></div>
     <div id="panels"></div>
     <div id="toolTip"></div>
+
+    <div id="dialog">
+        <div id="dialogBox">
+            <div id="dialogTitle"></div>
+            <div id="dialogText"></div>
+            <div id="dialogButtons"></div>
+        </div>
+    </div>
 
 </body>
 </html>
