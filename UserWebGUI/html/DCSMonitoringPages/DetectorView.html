@@ -28,6 +28,7 @@
         //	page:
         //		makeSelectors()
         //		select(selectorIndex, optionIndex)
+        //		makeIndicators()
         //		makeRangeButtons()
         //		togglePicture()
         //		makePanels()
@@ -40,6 +41,7 @@
         //		valueText(value)
         //		toolTipText(pvName)
         //		drawAll()
+        //		drawIndicators()
         //		drawPanel(panel)
         //		drawEdges(panel, context, onlyKey)
         //		cellAt(panel, event)
@@ -91,6 +93,11 @@
         //					image is optional: { file, left, top, width, height } is the picture drawn
         //					behind the grid and the area of the grid, as fractions of the picture.
         //					Without image, aspect is width / height of the grid (default: square cells).
+        //		indicators 	optional array of { label, pv, detail, alive, notAlive }: one box for each, after
+        //					the selectors, with the value of pv and the color of its alarm severity.
+        //					detail is optional: a pv with a text that is shown when pv is in alarm.
+        //					alive is optional: a pv that is 0 when the value of pv is not maintained
+        //					(e.g. its source is not running), then the text notAlive is shown as a warning.
         //
         //	- init() is called by DesktopContent.js: view.json and the masks are loaded,
         //		then the page is built and assignPvs() sets the pv of each channel
@@ -135,6 +142,7 @@
         var _showPicture = true;
         var _panels = []; 		//{ config, rows, keys, pvOfKey, boxOfKey, stageEl, canvasEl, noteEl, hoverKey, selectedKey, chart, chartNoteEl, nearestKey }
         var _pvs = {}; 			//pv name => { value, time, status, severity }
+        var _indicatorPvs = {}; //pv name => { value, time, status, severity }, the pvs of the indicators
         var _pvSettings = {}; 	//pv name => { Units, Upper_Alarm_Limit, ... }
         var _generation = 0; 	//incremented when the pv list changes, to ignore the replies about the old list
         var _uid = "";
@@ -207,6 +215,7 @@
                 return;
             }
             _view.selectors = _view.selectors || [];
+            _view.indicators = _view.indicators || [];
 
             document.getElementById("title").textContent = _view.title || "Detector view";
             document.title = _view.title || "Detector view";
@@ -238,6 +247,7 @@
             if (--_masksToLoad) return;
 
             makeSelectors();
+            makeIndicators();
             makePanels();
             assignPvs();
         } //end maskHandler()
@@ -292,6 +302,27 @@
                 buttonEl.onclick = togglePicture;
             }
         } //end makeSelectors()
+
+        //=====================================================================================
+        //makeIndicators ~~
+        //	one box for each indicator of the view, after the selectors (before the button of the pictures),
+        //	their pvs do not depend on the selected options
+        function makeIndicators() {
+            var selectorsEl = document.getElementById("selectors");
+            var pictureButtonEl = document.getElementById("pictureButton");
+
+            for (var i = 0; i < _view.indicators.length; ++i) {
+                var indicator = _view.indicators[i];
+                var indicatorEl = addEl(selectorsEl, "span", "selector");
+                if (pictureButtonEl) selectorsEl.insertBefore(indicatorEl, pictureButtonEl.parentNode);
+                addEl(indicatorEl, "span", "selectorLabel", indicator.label);
+                indicator.el = addEl(indicatorEl, "span", "indicator unknown", "-");
+
+                var pvNames = [indicator.pv, indicator.detail, indicator.alive];
+                for (var n = 0; n < pvNames.length; ++n)
+                    if (pvNames[n]) _indicatorPvs[pvNames[n]] = {};
+            }
+        } //end makeIndicators()
 
         //=====================================================================================
         //makeRangeButtons ~~
@@ -446,7 +477,7 @@
         //stateOf ~~
         //	returns the state of the pv, that is the name of its css class and of its color
         function stateOf(pvName) {
-            var pv = _pvs[pvName];
+            var pv = _pvs[pvName] || _indicatorPvs[pvName];
             if (!pv || pv.time === undefined) return "unknown";
             if (!(Date.now() / 1000 - pv.time < STALE_SECONDS)) return "stale";
             return SEVERITY_CLASS[pv.severity] || "unknown";
@@ -464,7 +495,7 @@
 
         //=====================================================================================
         function toolTipText(pvName) {
-            var pv = _pvs[pvName];
+            var pv = _pvs[pvName] || _indicatorPvs[pvName];
             var settings = _pvSettings[pvName];
 
             var toolTip = pvName;
@@ -485,7 +516,39 @@
         function drawAll() {
             for (var p = 0; p < _panels.length; ++p)
                 drawPanel(_panels[p]);
+            drawIndicators();
         } //end drawAll()
+
+        //=====================================================================================
+        //drawIndicators ~~
+        //	updates text and color of the boxes of the indicators
+        function drawIndicators() {
+            for (var i = 0; i < _view.indicators.length; ++i) {
+                var indicator = _view.indicators[i];
+                var state = stateOf(indicator.pv);
+                var text = valueText(_indicatorPvs[indicator.pv].value);
+                var toolTip = toolTipText(indicator.pv);
+
+                if (indicator.detail) {
+                    var detail = _indicatorPvs[indicator.detail].value;
+                    if (detail && (state == "minor" || state == "major")) text += ": " + detail;
+                    toolTip += "\n\n" + toolTipText(indicator.detail);
+                }
+
+                if (indicator.alive) {
+                    var alive = _indicatorPvs[indicator.alive].value;
+                    if (alive !== undefined && Number(alive) == 0) { //the value of the pv is not maintained
+                        state = "minor";
+                        text = indicator.notAlive || "not alive";
+                    }
+                    toolTip += "\n\n" + toolTipText(indicator.alive);
+                }
+
+                indicator.el.className = "indicator " + state;
+                indicator.el.textContent = text;
+                indicator.el.title = toolTip;
+            }
+        } //end drawIndicators()
 
         //=====================================================================================
         //drawPanel ~~
@@ -798,7 +861,7 @@
             window.clearTimeout(_pollTimer);
 
             DesktopContent.XMLHttpRequest("Request?RequestType=generateUID",
-                "pvList=" + Object.keys(_pvs).join(",") + ",",
+                "pvList=" + Object.keys(_pvs).concat(Object.keys(_indicatorPvs)).join(",") + ",",
                 generateUIDHandler /*returnHandler*/,
                 _generation /*reqParam*/,
                 0 /*progressHandler*/,
@@ -865,12 +928,14 @@
 
             if (!errStr) {
                 for (var pvName in response) {
-                    var pv = _pvs[pvName];
-                    if (!pv) continue;
-                    pv.value = response[pvName].Value;
-                    pv.time = response[pvName].Timestamp;
-                    pv.status = response[pvName].Status;
-                    pv.severity = response[pvName].Severity;
+                    var pvs = [_pvs[pvName], _indicatorPvs[pvName]];
+                    for (var i = 0; i < pvs.length; ++i) {
+                        if (!pvs[i]) continue;
+                        pvs[i].value = response[pvName].Value;
+                        pvs[i].time = response[pvName].Timestamp;
+                        pvs[i].status = response[pvName].Status;
+                        pvs[i].severity = response[pvName].Severity;
+                    }
                 }
                 _lastPollTime = Date.now();
             }
