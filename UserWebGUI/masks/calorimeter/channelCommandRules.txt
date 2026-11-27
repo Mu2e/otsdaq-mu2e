@@ -1,0 +1,19 @@
+# Channels that expert users can write from the web pages (request setChannelValues of the
+# Slow Controls Dashboard Supervisor), with the conditions to write each value.
+# The file is read at each command, together with the file channelCommandRules.txt of the
+# other views (folders of UserWebGUI/masks). Without these files no channel can be written.
+#
+# One rule per line:
+#	channel regular expression ; value ; required channel = value ; ...
+# The first rule that matches both the whole channel name and the value decides.
+# A required channel may refer to the groups of the regular expression ($1, $2, ...).
+
+# Calorimeter power supplies
+#	HV on: only with the permit of the interlock and with the LV of the same channel on
+Mu2e:CALO:HV:(D[01]:P[01]:C[0-4]:S[01]):ENABLE ; 1 ; Mu2e:CALO:INTERLOCK:PERMIT = 1 ; Mu2e:CALO:LV:$1:STAT = ON
+#	LV on: only with the permit of the interlock
+Mu2e:CALO:LV:(D[01]:P[01]:C[0-4]:S[01]):ENABLE ; 1 ; Mu2e:CALO:INTERLOCK:PERMIT = 1
+#	HV off: always
+Mu2e:CALO:HV:(D[01]:P[01]:C[0-4]:S[01]):ENABLE ; 0
+#	LV off: only with the HV of the same channel off
+Mu2e:CALO:LV:(D[01]:P[01]:C[0-4]:S[01]):ENABLE ; 0 ; Mu2e:CALO:HV:$1:STAT = OFF
