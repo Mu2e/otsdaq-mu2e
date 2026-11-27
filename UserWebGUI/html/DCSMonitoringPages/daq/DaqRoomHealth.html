@@ -3,533 +3,116 @@
 <head>
     <title>DAQ room health</title>
 
-
-
+    <link href='/WebPath/css/fonts.css?family=Inconsolata:400' rel='stylesheet' type='text/css'>
+    <link href='/WebPath/css/fonts.css?family=Comfortaa:400' rel='stylesheet' type='text/css'>
     <link rel="stylesheet" type="text/css" href="/WebPath/UserWebPath/css/DCSMonitoringPages/DaqRoomHealth.css">
 
     <script type="text/JavaScript" src="/WebPath/js/Globals.js"></script>
     <script type="text/JavaScript" src="/WebPath/js/Debug.js"></script>
     <script type="text/JavaScript" src="/WebPath/js/DesktopContent.js"></script>
-    <script type="text/JavaScript" src="/WebPath/js/js_lib/ConfigurationAPI.js"></script>
-    <script type="text/JavaScript" src="/WebPath/js/js_lib/SlowControlsAPI.js"></script>
-
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+    <script type="text/JavaScript" src="/WebPath/UserWebPath/js/DCSChart.js"></script>
 
     <script>
 
         //functions:
         //	init()
-        //	makeMainPage()
-        //  drawGraph()
-
-        //	drawNewValue(widget, pvName, pvValue, pvTime, pvStatus, pvSeverity)
-
-        //	generateUID()
-        //	generateUIDHandlerFunction(req)
-        //	pollServer()
-        //	pollServerHandlerFunction(req)
-
-
-        //top-level scope (global) variables:
-
-        var page_ = page_ || {}; 	//define the page object if needed
-        //	page_.widgets = {
-        //		<widgetID> : <widget object := x, y,
-        //			w, h, pvList{}, attributes{},
-        //			displayName, loaded,
-        //			el /*iframe element*/
-        //	}
-
+        //	addEl(parentEl, tag, className, text)
+        //
+        //	racks, live values:
+        //		makeRacks()
+        //		makeRack(parentEl, rack)
+        //		dtcCount(node)
+        //		makeWidget(parentEl, kind, pvName)
+        //		updateWidget(pvName)
+        //		drawGraph(pvName)
+        //		getPvSettings()
+        //		pvSettingsHandler(req)
+        //		generateUID()
+        //		generateUIDHandler(req, reqParam, errStr)
+        //		pollServer()
+        //		pollServerHandler(req, reqParam, errStr)
+        //		showStatus(problem)
+        //
+        //	DTC temperature trends, read from the archiver database (charts of DCSChart.js):
+        //		makeRangeButtons()
+        //		addTrendSeries(chart, rack, node, color, group)
+        //		makeRackChart(rackEl, rack)
+        //		makeSideChart(parentEl, side, title)
+        //		highlightRack(rack)
+        //		trendChartDrawn(chart, readout)
+        //		setTrendRange(seconds)
+        //		zoomTrends(fromTime, toTime)
+        //		fetchTrends()
+        //		trendSeriesHandler(pv, reply, errStr)
+        //		trendDoneHandler()
+        //		drawTrendCharts()
+        //
         //====================== start high-level behavior description
         //
-        //	High-level description of page interactions:
-        //
-        //	- page init() is called by DesktopContent.js:
-        //		* make Page_ to collect all objects to show PVs
-        //		* makeMainPage()
-        //			* setupPvParams(settings)
-        //			* Pass alarm thresholds, etc associated with pvList to widget content
-        //		* generateUID()
-        //			* pollServer()
-        //
-        //
-        //	- drawNewValue()
-        //		* Update widget drawing based on new value (and append to history if needed)
+        //	- init() is called by DesktopContent.js:
+        //		* makeRacks() builds the racks and one widget for each pv
+        //		* getPvSettings() gets units and limits of the pvs, for the tooltips
+        //		* generateUID() registers the pv list at the server, then pollServer() is
+        //			called periodically: only the pvs that changed are returned and updateWidget()
+        //			shows value and severity
+        //		* the DTC temperatures are shown in a small chart below each rack (one color for each node)
+        //			and in one chart for each side of the room (one color for each rack):
+        //			fetchTrends() periodically reads their history from the archiver
         //
         //====================== end high-level behavior description
-
-
-        var refreshRate_ = 15000; //set default to refresh every 15 seconds (ms)
-        var timerVariable_;
-
-        var UID_ = 0;
-        var timeToPoll_ = false;
-
-        page_.createPage = function () {
-
-            this.name = "MyPage";
-            this.widgets = {};
-            this.addPV = function (pv) {
-                console.log("Reached " + pv);
-            }
-        }
-
-        var pvLedE_ = [
-            { "Mu2e:RackProt:1E:state": 1 }
-            , { "Mu2e:RackProt:2E:state": 2 }
-            , { "Mu2e:RackProt:3E:state": 3 }
-            , { "Mu2e:RackProt:4E:state": 4 }
-            , { "Mu2e:RackProt:5E:state": 5 }
-            , { "Mu2e:RackProt:6E:state": 6 }
-            , { "Mu2e:RackProt:7E:state": 7 }
-
-            // , {"Mu2e:RackTemp:1E:0:T_hyst": 1}
-            // , {"Mu2e:RackTemp:1E:1:T_hyst": 1}
-            // , {"Mu2e:RackTemp:1E:2:T_hyst": 1}
-            // , {"Mu2e:RackTemp:2E:0:T_hyst": 2}
-            // , {"Mu2e:RackTemp:2E:1:T_hyst": 2}
-            // , {"Mu2e:RackTemp:2E:2:T_hyst": 2}
-            // , {"Mu2e:RackTemp:3E:0:T_hyst": 3}
-            // , {"Mu2e:RackTemp:3E:1:T_hyst": 3}
-            // , {"Mu2e:RackTemp:3E:2:T_hyst": 3}
-            // , {"Mu2e:RackTemp:4E:0:T_hyst": 4}
-            // , {"Mu2e:RackTemp:4E:1:T_hyst": 4}
-            // , {"Mu2e:RackTemp:4E:2:T_hyst": 4}
-            // , {"Mu2e:RackTemp:5E:0:T_hyst": 5}
-            // , {"Mu2e:RackTemp:5E:1:T_hyst": 5}
-            // , {"Mu2e:RackTemp:5E:2:T_hyst": 5}
-            // , {"Mu2e:RackTemp:6E:0:T_trip": 6}
-            // , {"Mu2e:RackTemp:6E:1:T_hyst": 6}
-            // , {"Mu2e:RackTemp:6E:2:T_hyst": 6}
-            // , {"Mu2e:RackTemp:7E:0:T_hyst": 7}
-            // , {"Mu2e:RackTemp:7E:1:T_hyst": 7}
-            // , {"Mu2e:RackTemp:7E:2:T_hyst": 7}
-
-            // , {"Mu2e:RackTemp:1E:0:T_trip": 1}
-            // , {"Mu2e:RackTemp:1E:1:T_trip": 1}
-            // , {"Mu2e:RackTemp:1E:2:T_trip": 1}
-            // , {"Mu2e:RackTemp:2E:0:T_trip": 2}
-            // , {"Mu2e:RackTemp:2E:1:T_trip": 2}
-            // , {"Mu2e:RackTemp:2E:2:T_trip": 2}
-            // , {"Mu2e:RackTemp:3E:0:T_trip": 3}
-            // , {"Mu2e:RackTemp:3E:1:T_trip": 3}
-            // , {"Mu2e:RackTemp:3E:2:T_trip": 3}
-            // , {"Mu2e:RackTemp:4E:0:T_trip": 4}
-            // , {"Mu2e:RackTemp:4E:1:T_trip": 4}
-            // , {"Mu2e:RackTemp:4E:2:T_trip": 4}
-            // , {"Mu2e:RackTemp:5E:0:T_trip": 5}
-            // , {"Mu2e:RackTemp:5E:1:T_trip": 5}
-            // , {"Mu2e:RackTemp:5E:2:T_trip": 5}
-            // , {"Mu2e:RackTemp:6E:0:T_trip": 6}
-            // , {"Mu2e:RackTemp:6E:1:T_trip": 6}
-            // , {"Mu2e:RackTemp:6E:2:T_trip": 6}
-            // , {"Mu2e:RackTemp:7E:0:T_trip": 7}
-            // , {"Mu2e:RackTemp:7E:1:T_trip": 7}
-            // , {"Mu2e:RackTemp:7E:2:T_trip": 7}
-
-            // , {"Mu2e:RackTemp:1E:0:configbyte": 1}
-            // , {"Mu2e:RackTemp:1E:1:configbyte": 1}
-            // , {"Mu2e:RackTemp:1E:2:configbyte": 1}
-            // , {"Mu2e:RackTemp:3E:0:configbyte": 2}
-            // , {"Mu2e:RackTemp:2E:0:configbyte": 2}
-            // , {"Mu2e:RackTemp:2E:1:configbyte": 2}
-            // , {"Mu2e:RackTemp:2E:2:configbyte": 2}
-            // , {"Mu2e:RackTemp:3E:0:configbyte": 3}
-            // , {"Mu2e:RackTemp:3E:1:configbyte": 3}
-            // , {"Mu2e:RackTemp:3E:2:configbyte": 3}
-            // , {"Mu2e:RackTemp:4E:0:configbyte": 4}
-            // , {"Mu2e:RackTemp:4E:1:configbyte": 4}
-            // , {"Mu2e:RackTemp:4E:2:configbyte": 4}
-            // , {"Mu2e:RackTemp:5E:0:configbyte": 5}
-            // , {"Mu2e:RackTemp:5E:1:configbyte": 5}
-            // , {"Mu2e:RackTemp:5E:2:configbyte": 5}
-            // , {"Mu2e:RackTemp:6E:0:configbyte": 6}
-            // , {"Mu2e:RackTemp:6E:1:configbyte": 6}
-            // , {"Mu2e:RackTemp:6E:2:configbyte": 6}
-            // , {"Mu2e:RackTemp:7E:0:configbyte": 7}
-            // , {"Mu2e:RackTemp:7E:1:configbyte": 7}
-            // , {"Mu2e:RackTemp:7E:2:configbyte": 7}
-        ];
-
-        var pvLedW_ = [
-            { "Mu2e:RackProt:1W:state": 1 }
-            , { "Mu2e:RackProt:2W:state": 2 }
-            , { "Mu2e:RackProt:3W:state": 3 }
-            , { "Mu2e:RackProt:4W:state": 4 }
-            , { "Mu2e:RackProt:5W:state": 5 }
-            , { "Mu2e:RackProt:6W:state": 6 }
-            , { "Mu2e:RackProt:7W:state": 7 }
-
-            //  , {"Mu2e:RackTemp:1W:0:T_hyst": 1}
-            //  , {"Mu2e:RackTemp:1W:1:T_hyst": 1}
-            //  , {"Mu2e:RackTemp:1W:2:T_hyst": 1}
-            //  , {"Mu2e:RackTemp:2W:0:T_hyst": 2}
-            //  , {"Mu2e:RackTemp:2W:1:T_hyst": 2}
-            //  , {"Mu2e:RackTemp:2W:2:T_hyst": 2}
-            //  , {"Mu2e:RackTemp:3W:0:T_hyst": 3}
-            //  , {"Mu2e:RackTemp:3W:2:T_hyst": 3}
-            //  , {"Mu2e:RackTemp:3W:1:T_hyst": 3}
-            //  , {"Mu2e:RackTemp:4W:0:T_hyst": 4}
-            //  , {"Mu2e:RackTemp:4W:1:T_hyst": 4}
-            //  , {"Mu2e:RackTemp:4W:2:T_hyst": 4}
-            //  , {"Mu2e:RackTemp:5W:0:T_hyst": 5}
-            //  , {"Mu2e:RackTemp:5W:1:T_hyst": 5}
-            //  , {"Mu2e:RackTemp:5W:2:T_hyst": 5}
-            //  , {"Mu2e:RackTemp:6W:0:T_hyst": 6}
-            //  , {"Mu2e:RackTemp:6W:1:T_hyst": 6}
-            //  , {"Mu2e:RackTemp:6W:2:T_hyst": 6}
-            //  , {"Mu2e:RackTemp:7W:0:T_hyst": 7}
-            //  , {"Mu2e:RackTemp:7W:1:T_hyst": 7}
-            //  , {"Mu2e:RackTemp:7W:2:T_hyst": 7}
-
-            //  , {"Mu2e:RackTemp:1W:0:T_trip": 1}
-            //  , {"Mu2e:RackTemp:1W:1:T_trip": 1}
-            //  , {"Mu2e:RackTemp:1W:2:T_trip": 1}
-            //  , {"Mu2e:RackTemp:2W:0:T_trip": 2}
-            //  , {"Mu2e:RackTemp:2W:1:T_trip": 2}
-            //  , {"Mu2e:RackTemp:2W:2:T_trip": 2}
-            //  , {"Mu2e:RackTemp:3W:0:T_trip": 3}
-            //  , {"Mu2e:RackTemp:3W:1:T_trip": 3}
-            //  , {"Mu2e:RackTemp:3W:2:T_trip": 3}
-            //  , {"Mu2e:RackTemp:4W:0:T_trip": 4}
-            //  , {"Mu2e:RackTemp:4W:1:T_trip": 4}
-            //  , {"Mu2e:RackTemp:4W:2:T_trip": 4}
-            //  , {"Mu2e:RackTemp:5W:0:T_trip": 5}
-            //  , {"Mu2e:RackTemp:5W:1:T_trip": 5}
-            //  , {"Mu2e:RackTemp:5W:2:T_trip": 5}
-            //  , {"Mu2e:RackTemp:6W:0:T_trip": 6}
-            //  , {"Mu2e:RackTemp:6W:1:T_trip": 6}
-            //  , {"Mu2e:RackTemp:6W:2:T_trip": 6}
-            //  , {"Mu2e:RackTemp:7W:0:T_trip": 7}
-            //  , {"Mu2e:RackTemp:7W:1:T_trip": 7}
-            //  , {"Mu2e:RackTemp:7W:2:T_trip": 7}
-
-            //  , {"Mu2e:RackTemp:1W:0:configbyte": 1}
-            //  , {"Mu2e:RackTemp:1W:1:configbyte": 1}
-            //  , {"Mu2e:RackTemp:1W:2:configbyte": 1}
-            //  , {"Mu2e:RackTemp:2W:0:configbyte": 2}
-            //  , {"Mu2e:RackTemp:2W:1:configbyte": 2}
-            //  , {"Mu2e:RackTemp:2W:2:configbyte": 2}
-            //  , {"Mu2e:RackTemp:3W:0:configbyte": 3}
-            //  , {"Mu2e:RackTemp:3W:1:configbyte": 3}
-            //  , {"Mu2e:RackTemp:3W:2:configbyte": 3}
-            //  , {"Mu2e:RackTemp:4W:0:configbyte": 4}
-            //  , {"Mu2e:RackTemp:4W:1:configbyte": 4}
-            //  , {"Mu2e:RackTemp:4W:2:configbyte": 4}
-            //  , {"Mu2e:RackTemp:5W:0:configbyte": 5}
-            //  , {"Mu2e:RackTemp:5W:1:configbyte": 5}
-            //  , {"Mu2e:RackTemp:5W:2:configbyte": 5}
-            //  , {"Mu2e:RackTemp:6W:0:configbyte": 6}
-            //  , {"Mu2e:RackTemp:6W:1:configbyte": 6}
-            //  , {"Mu2e:RackTemp:6W:2:configbyte": 6}
-            //  , {"Mu2e:RackTemp:7W:0:configbyte": 7}
-            //  , {"Mu2e:RackTemp:7W:1:configbyte": 7}
-            //  , {"Mu2e:RackTemp:7W:2:configbyte": 7}
-        ];
-
-        var pvTemperE_ = [
-            { "Mu2e:RackTemp:1E:0:temperature": 1 }
-            , { "Mu2e:RackTemp:1E:1:temperature": 1 }
-            , { "Mu2e:RackTemp:1E:2:temperature": 1 }
-            , { "Mu2e:RackTemp:2E:0:temperature": 2 }
-            , { "Mu2e:RackTemp:2E:1:temperature": 2 }
-            , { "Mu2e:RackTemp:2E:2:temperature": 2 }
-            , { "Mu2e:RackTemp:3E:0:temperature": 3 }
-            , { "Mu2e:RackTemp:3E:1:temperature": 3 }
-            , { "Mu2e:RackTemp:3E:2:temperature": 3 }
-            , { "Mu2e:RackTemp:4E:0:temperature": 4 }
-            , { "Mu2e:RackTemp:4E:1:temperature": 4 }
-            , { "Mu2e:RackTemp:4E:2:temperature": 4 }
-            , { "Mu2e:RackTemp:5E:0:temperature": 5 }
-            , { "Mu2e:RackTemp:5E:1:temperature": 5 }
-            , { "Mu2e:RackTemp:5E:2:temperature": 5 }
-            , { "Mu2e:RackTemp:6E:0:temperature": 6 }
-            , { "Mu2e:RackTemp:6E:1:temperature": 6 }
-            , { "Mu2e:RackTemp:6E:2:temperature": 6 }
-            , { "Mu2e:RackTemp:7E:0:temperature": 7 }
-            , { "Mu2e:RackTemp:7E:1:temperature": 7 }
-            , { "Mu2e:RackTemp:7E:2:temperature": 7 }
-        ];
-
-        var pvTemperW_ = [
-            { "Mu2e:RackTemp:1W:0:temperature": 1 }
-            , { "Mu2e:RackTemp:1W:1:temperature": 1 }
-            , { "Mu2e:RackTemp:1W:2:temperature": 1 }
-            , { "Mu2e:RackTemp:2W:0:temperature": 2 }
-            , { "Mu2e:RackTemp:2W:1:temperature": 2 }
-            , { "Mu2e:RackTemp:2W:2:temperature": 2 }
-            , { "Mu2e:RackTemp:3W:0:temperature": 3 }
-            , { "Mu2e:RackTemp:3W:1:temperature": 3 }
-            , { "Mu2e:RackTemp:3W:2:temperature": 3 }
-            , { "Mu2e:RackTemp:4W:0:temperature": 4 }
-            , { "Mu2e:RackTemp:4W:1:temperature": 4 }
-            , { "Mu2e:RackTemp:4W:2:temperature": 4 }
-            , { "Mu2e:RackTemp:5W:0:temperature": 5 }
-            , { "Mu2e:RackTemp:5W:1:temperature": 5 }
-            , { "Mu2e:RackTemp:5W:2:temperature": 5 }
-            , { "Mu2e:RackTemp:6W:0:temperature": 6 }
-            , { "Mu2e:RackTemp:6W:1:temperature": 6 }
-            , { "Mu2e:RackTemp:6W:2:temperature": 6 }
-            , { "Mu2e:RackTemp:7W:0:temperature": 7 }
-            , { "Mu2e:RackTemp:7W:1:temperature": 7 }
-            , { "Mu2e:RackTemp:7W:2:temperature": 7 }
-        ];
-
-        var pvTemperEW1_ = [
-            { "Mu2e:RackTemp:1E:0:temperature": 1 }
-            , { "Mu2e:RackTemp:1E:1:temperature": 1 }
-            , { "Mu2e:RackTemp:1E:2:temperature": 1 }
-            , { "Mu2e:RackTemp:2E:0:temperature": 2 }
-            , { "Mu2e:RackTemp:2E:1:temperature": 2 }
-            , { "Mu2e:RackTemp:2E:2:temperature": 2 }
-            , { "Mu2e:RackTemp:3E:0:temperature": 3 }
-            , { "Mu2e:RackTemp:3E:1:temperature": 3 }
-            , { "Mu2e:RackTemp:3E:2:temperature": 3 }
-            , { "Mu2e:RackTemp:4E:0:temperature": 4 }
-            , { "Mu2e:RackTemp:4E:1:temperature": 4 }
-            , { "Mu2e:RackTemp:4E:2:temperature": 4 }
-            , { "Mu2e:RackTemp:5E:0:temperature": 5 }
-            , { "Mu2e:RackTemp:5E:1:temperature": 5 }
-            , { "Mu2e:RackTemp:5E:2:temperature": 5 }
-            , { "Mu2e:RackTemp:6E:0:temperature": 6 }
-            , { "Mu2e:RackTemp:6E:1:temperature": 6 }
-            , { "Mu2e:RackTemp:6E:2:temperature": 6 }
-            , { "Mu2e:RackTemp:7E:0:temperature": 7 }
-            , { "Mu2e:RackTemp:7E:1:temperature": 7 }
-            , { "Mu2e:RackTemp:7E:2:temperature": 7 }
-            , { "Mu2e:Weather:1:temperature": 0 }
-            , { "Mu2e:Weather:2:temperature": 0 }
-        ];
-
-        var pvTemperEW2_ = [
-            { "Mu2e:RackTemp:1W:0:temperature": 1 }
-            , { "Mu2e:RackTemp:1W:1:temperature": 1 }
-            , { "Mu2e:RackTemp:1W:2:temperature": 1 }
-            , { "Mu2e:RackTemp:2W:0:temperature": 2 }
-            , { "Mu2e:RackTemp:2W:1:temperature": 2 }
-            , { "Mu2e:RackTemp:2W:2:temperature": 2 }
-            , { "Mu2e:RackTemp:3W:0:temperature": 3 }
-            , { "Mu2e:RackTemp:3W:1:temperature": 3 }
-            , { "Mu2e:RackTemp:3W:2:temperature": 3 }
-            , { "Mu2e:RackTemp:4W:0:temperature": 4 }
-            , { "Mu2e:RackTemp:4W:1:temperature": 4 }
-            , { "Mu2e:RackTemp:4W:2:temperature": 4 }
-            , { "Mu2e:RackTemp:5W:0:temperature": 5 }
-            , { "Mu2e:RackTemp:5W:1:temperature": 5 }
-            , { "Mu2e:RackTemp:5W:2:temperature": 5 }
-            , { "Mu2e:RackTemp:6W:0:temperature": 6 }
-            , { "Mu2e:RackTemp:6W:1:temperature": 6 }
-            , { "Mu2e:RackTemp:6W:2:temperature": 6 }
-            , { "Mu2e:RackTemp:7W:0:temperature": 7 }
-            , { "Mu2e:RackTemp:7W:1:temperature": 7 }
-            , { "Mu2e:RackTemp:7W:2:temperature": 7 }
-            , { "Mu2e:Weather:1:temperature": 0 }
-            , { "Mu2e:Weather:2:temperature": 0 }
-        ];
-
-        var pvNodeLedE_ = [
-            //1E
-            { "Mu2e:PDU:1E_L:P1": [1, 1, 1] }
-            , { "Mu2e:PDU:1E_L:P2": [1, 1, 2] }
-            , { "Mu2e:PDU:1E_L:P3": [1, 1, 3] }
-            , { "Mu2e:PDU:1E_R:P1": [1, 1, 4] }
-            , { "Mu2e:PDU:1E_R:P2": [1, 1, 5] }
-            , { "Mu2e:PDU:1E_R:P3": [1, 1, 6] }
-            //2E
-            // , {"Mu2e:PDU:2E_L:P1": [2, 4, 1]}
-            // , {"Mu2e:PDU:2E_L:P2": [2, 4, 2]}
-            // , {"Mu2e:PDU:2E_L:P3": [2, 4, 3]}
-            , { "Mu2e:PDU:2E_R:P1": [2, 1, 4] }
-            , { "Mu2e:PDU:2E_R:P2": [2, 1, 5] }
-            , { "Mu2e:PDU:2E_R:P3": [2, 1, 6] }
-            //3E
-            , { "Mu2e:PDU:3E_L:P1": [3, 1, 1] }
-            , { "Mu2e:PDU:3E_L:P2": [3, 1, 2] }
-            , { "Mu2e:PDU:3E_L:P3": [3, 1, 3] }
-            , { "Mu2e:PDU:3E_R:P1": [3, 1, 4] }
-            , { "Mu2e:PDU:3E_R:P2": [3, 1, 5] }
-            , { "Mu2e:PDU:3E_R:P3": [3, 1, 6] }
-            //4E
-            // , {"Mu2e:PDU:4E_L:P1": [4, 4, 1]}
-            // , {"Mu2e:PDU:4E_L:P2": [4, 4, 2]}
-            // , {"Mu2e:PDU:4E_L:P3": [4, 4, 3]}
-            , { "Mu2e:PDU:4E_R:P1": [4, 1, 4] }
-            , { "Mu2e:PDU:4E_R:P2": [4, 1, 5] }
-            , { "Mu2e:PDU:4E_R:P3": [4, 1, 6] }
-            //5E
-            , { "Mu2e:PDU:5E_L:P1": [5, 1, 1] }
-            , { "Mu2e:PDU:5E_L:P2": [5, 1, 2] }
-            , { "Mu2e:PDU:5E_L:P3": [5, 1, 3] }
-            , { "Mu2e:PDU:5E_R:P1": [5, 1, 4] }
-            , { "Mu2e:PDU:5E_R:P2": [5, 1, 5] }
-            , { "Mu2e:PDU:5E_R:P3": [5, 1, 6] }
-            //6E
-            // , {"Mu2e:PDU:6E_L:P1": [6, 4, 1]}
-            // , {"Mu2e:PDU:6E_L:P2": [6, 4, 2]}
-            // , {"Mu2e:PDU:6E_L:P3": [6, 4, 3]}
-            , { "Mu2e:PDU:6E_R:P1": [6, 1, 4] }
-            , { "Mu2e:PDU:6E_R:P2": [6, 1, 5] }
-            , { "Mu2e:PDU:6E_R:P3": [6, 1, 6] }
-            //7E
-            // , {"Mu2e:PDU:7E_L:P1": [7, 4, 1]}
-            // , {"Mu2e:PDU:7E_L:P2": [7, 4, 2]}
-            // , {"Mu2e:PDU:7E_L:P3": [7, 4, 3]}
-            , { "Mu2e:PDU:7E_R:P1": [7, 1, 4] }
-            , { "Mu2e:PDU:7E_R:P2": [7, 1, 5] }
-            , { "Mu2e:PDU:7E_R:P3": [7, 1, 6] }
-        ];
-
-        var pvNodeTemperE_ = [
-            //2E
-            { "Mu2e:CompStatus:trk-15:DTC0:dtctemp": [2, 11, 1] }
-            , { "Mu2e:CompStatus:trk-15:DTC1:dtctemp": [2, 11, 2] }
-            , { "Mu2e:CompStatus:trk-16:DTC0:dtctemp": [2, 10, 1] }
-            , { "Mu2e:CompStatus:trk-16:DTC1:dtctemp": [2, 10, 2] }
-            , { "Mu2e:CompStatus:trk-17:DTC0:dtctemp": [2, 9, 1] }
-            , { "Mu2e:CompStatus:trk-17:DTC1:dtctemp": [2, 9, 2] }
-            , { "Mu2e:CompStatus:trk-18:DTC0:dtctemp": [2, 8, 1] }
-            , { "Mu2e:CompStatus:trk-18:DTC1:dtctemp": [2, 8, 2] }
-            , { "Mu2e:CompStatus:cfo-01:DTC0:dtctemp": [2, 7, 1] }
-            , { "Mu2e:CompStatus:cfo-01:DTC1:dtctemp": [2, 7, 2] }
-            //3E
-            , { "Mu2e:CompStatus:trk-11:DTC0:dtctemp": [3, 11, 1] }
-            , { "Mu2e:CompStatus:trk-11:DTC1:dtctemp": [3, 11, 2] }
-            , { "Mu2e:CompStatus:trk-12:DTC0:dtctemp": [3, 10, 1] }
-            , { "Mu2e:CompStatus:trk-12:DTC1:dtctemp": [3, 10, 2] }
-            , { "Mu2e:CompStatus:trk-13:DTC0:dtctemp": [3, 9, 1] }
-            , { "Mu2e:CompStatus:trk-13:DTC1:dtctemp": [3, 9, 2] }
-            , { "Mu2e:CompStatus:trk-14:DTC0:dtctemp": [3, 8, 1] }
-            , { "Mu2e:CompStatus:trk-14:DTC1:dtctemp": [3, 8, 2] }
-            //, {"Mu2e:CompStatus:dl-01:DTC0:dtctemp": [3, 7, 1]}
-            //, {"Mu2e:CompStatus:dl-01:DTC1:dtctemp": [3, 7, 2]}
-            //, {"Mu2e:CompStatus:dl-02:DTC0:dtctemp": [3, 6, 1]}
-            //, {"Mu2e:CompStatus:dl-02:DTC1:dtctemp": [3, 6, 2]}
-            //, {"Mu2e:CompStatus:dcs-01:DTC0:dtctemp": [3, 5, 1]}
-            //, {"Mu2e:CompStatus:dcs-01:DTC1:dtctemp": [3, 5, 2]}
-            //, {"Mu2e:CompStatus:dcs-02:DTC0:dtctemp": [3, 4, 1]}
-            //, {"Mu2e:CompStatus:dcs-02:DTC1:dtctemp": [3, 4, 2]}
-        ];
-
-        var pvNodeLedW_ = [
-            //1W
-            { "Mu2e:PDU:1W_L:P1": [1, 1, 1] }
-            , { "Mu2e:PDU:1W_L:P2": [1, 1, 2] }
-            , { "Mu2e:PDU:1W_L:P3": [1, 1, 3] }
-            , { "Mu2e:PDU:1W_R:P1": [1, 1, 4] }
-            , { "Mu2e:PDU:1W_R:P2": [1, 1, 5] }
-            , { "Mu2e:PDU:1W_R:P3": [1, 1, 6] }
-            //2W
-            , { "Mu2e:PDU:2W_L:P1": [2, 1, 1] }
-            , { "Mu2e:PDU:2W_L:P2": [2, 1, 2] }
-            , { "Mu2e:PDU:2W_L:P3": [2, 1, 3] }
-            , { "Mu2e:PDU:2W_R:P1": [2, 1, 4] }
-            , { "Mu2e:PDU:2W_R:P2": [2, 1, 5] }
-            , { "Mu2e:PDU:2W_R:P3": [2, 1, 6] }
-            //3W
-            , { "Mu2e:PDU:3W_L:P1": [3, 1, 1] }
-            , { "Mu2e:PDU:3W_L:P2": [3, 1, 2] }
-            , { "Mu2e:PDU:3W_L:P3": [3, 1, 3] }
-            , { "Mu2e:PDU:3W_R:P1": [3, 1, 4] }
-            , { "Mu2e:PDU:3W_R:P2": [3, 1, 5] }
-            , { "Mu2e:PDU:3W_R:P3": [3, 1, 6] }
-            //4W
-            , { "Mu2e:PDU:4W_L:P1": [4, 1, 1] }
-            , { "Mu2e:PDU:4W_L:P2": [4, 1, 2] }
-            , { "Mu2e:PDU:4W_L:P3": [4, 1, 3] }
-            , { "Mu2e:PDU:4W_R:P1": [4, 1, 4] }
-            , { "Mu2e:PDU:4W_R:P2": [4, 1, 5] }
-            , { "Mu2e:PDU:4W_R:P3": [4, 1, 6] }
-            //5W
-            , { "Mu2e:PDU:5W_L:P1": [5, 1, 1] }
-            , { "Mu2e:PDU:5W_L:P2": [5, 1, 2] }
-            , { "Mu2e:PDU:5W_L:P3": [5, 1, 3] }
-            , { "Mu2e:PDU:5W_R:P1": [5, 1, 4] }
-            , { "Mu2e:PDU:5W_R:P2": [5, 1, 5] }
-            , { "Mu2e:PDU:5W_R:P3": [5, 1, 6] }
-            //6W
-            // , {"Mu2e:PDU:6W_L:P1": [6, 4, 1]}
-            // , {"Mu2e:PDU:6W_L:P2": [6, 4, 2]}
-            // , {"Mu2e:PDU:6W_L:P3": [6, 4, 3]}
-            , { "Mu2e:PDU:6W_R:P1": [6, 1, 4] }
-            , { "Mu2e:PDU:6W_R:P2": [6, 1, 5] }
-            , { "Mu2e:PDU:6W_R:P3": [6, 1, 6] }
-            //7W
-            // , {"Mu2e:PDU:7W_L:P1": [7, 4, 1]}
-            // , {"Mu2e:PDU:7W_L:P2": [7, 4, 2]}
-            // , {"Mu2e:PDU:7W_L:P3": [7, 4, 3]}
-            , { "Mu2e:PDU:7W_R:P1": [7, 1, 4] }
-            , { "Mu2e:PDU:7W_R:P2": [7, 1, 5] }
-            , { "Mu2e:PDU:7W_R:P3": [7, 1, 6] }
-        ];
-
-        var pvNodeTemperW_ = [
-            //1W
-            { "Mu2e:CompStatus:calo-01:DTC0:dtctemp": [1, 11, 1] }
-            , { "Mu2e:CompStatus:calo-01:DTC1:dtctemp": [1, 11, 2] }
-            , { "Mu2e:CompStatus:calo-02:DTC0:dtctemp": [1, 10, 1] }
-            , { "Mu2e:CompStatus:calo-02:DTC1:dtctemp": [1, 10, 2] }
-            , { "Mu2e:CompStatus:calo-03:DTC0:dtctemp": [1, 9, 1] }
-            , { "Mu2e:CompStatus:calo-03:DTC1:dtctemp": [1, 9, 2] }
-            , { "Mu2e:CompStatus:calo-04:DTC0:dtctemp": [1, 8, 1] }
-            , { "Mu2e:CompStatus:calo-04:DTC1:dtctemp": [1, 8, 2] }
-            , { "Mu2e:CompStatus:calo-05:DTC0:dtctemp": [1, 7, 1] }
-            , { "Mu2e:CompStatus:calo-05:DTC1:dtctemp": [1, 7, 2] }
-            , { "Mu2e:CompStatus:calo-06:DTC0:dtctemp": [1, 6, 1] }
-            , { "Mu2e:CompStatus:calo-06:DTC1:dtctemp": [1, 6, 2] }
-            , { "Mu2e:CompStatus:calo-07:DTC0:dtctemp": [1, 5, 1] }
-            , { "Mu2e:CompStatus:calo-07:DTC1:dtctemp": [1, 5, 2] }
-            , { "Mu2e:CompStatus:calo-08:DTC0:dtctemp": [1, 4, 1] }
-            , { "Mu2e:CompStatus:calo-08:DTC1:dtctemp": [1, 4, 2] }
-            , { "Mu2e:CompStatus:extmon-01:DTC0:dtctemp": [1, 3, 1] }
-            , { "Mu2e:CompStatus:extmon-01:DTC1:dtctemp": [1, 3, 2] }
-            //2W
-            , { "Mu2e:CompStatus:calo-09:DTC0:dtctemp": [2, 11, 1] }
-            , { "Mu2e:CompStatus:calo-09:DTC1:dtctemp": [2, 11, 2] }
-            , { "Mu2e:CompStatus:calo-10:DTC0:dtctemp": [2, 10, 1] }
-            , { "Mu2e:CompStatus:calo-10:DTC1:dtctemp": [2, 10, 2] }
-            , { "Mu2e:CompStatus:calo-11:DTC0:dtctemp": [2, 9, 1] }
-            , { "Mu2e:CompStatus:calo-11:DTC1:dtctemp": [2, 9, 2] }
-            , { "Mu2e:CompStatus:calo-12:DTC0:dtctemp": [2, 8, 1] }
-            , { "Mu2e:CompStatus:calo-12:DTC1:dtctemp": [2, 8, 2] }
-            , { "Mu2e:CompStatus:stm-01:DTC0:dtctemp": [2, 7, 1] }
-            , { "Mu2e:CompStatus:stm-01:DTC1:dtctemp": [2, 7, 2] }
-            //3W
-            , { "Mu2e:CompStatus:calo-13:DTC0:dtctemp": [3, 11, 1] }
-            , { "Mu2e:CompStatus:calo-13:DTC1:dtctemp": [3, 11, 2] }
-            , { "Mu2e:CompStatus:calo-14:DTC0:dtctemp": [3, 10, 1] }
-            , { "Mu2e:CompStatus:calo-14:DTC1:dtctemp": [3, 10, 2] }
-            , { "Mu2e:CompStatus:trk-09:DTC0:dtctemp": [3, 9, 1] }
-            , { "Mu2e:CompStatus:trk-09:DTC1:dtctemp": [3, 9, 2] }
-            , { "Mu2e:CompStatus:trk-10:DTC0:dtctemp": [3, 8, 1] }
-            , { "Mu2e:CompStatus:trk-10:DTC1:dtctemp": [3, 8, 2] }
-            , { "Mu2e:CompStatus:crv-03:DTC0:dtctemp": [3, 7, 1] }
-            , { "Mu2e:CompStatus:crv-03:DTC1:dtctemp": [3, 7, 2] }
-            //4W
-            , { "Mu2e:CompStatus:trk-05:DTC0:dtctemp": [4, 11, 1] }
-            , { "Mu2e:CompStatus:trk-05:DTC1:dtctemp": [4, 11, 2] }
-            , { "Mu2e:CompStatus:trk-06:DTC0:dtctemp": [4, 10, 1] }
-            , { "Mu2e:CompStatus:trk-06:DTC1:dtctemp": [4, 10, 2] }
-            , { "Mu2e:CompStatus:trk-07:DTC0:dtctemp": [4, 9, 1] }
-            , { "Mu2e:CompStatus:trk-07:DTC1:dtctemp": [4, 9, 2] }
-            , { "Mu2e:CompStatus:trk-08:DTC0:dtctemp": [4, 8, 1] }
-            , { "Mu2e:CompStatus:trk-08:DTC1:dtctemp": [4, 8, 2] }
-            , { "Mu2e:CompStatus:crv-02:DTC0:dtctemp": [4, 7, 1] }
-            , { "Mu2e:CompStatus:crv-02:DTC1:dtctemp": [4, 7, 2] }
-            //5W
-            , { "Mu2e:CompStatus:trk-01:DTC0:dtctemp": [5, 11, 1] }
-            , { "Mu2e:CompStatus:trk-01:DTC1:dtctemp": [5, 11, 2] }
-            , { "Mu2e:CompStatus:trk-02:DTC0:dtctemp": [5, 10, 1] }
-            , { "Mu2e:CompStatus:trk-02:DTC1:dtctemp": [5, 10, 2] }
-            , { "Mu2e:CompStatus:trk-03:DTC0:dtctemp": [5, 9, 1] }
-            , { "Mu2e:CompStatus:trk-03:DTC1:dtctemp": [5, 9, 2] }
-            , { "Mu2e:CompStatus:trk-04:DTC0:dtctemp": [5, 8, 1] }
-            , { "Mu2e:CompStatus:trk-04:DTC1:dtctemp": [5, 8, 2] }
-            , { "Mu2e:CompStatus:crv-01:DTC0:dtctemp": [5, 7, 1] }
-            , { "Mu2e:CompStatus:crv-01:DTC1:dtctemp": [5, 7, 2] }
-        ];
-
+        //
         /////////////////////////////////////////////////////////////////////////////////////////
         /////////////////////////////////////////////////////////////////////////////////////////
+
+        var POLL_PERIOD_MS = 15000;
+        var STALE_SECONDS = 86400; 			//a pv not updated for longer is shown as stale
+
+        //the room: two rows of racks, each rack has a protection state, temperature sensors,
+        //	two PDUs with three phases and the shelves with the nodes
+        var SIDES = [["E", "East racks"], ["W", "West racks"]];
+        var RACK_COUNT = 7;
+        var SHELF_COUNT = 11; 				//the first shelf is the one of the PDUs
+        var RACK_TEMPERATURE_COUNT = 3;
+        var PDU_PHASE_COUNT = 3;
+        var DTC_SLOT_COUNT = 2; 			//DTC temperature slots in each shelf
+        var DTC_COUNT_BY_KIND = { "trk": 2, "calo": 2, "crv": 1, "cfo": 1, "stm": 1, "extmon": 1 }; //node name prefix => DTCs, others have none
+        var RACKS_WITHOUT_LEFT_PDU = ["2E", "4E", "6E", "7E", "6W", "7W"];
+
+        //the nodes of each rack, from the bottom shelf up
+        //	(positions and DTC counts from docdb-37376 RelayRackInfo_TDAQ)
+        var RACK_NODES = {
+            "2E": ["trk-15", "trk-16", "trk-17", "trk-18", "cfo-01"],
+            "3E": ["trk-11", "trk-12", "trk-13", "trk-14", "dl-01", "dl-02", "dcs-03", "dcs-01", "dcs-02", "mgr-01"],
+            "1W": ["calo-01", "calo-02", "calo-03", "calo-04", "calo-05", "calo-06", "calo-07", "calo-08", "extmon-01"],
+            "2W": ["calo-09", "calo-10", "calo-11", "calo-12", "stm-02", "stm-01"],
+            "3W": ["calo-13", "calo-14", "trk-09", "trk-10", "crv-03"],
+            "4W": ["trk-05", "trk-06", "trk-07", "trk-08", "crv-02"],
+            "5W": ["trk-01", "trk-02", "trk-03", "trk-04", "crv-01"],
+        };
+
+        var SEVERITY_CLASS = { "NO_ALARM": "ok", "MINOR": "minor", "MAJOR": "major", "INVALID": "invalid" };
+
+        var _widgets = {}; 		//pv name => { el, kind, value, time, status, severity }
+        var _pvSettings = {}; 	//pv name => { Units, Upper_Alarm_Limit, ... }
+        var _rackEls = {}; 		//rack => element
+        var _uid = "";
+        var _pollTimer = 0;
+        var _lastPollTime = 0;
+
+        //trend charts
+        var RANGE_PRESETS = [["1 h", 3600], ["6 h", 21600], ["24 h", 86400], ["7 d", 604800], ["30 d", 2592000]];
+        var TREND_DEFAULT_SECONDS = 86400;
+        var TREND_VALID_RANGE = [-50, 200]; //degrees, a temperature out of this range is a bad reading and is not plotted
+        var TREND_REFRESH_MS = 60000; 		//at least, a long time range is refreshed less often
+
+        var _trendCharts = []; 	//the charts of the racks and of the sides, each also has noteEl and idleNote
+        var _sideCharts = [];
+        var _trendSeries = {}; 	//pv name => array of the series (of different charts) that show it
+        var _trend = {
+            seconds: TREND_DEFAULT_SECONDS, 	//the charts show the last seconds, or 0 if they show the fixed time range
+            viewFrom: 0, viewTo: 0, 			//	selected with the mouse
+            batch: null, timer: 0, loading: false, problem: "", units: ""
+        };
 
 
         //=====================================================================================
@@ -537,452 +120,506 @@
         function init() {
             Debug.log("init() was called");
 
-            page_.createPage();
-
-            //get command string if opening a new window
-            var cmdStr = DesktopContent.getParameter(2); //from  location.search
-            if (cmdStr && cmdStr != "") {
-                //do incoming commands!
-                Debug.log("cmdStr=" + cmdStr);
-                //replace %22 with "
-                cmdStr = cmdStr.replace(/%22/g, "\"");
-            }
-
-            makeMainPage();
+            makeRacks();
+            getPvSettings();
             generateUID();
 
-            var rackTemp = document.getElementById("rackTemp");
-            rackTemp.innerHTML = "<button onclick='drawGraph(pvTemperEW1_)'>East rack temperatures</button>\
-                    <button onclick='drawGraph(pvTemperEW2_)'>West rack temperatures</button>";
+            makeRangeButtons();
+            for (var s = 0; s < SIDES.length; ++s)
+                makeSideChart(document.getElementById("charts"), SIDES[s][0], SIDES[s][1]);
+            window.addEventListener("resize", drawTrendCharts);
+            setTrendRange(_trend.seconds);
         } //end init()
 
+        //=====================================================================================
+        //addEl ~~
+        //	returns a new element appended to parentEl
+        function addEl(parentEl, tag, className, text) {
+            var el = parentEl.appendChild(document.createElement(tag));
+            if (className) el.className = className;
+            if (text !== undefined) el.textContent = text;
+            return el;
+        } //end addEl()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //racks, live values
 
         //=====================================================================================
-        //Make main page here
-        function makeMainPage() {
-            var pvLedE_length = Object.keys(pvLedE_).length;
-            var pvLedW_length = Object.keys(pvLedW_).length;
-            var pvTemperE_length = Object.keys(pvTemperE_).length;
-            var pvTemperW_length = Object.keys(pvTemperW_).length;
+        //makeRacks ~~
+        //	builds one row of racks for each side of the room
+        function makeRacks() {
+            var racksEl = document.getElementById("racks");
 
-            for (i = 0; i < 7; i++) {
-                var rackE = document.getElementById("rack" + (i + 1) + "E");
-                var topRackE = document.createElement('div');
-                var bottomRackE = document.createElement('div');
-                topRackE.classList.add("topRack");
-                bottomRackE.classList.add("bottomRack");
-                rackE.appendChild(topRackE);
-                rackE.appendChild(bottomRackE);
+            for (var s = 0; s < SIDES.length; ++s) {
+                var side = SIDES[s][0];
 
-                var rackW = document.getElementById("rack" + (i + 1) + "W");
-                var topRackW = document.createElement('div');
-                var bottomRackW = document.createElement('div');
-                topRackW.classList.add("topRack");
-                bottomRackW.classList.add("bottomRack");
-                rackW.appendChild(topRackW);
-                rackW.appendChild(bottomRackW);
-
-                //FILLS THE TOP RACK CONTAINER
-                for (j = 0; j < Math.max(pvLedE_length, pvLedW_length, pvTemperE_length, pvTemperW_length); j++) {
-                    //EAST RACK LEDs
-                    if (pvLedE_[i + j] != undefined && Object.entries(pvLedE_[i + j])[0][1] == i + 1) {
-                        var led = document.createElement('div');
-                        led.id = "led-" + Object.entries(pvLedE_[i + j])[0][0];
-                        led.classList.add("led");
-                        topRackE.appendChild(led);
-                        var widgetObject = {};
-                        widgetObject.pvSettings = {};
-                        widgetObject.pvList = pvLedE_[i + j];
-                        widgetObject.el = led;
-
-                        var widgetsLength = Object.keys(page_.widgets).length;
-                        page_.widgets[widgetsLength] = widgetObject;
-                        SlowControlsAPI.setupPvParams(widgetsLength, page_.widgets[widgetsLength]);
-                    }
-
-                    //EAST RACK Temperatures
-                    if (pvTemperE_[i + j] != undefined && Object.entries(pvTemperE_[i + j])[0][1] == i + 1) {
-                        var temper = document.createElement('div');
-                        temper.id = "temper-" + Object.entries(pvTemperE_[i + j])[0][0];
-                        temper.classList.add("temper");
-                        topRackE.appendChild(temper);
-                        var widgetObject = {};
-                        widgetObject.pvSettings = {};
-                        widgetObject.pvList = pvTemperE_[i + j];
-                        widgetObject.el = temper;
-
-                        var widgetsLength = Object.keys(page_.widgets).length;
-                        page_.widgets[widgetsLength] = widgetObject;
-                        SlowControlsAPI.setupPvParams(widgetsLength, page_.widgets[widgetsLength]);
-                    }
-
-                    //WEST RACK LEDs
-                    if (pvLedW_[i + j] != undefined && Object.entries(pvLedW_[i + j])[0][1] == i + 1) {
-                        var led = document.createElement('div');
-                        led.id = "led-" + Object.entries(pvLedW_[i + j])[0][0];
-                        led.classList.add("led");
-                        topRackW.appendChild(led);
-                        var widgetObject = {};
-                        widgetObject.pvSettings = {};
-                        widgetObject.pvList = pvLedW_[i + j];
-                        widgetObject.el = led;
-
-                        var widgetsLength = Object.keys(page_.widgets).length;
-                        page_.widgets[widgetsLength] = widgetObject;
-                        SlowControlsAPI.setupPvParams(widgetsLength, page_.widgets[widgetsLength]);
-                    }
-
-                    //WEST RACK Temperatures
-                    if (pvTemperW_[i + j] != undefined && Object.entries(pvTemperW_[i + j])[0][1] == i + 1) {
-                        var temper = document.createElement('div');
-                        temper.id = "temper-" + Object.entries(pvTemperW_[i + j])[0][0];
-                        temper.classList.add("temper");
-                        topRackW.appendChild(temper);
-                        var widgetObject = {};
-                        widgetObject.pvSettings = {};
-                        widgetObject.pvList = pvTemperW_[i + j];
-                        widgetObject.el = temper;
-
-                        var widgetsLength = Object.keys(page_.widgets).length;
-                        page_.widgets[widgetsLength] = widgetObject;
-                        SlowControlsAPI.setupPvParams(widgetsLength, page_.widgets[widgetsLength]);
-                    }
-                }
-
-                //FILL THE BOTTOM RACK CONTAINER FOR NODES
-                var rackShelfSize = 11;
-                for (k = 0; k < rackShelfSize; k++) {
-                    var temperColumnSize = 2;
-                    var ledColumnSize = 6;
-
-                    //Fill East
-                    var shelfE = document.createElement('div');
-                    shelfE.classList.add("rackShelf");
-
-                    for (l = 0; l < Object.keys(pvNodeLedE_).length; l++) {
-                        for (c = 0; c < ledColumnSize; c++) {
-                            if (Object.entries(pvNodeLedE_[l]) != undefined
-                                && Object.entries(pvNodeLedE_[l])[0][1][0] == i + 1
-                                && Object.entries(pvNodeLedE_[l])[0][1][1] == k + 1
-                                && Object.entries(pvNodeLedE_[l])[0][1][2] == c + 1) {
-                                var ledE = document.createElement('div');
-                                ledE.classList.add("nodeLed");
-                                shelfE.appendChild(ledE);
-
-                                var widgetObject = {};
-                                widgetObject.pvSettings = {};
-                                widgetObject.pvList = pvNodeLedE_[l];
-                                ledE.id = "nodeLed-" + Object.entries(pvNodeLedE_[l])[0][0];
-                                widgetObject.el = ledE;
-                                var widgetsLength = Object.keys(page_.widgets).length;
-                                page_.widgets[widgetsLength] = widgetObject;
-                                SlowControlsAPI.setupPvParams(widgetsLength, page_.widgets[widgetsLength]);
-                            }
-                        }
-                    }
-
-                    for (l = 0; l < Object.keys(pvNodeTemperE_).length; l++) {
-                        for (c = 0; c < temperColumnSize; c++) {
-                            if (Object.entries(pvNodeTemperE_[l]) != undefined
-                                && Object.entries(pvNodeTemperE_[l])[0][1][0] == i + 1
-                                && Object.entries(pvNodeTemperE_[l])[0][1][1] == k + 1
-                                && Object.entries(pvNodeTemperE_[l])[0][1][2] == c + 1) {
-                                var temperE = document.createElement('div');
-                                temperE.classList.add("nodeTemper");
-                                shelfE.appendChild(temperE);
-
-                                //Add node name
-                                var str = Object.keys(pvNodeTemperE_[l]).toString();
-                                if (str.indexOf("DTC1") != -1) {
-                                    var node = document.createElement('div');
-                                    node.classList.add("nodeName");
-                                    node.innerHTML = str.substring(str.indexOf("CompStatus:") + 11, str.indexOf(":DTC1"));
-                                    shelfE.appendChild(node);
-                                }
-
-                                var widgetObject = {};
-                                widgetObject.pvSettings = {};
-                                widgetObject.pvList = pvNodeTemperE_[l];
-                                temperE.id = "temper-" + Object.entries(pvNodeTemperE_[l])[0][0];
-                                widgetObject.el = temperE;
-                                var widgetsLength = Object.keys(page_.widgets).length;
-                                page_.widgets[widgetsLength] = widgetObject;
-                                SlowControlsAPI.setupPvParams(widgetsLength, page_.widgets[widgetsLength]);
-                            }
-                        }
-                    }
-
-                    bottomRackE.appendChild(shelfE);
-
-                    //Fill West
-                    var shelfW = document.createElement('div');
-                    shelfW.classList.add("rackShelf");
-
-                    for (l = 0; l < Object.keys(pvNodeLedW_).length; l++) {
-                        for (c = 0; c < ledColumnSize; c++) {
-                            if (Object.entries(pvNodeLedW_[l]) != undefined
-                                && Object.entries(pvNodeLedW_[l])[0][1][0] == i + 1
-                                && Object.entries(pvNodeLedW_[l])[0][1][1] == k + 1
-                                && Object.entries(pvNodeLedW_[l])[0][1][2] == c + 1) {
-                                var ledW = document.createElement('div');
-                                ledW.classList.add("nodeLed");
-                                shelfW.appendChild(ledW);
-
-                                var widgetObject = {};
-                                widgetObject.pvSettings = {};
-                                widgetObject.pvList = pvNodeLedW_[l];
-                                ledW.id = "nodeLed-" + Object.entries(pvNodeLedW_[l])[0][0];
-                                widgetObject.el = ledW;
-                                var widgetsLength = Object.keys(page_.widgets).length;
-                                page_.widgets[widgetsLength] = widgetObject;
-                                SlowControlsAPI.setupPvParams(widgetsLength, page_.widgets[widgetsLength]);
-                            }
-                        }
-                    }
-
-                    for (l = 0; l < Object.keys(pvNodeTemperW_).length; l++) {
-                        for (c = 0; c < temperColumnSize; c++) {
-                            if (Object.entries(pvNodeTemperW_[l]) != undefined
-                                && Object.entries(pvNodeTemperW_[l])[0][1][0] == i + 1
-                                && Object.entries(pvNodeTemperW_[l])[0][1][1] == k + 1
-                                && Object.entries(pvNodeTemperW_[l])[0][1][2] == c + 1) {
-                                var temperW = document.createElement('div');
-                                temperW.classList.add("nodeTemper");
-                                shelfW.appendChild(temperW);
-
-                                //Add node name
-                                var str = Object.keys(pvNodeTemperW_[l]).toString();
-                                if (str.indexOf("DTC1") != -1) {
-                                    var node = document.createElement('div');
-                                    node.classList.add("nodeName");
-                                    node.innerHTML = str.substring(str.indexOf("CompStatus:") + 11, str.indexOf(":DTC1"));
-                                    shelfW.appendChild(node);
-                                }
-
-                                var widgetObject = {};
-                                widgetObject.pvSettings = {};
-                                widgetObject.pvList = pvNodeTemperW_[l];
-                                temperW.id = "temper-" + Object.entries(pvNodeTemperW_[l])[0][0];
-                                widgetObject.el = temperW;
-                                var widgetsLength = Object.keys(page_.widgets).length;
-                                page_.widgets[widgetsLength] = widgetObject;
-                                SlowControlsAPI.setupPvParams(widgetsLength, page_.widgets[widgetsLength]);
-                            }
-                        }
-                    }
-
-                    bottomRackW.appendChild(shelfW);
-                }
+                addEl(addEl(racksEl, "div", "sectionHead"), "span", "sectionTitle", SIDES[s][1]);
+                var rowEl = addEl(racksEl, "div", "rackRow");
+                for (var r = RACK_COUNT; r >= 1; --r)
+                    makeRack(rowEl, r + side);
             }
-        } //end makeMainPage()
-
-        function safeStringify(obj) {
-            const seen = new WeakSet();
-            return JSON.stringify(obj, function (key, value) {
-                if (typeof value === "object" && value !== null) {
-                    if (seen.has(value)) return "[Circular]";
-                    seen.add(value);
-                }
-                return value;
-            });
-        }
+        } //end makeRacks()
 
         //=====================================================================================
-        function drawGraph(pvNames) {
-            var pvName = "";
-            if (!Array.isArray(pvNames))
-                pvName = pvNames;
-            //const safeStringify = require('json-stringify-safe');
-            const safeArray = safeStringify(pvNames);
-            //pvNames = JSON.stringify(pvNames);
-            var url = location.origin + "/WebPath/UserWebPath/html/DCSMonitoringPages/Plot.html?urn=" + DesktopContent._localUrnLid + "&pv_names=" + safeArray;
+        //makeRack ~~
+        //	builds a rack (e.g. "3E") with the widgets of its pvs and,
+        //	if it has DTCs, the small chart of their temperatures
+        function makeRack(parentEl, rack) {
+            var rackEl = _rackEls[rack] = addEl(parentEl, "div", "rack");
+            addEl(rackEl, "div", "rackName", rack);
+
+            //rack protection state and rack temperatures
+            var topEl = addEl(rackEl, "div", "rackTop");
+            makeWidget(topEl, "led", "Mu2e:RackProt:" + rack + ":state");
+            for (var t = 0; t < RACK_TEMPERATURE_COUNT; ++t)
+                makeWidget(topEl, "temper", "Mu2e:RackTemp:" + rack + ":" + t + ":temperature");
+
+            //first shelf: the phases of left and right PDU
+            var pduEl = addEl(rackEl, "div", "shelf");
+            var pduSides = ["L", "R"];
+            for (var p = 0; p < pduSides.length; ++p) {
+                addEl(pduEl, "span", "pduName", "PDU " + pduSides[p]);
+                var hasPdu = pduSides[p] != "L" || RACKS_WITHOUT_LEFT_PDU.indexOf(rack) == -1;
+                for (var phase = 1; phase <= PDU_PHASE_COUNT; ++phase)
+                    if (hasPdu)
+                        makeWidget(pduEl, "led small", "Mu2e:PDU:" + rack + "_" + pduSides[p] + ":P" + phase);
+                    else
+                        addEl(pduEl, "span", "led small none");
+            }
+
+            //the other shelves, from the top one: DTC temperatures and name of the node, if any
+            var nodes = RACK_NODES[rack] || [];
+            for (var shelf = SHELF_COUNT - 1; shelf >= 1; --shelf) {
+                var shelfEl = addEl(rackEl, "div", "shelf");
+                var node = nodes[shelf - 1];
+                if (!node) continue;
+
+                for (var d = 0; d < DTC_SLOT_COUNT; ++d)
+                    if (d < dtcCount(node))
+                        makeWidget(shelfEl, "temper", "Mu2e:CompStatus:" + node + ":DTC" + d + ":dtctemp");
+                    else
+                        addEl(shelfEl, "span", "temper none");
+                addEl(shelfEl, "span", "nodeName", node);
+            }
+
+            if (nodes.length)
+                makeRackChart(rackEl, rack);
+        } //end makeRack()
+
+        //=====================================================================================
+        //dtcCount ~~
+        //	returns the number of DTCs of the node, from the kind in its name (e.g. "trk" of "trk-01")
+        function dtcCount(node) {
+            return DTC_COUNT_BY_KIND[node.split("-")[0]] || 0;
+        } //end dtcCount()
+
+        //=====================================================================================
+        //makeWidget ~~
+        //	adds to parentEl the button that shows the pv, kind is "led" or "temper".
+        //	A click opens the plot of the pv.
+        function makeWidget(parentEl, kind, pvName) {
+            var el = addEl(parentEl, "button");
+            el.onclick = drawGraph.bind(null, pvName);
+            _widgets[pvName] = { el: el, kind: kind };
+            updateWidget(pvName);
+        } //end makeWidget()
+
+        //=====================================================================================
+        //updateWidget ~~
+        //	shows value, severity and tooltip of the pv
+        function updateWidget(pvName) {
+            var widget = _widgets[pvName];
+            var settings = _pvSettings[pvName];
+
+            var state = "unknown";
+            if (widget.time !== undefined) {
+                var stale = !(Date.now() / 1000 - widget.time < STALE_SECONDS);
+                state = stale ? "stale" : (SEVERITY_CLASS[widget.severity] || "unknown");
+            }
+            widget.el.className = "pv " + widget.kind + " " + state;
+
+            if (widget.kind == "temper") {
+                var value = Number.parseFloat(widget.value);
+                widget.el.textContent = isNaN(value) ? "-" : value.toFixed(1);
+            }
+
+            var toolTip = pvName;
+            if (widget.time === undefined)
+                toolTip += "\nNo value received yet";
+            else
+                toolTip += "\nValue: " + widget.value + (settings && settings.Units ? " " + settings.Units : "") +
+                    "\nTime: " + new Date(widget.time * 1000).toLocaleString("en-GB") + (state == "stale" ? " (stale)" : "") +
+                    "\nStatus: " + widget.status +
+                    "\nSeverity: " + widget.severity;
+            if (settings)
+                toolTip += "\nWarning limits: " + Number.parseFloat(settings.Lower_Warning_Limit) + " to " + Number.parseFloat(settings.Upper_Warning_Limit) +
+                    "\nAlarm limits: " + Number.parseFloat(settings.Lower_Alarm_Limit) + " to " + Number.parseFloat(settings.Upper_Alarm_Limit);
+            widget.el.title = toolTip;
+        } //end updateWidget()
+
+        //=====================================================================================
+        //drawGraph ~~
+        //	opens the plot of the pv in a new window
+        function drawGraph(pvName) {
+            var url = location.origin + "/WebPath/UserWebPath/html/DCSMonitoringPages/Plot.html?urn=" +
+                DesktopContent._localUrnLid + "&pv_names=" + encodeURIComponent(pvName);
             DesktopContent.openNewWindow("Plot", pvName, url, false);
         } //end drawGraph()
 
+        //=====================================================================================
+        //getPvSettings ~~
+        //	requests units and limits of all the pvs, they are only used in the tooltips
+        function getPvSettings() {
+            DesktopContent.XMLHttpRequest("Request?RequestType=getPVSettings",
+                "pvList=" + Object.keys(_widgets).join(",") + "," + //the server expects a comma after each pv
+                "&id=0",
+                pvSettingsHandler /*returnHandler*/,
+                0 /*reqParam*/,
+                0 /*progressHandler*/,
+                0 /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end getPvSettings()
 
         //=====================================================================================
-        //write a new value of a PV
-        function drawNewValue(widget, pvName, pvValue, pvTime, pvStatus, pvSeverity) {
-            console.log("Text newValue() reached", pvName, pvValue);
-
-            var units = page_.widgets[widget].pvSettings != undefined ? page_.widgets[widget].pvSettings[pvName].Units : "";
-
-            if (page_.widgets[widget].el.id.indexOf('temper-') != -1) {
-                var button = "<button class='pvButton' onclick='drawGraph(\"" + pvName + "\")'><div class='temperText'>" + Number.parseFloat(pvValue).toFixed(1) + "</div></button>";
-                //if (pvName.indexOf("DTC1") != -1) button = button + "<div style =\"font-size: 5px;\">" + pvName.substring(pvName.indexOf("CompStatus:") + 11, pvName.indexOf(":DTC1")) + "</div>";
-                page_.widgets[widget].el.innerHTML = button;
+        function pvSettingsHandler(req) {
+            try {
+                _pvSettings = JSON.parse(DesktopContent.getXMLValue(req, "JSON"));
             }
-
-            else if (page_.widgets[widget].el.id.indexOf('led-') != -1)
-                page_.widgets[widget].el.innerHTML = "<button class='pvLedButton' onclick='drawGraph(\"" + pvName + "\")'></button>";
-            else if (page_.widgets[widget].el.id.indexOf('nodeLed-') != -1)
-                page_.widgets[widget].el.innerHTML = "<button class='pvNodeLedButton' onclick='drawGraph(\"" + pvName + "\")'></button>";
-
-            page_.widgets[widget].el.title = SlowControlsAPI.setWidgetToolTip(pvName, pvValue, pvTime, pvStatus, pvSeverity, page_.widgets[widget].pvSettings);
-
-            SlowControlsAPI.setWidgetPvInfo(
-                widget
-                , pvName
-                , pvValue
-                , pvTime
-                , pvStatus
-                , pvSeverity
-                , true
-                , false
-                , "DimGray"
-                , "gray"
-                , "1px solid green"
-            );
-        } //end drawNewValue()
-
+            catch (e) {
+                Debug.log("Illegal pv settings from server: " + e);
+                return;
+            }
+            for (var pvName in _widgets)
+                updateWidget(pvName);
+        } //end pvSettingsHandler()
 
         //=====================================================================================
+        //generateUID ~~
+        //	registers the list of pvs at the server, the returned uid is then used to poll
         function generateUID() {
-            UID_ = 0;
-            window.clearTimeout(timerVariable_);
+            _uid = "";
+            window.clearTimeout(_pollTimer);
 
-            //BEGIN Put all pvs in a JSON and send to server
-            var pvList = "";
-            //console.log("page: ", page_);
-            for (var widget in page_.widgets) {
-                console.log("generateUID: " + page_.widgets[widget] + " " + page_.widgets[widget].pvList);
+            DesktopContent.XMLHttpRequest("Request?RequestType=generateUID",
+                "pvList=" + Object.keys(_widgets).join(",") + ",",
+                generateUIDHandler /*returnHandler*/,
+                0 /*reqParam*/,
+                0 /*progressHandler*/,
+                true /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end generateUID()
 
-                for (var pv in page_.widgets[widget].pvList) {
-                    pvList += pv + ",";
+        //=====================================================================================
+        function generateUIDHandler(req, reqParam, errStr) {
+            if (!errStr) {
+                try {
+                    var uid = JSON.parse(DesktopContent.getXMLValue(req, "JSON")).message;
+                    if (uid == "-1") errStr = "Unable to generate UID";
+                    else _uid = uid;
+                }
+                catch (e) {
+                    errStr = "Illegal response from server: " + e;
                 }
             }
 
-            //END Put all pvs in a JSON and send to server
-            DesktopContent.XMLHttpRequest(
-                "Request?RequestType=generateUID",
-                "pvList=" + pvList,
-                generateUIDHandlerFunction);//, undefined, undefined, "sequence");
-        } //end generateUID()
-
-
-        //=====================================================================================
-        function generateUIDHandlerFunction(req) {
-            var uid = JSON.parse(DesktopContent.getXMLValue(req, "JSON"));
-
-            if (uid.message != "-1")
-                UID_ = uid.message;
-            else {
-                UID_ = "";
-                Debug.log("Unable to generate UID!", Debug.HIGH_PRIORITY);
+            if (errStr) { //try again later
+                showStatus(errStr);
+                _pollTimer = window.setTimeout(generateUID, POLL_PERIOD_MS);
+                return;
             }
-
             pollServer();
-        } //end generateUIDHandlerFunction()
-
+        } //end generateUIDHandler()
 
         //=====================================================================================
         function pollServer() {
-            Debug.log("pollServer: polling server!");
-            console.log("pollServer(): ", page_.widgets);
-            if (page_.widgets) {
-                DesktopContent.XMLHttpRequest(
-                    "Request?RequestType=poll&uid=" + UID_,
-                    "",
-                    pollServerHandlerFunction /*returnHandler*/,
-                    0 /*reqParam*/,
-                    0 /*progressHandler*/,
-                    0 /*callHandlerOnErr*/,
-                    true /*doNoShowLoadingOverlay*/);
-            }
+            DesktopContent.XMLHttpRequest("Request?RequestType=poll&uid=" + _uid,
+                "",
+                pollServerHandler /*returnHandler*/,
+                0 /*reqParam*/,
+                0 /*progressHandler*/,
+                true /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
         } //end pollServer()
 
+        //=====================================================================================
+        //pollServerHandler ~~
+        //	the server returns only the pvs that changed since the last poll
+        function pollServerHandler(req, reqParam, errStr) {
+            var response;
+            if (!errStr) {
+                try {
+                    var jsonStr = DesktopContent.getXMLValue(req, "JSON") || "";
+                    response = JSON.parse(jsonStr.replace(/\s/g, "")); //the values may hold whitespace that is illegal in JSON
+                }
+                catch (e) {
+                    errStr = "Illegal response from server: " + e;
+                }
+            }
+
+            if (!errStr && response.message == "NOT_FOUND") { //e.g. the server was restarted
+                Debug.log("Have to generate new UID!");
+                generateUID();
+                return;
+            }
+
+            if (!errStr) {
+                for (var pvName in response) {
+                    var widget = _widgets[pvName];
+                    if (!widget) continue;
+                    widget.value = response[pvName].Value;
+                    widget.time = response[pvName].Timestamp;
+                    widget.status = response[pvName].Status;
+                    widget.severity = response[pvName].Severity;
+                }
+                _lastPollTime = Date.now();
+            }
+
+            //update also the pvs that did not change, since they may have become stale
+            for (var pvName in _widgets)
+                updateWidget(pvName);
+            showStatus(errStr);
+
+            _pollTimer = window.setTimeout(pollServer, POLL_PERIOD_MS);
+        } //end pollServerHandler()
 
         //=====================================================================================
-        function pollServerHandlerFunction(req) {
-            Debug.log("pollServerHandlerFunction() was called. Req: " + req.responseText);
-
-            var jsonStr = DesktopContent.getXMLValue(req, "JSON");
-            jsonStr = jsonStr.replace(/\s/g, ''); //hack for removing whitespace
-            if (!jsonStr || jsonStr == "")
+        //showStatus ~~
+        //	shows in the header the time of the last poll and the count of pvs in alarm, or the problem
+        function showStatus(problem) {
+            var statusEl = document.getElementById("status");
+            statusEl.classList.toggle("problem", !!problem);
+            if (problem) {
+                statusEl.textContent = problem;
                 return;
-
-            Debug.log(jsonStr);
-
-            var serverResponse;
-
-            serverResponse = JSON.parse(jsonStr);
-
-            Debug.log(serverResponse);
-
-            if (serverResponse.message == "NOT_FOUND") {
-                console.log("Have to generate new UID!");
-                generateUID();
             }
-            else {
-                for (var pv in serverResponse)//have to use each pv and then loop through
-                {
-                    console.log("pollServerHandlerFunction: pv" + pv);
-                    for (var widget in page_.widgets) {
-                        //console.log("pollServerHandlerFunction: " + page_.widgets[widget]);
-                        for (var dependendentPV in page_.widgets[widget].pvList) {
-                            //console.log("poll: " + dependendentPV);
-                            if (pv == dependendentPV && page_.widgets[widget].loaded != "false") {
-                                //console.log("Widget*************", widget, pv);
-                                try {
-                                    drawNewValue(
-                                        widget,
-                                        pv,
-                                        serverResponse[pv].Value,
-                                        serverResponse[pv].Timestamp,
-                                        serverResponse[pv].Status,
-                                        serverResponse[pv].Severity);
-                                }
-                                catch (e) {
-                                    Debug.log("Error was caught updating new value to widget 'widget-" +
-                                        widget + "': " + e);
-                                }
-                            }
-                        }
-                    }
-                }
 
-                timerVariable_ = window.setTimeout(pollServer, refreshRate_);
+            var majorCount = 0, minorCount = 0;
+            for (var pvName in _widgets) {
+                if (_widgets[pvName].el.classList.contains("major")) ++majorCount;
+                if (_widgets[pvName].el.classList.contains("minor")) ++minorCount;
             }
-        } //end pollServerHandlerFunction()
+            statusEl.textContent = majorCount + " alarm, " + minorCount + " warning  -  updated " +
+                new Date(_lastPollTime).toLocaleTimeString("en-GB");
+        } //end showStatus()
 
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //DTC temperature trends
+
+        //=====================================================================================
+        //makeRangeButtons ~~
+        //	one button for each time range of the trend charts
+        function makeRangeButtons() {
+            var buttonsEl = document.getElementById("rangeButtons");
+            for (var i = 0; i < RANGE_PRESETS.length; ++i) {
+                var buttonEl = addEl(buttonsEl, "button", "", RANGE_PRESETS[i][0]);
+                buttonEl.rangeSeconds = RANGE_PRESETS[i][1];
+                buttonEl.onclick = setTrendRange.bind(null, RANGE_PRESETS[i][1]);
+            }
+        } //end makeRangeButtons()
+
+        //=====================================================================================
+        //addTrendSeries ~~
+        //	adds to the chart the lines of the DTC temperatures of the node: solid for DTC0, dashed for DTC1
+        function addTrendSeries(chart, rack, node, color, group) {
+            for (var d = 0; d < dtcCount(node); ++d) {
+                var pv = "Mu2e:CompStatus:" + node + ":DTC" + d + ":dtctemp";
+                var series = { chart: chart, name: node + " DTC" + d, rack: rack, color: color, dashed: d > 0, group: group, points: [] };
+                chart.series.push(series);
+                (_trendSeries[pv] = _trendSeries[pv] || []).push(series);
+            }
+        } //end addTrendSeries()
+
+        //=====================================================================================
+        //makeRackChart ~~
+        //	adds to the rack the small chart of its DTC temperatures, one color for each node
+        function makeRackChart(rackEl, rack) {
+            var chart = DCSChart.create(rackEl, { compact: true, highlightNearest: true, onDraw: trendChartDrawn });
+            chart.noteEl = addEl(rackEl, "div", "rackChartNote");
+            chart.idleNote = "DTC temperatures";
+
+            var nodes = RACK_NODES[rack];
+            for (var n = 0; n < nodes.length; ++n)
+                addTrendSeries(chart, rack, nodes[n], DCSChart.COLORS[n % DCSChart.COLORS.length], nodes[n]);
+            _trendCharts.push(chart);
+        } //end makeRackChart()
+
+        //=====================================================================================
+        //makeSideChart ~~
+        //	builds the chart of all the DTC temperatures of a side of the room, one color for each rack.
+        //	The racks in the legend highlight their lines.
+        function makeSideChart(parentEl, side, title) {
+            var cardEl = addEl(parentEl, "div", "chartCard");
+            var headEl = addEl(cardEl, "div", "chartHead");
+            addEl(headEl, "span", "chartTitle", title);
+            var legendEl = addEl(headEl, "span", "chartLegend");
+            var noteEl = addEl(headEl, "span", "chartNote");
+
+            var chart = DCSChart.create(cardEl, { highlightNearest: true, onDraw: trendChartDrawn, onZoom: zoomTrends });
+            chart.noteEl = noteEl;
+            chart.idleNote = "";
+
+            var colorIndex = 0;
+            for (var r = 1; r <= RACK_COUNT; ++r) {
+                var rack = r + side;
+                var nodes = RACK_NODES[rack];
+                if (!nodes) continue;
+
+                var color = DCSChart.COLORS[colorIndex++ % DCSChart.COLORS.length];
+                for (var n = 0; n < nodes.length; ++n)
+                    addTrendSeries(chart, rack, nodes[n], color, rack);
+
+                var itemEl = addEl(legendEl, "span", "legendItem");
+                addEl(itemEl, "span", "swatch").style.backgroundColor = color;
+                addEl(itemEl, "span", "", rack);
+                itemEl.onmouseenter = highlightRack.bind(null, rack);
+                itemEl.onmouseleave = highlightRack.bind(null, null);
+            }
+
+            _sideCharts.push(chart);
+            _trendCharts.push(chart);
+        } //end makeSideChart()
+
+        //=====================================================================================
+        //highlightRack ~~
+        //	highlights the rack and its lines in the charts of the sides, no rack if null
+        function highlightRack(rack) {
+            for (var name in _rackEls)
+                _rackEls[name].classList.toggle("highlight", name == rack);
+            for (var c = 0; c < _sideCharts.length; ++c) {
+                _sideCharts[c].highlightGroup = rack;
+                DCSChart.draw(_sideCharts[c]);
+            }
+        } //end highlightRack()
+
+        //=====================================================================================
+        //trendChartDrawn ~~
+        //	called after a chart was drawn: the note of the chart shows the line closest to the mouse
+        function trendChartDrawn(chart, readout) {
+            var note = chart.idleNote;
+            if (readout.nearest) {
+                var compact = chart.options.compact;
+                note = (compact ? "" : readout.nearest.rack + " ") + readout.nearest.name + ": " +
+                    DCSChart.valueText(readout.values[chart.series.indexOf(readout.nearest)]) +
+                    (compact ? "" : " " + _trend.units + " at " + DCSChart.timeText(readout.time));
+            }
+            else if (!readout.hasData && !_trend.loading)
+                note = "no archived values";
+            chart.noteEl.textContent = note;
+        } //end trendChartDrawn()
+
+        //=====================================================================================
+        //setTrendRange ~~
+        //	the charts show the last seconds until now, and are refreshed periodically
+        function setTrendRange(seconds) {
+            _trend.seconds = seconds;
+            var buttonEls = document.getElementById("rangeButtons").children;
+            for (var i = 0; i < buttonEls.length; ++i)
+                buttonEls[i].classList.toggle("active", buttonEls[i].rangeSeconds == seconds);
+            fetchTrends();
+        } //end setTrendRange()
+
+        //=====================================================================================
+        //zoomTrends ~~
+        //	called when a time range (ms) was selected with the mouse in a chart:
+        //	all the charts show it, until a range button is clicked
+        function zoomTrends(fromTime, toTime) {
+            _trend.viewFrom = fromTime;
+            _trend.viewTo = toTime;
+            setTrendRange(0);
+        } //end zoomTrends()
+
+        //=====================================================================================
+        //fetchTrends ~~
+        //	starts to read from the archiver the history of all the DTC temperatures
+        function fetchTrends() {
+            window.clearTimeout(_trend.timer);
+            if (_trend.batch) _trend.batch.cancelled = true; //ignore the replies to the previous requests
+
+            if (_trend.seconds) {
+                _trend.viewTo = Date.now();
+                _trend.viewFrom = _trend.viewTo - _trend.seconds * 1000;
+            }
+            for (var c = 0; c < _trendCharts.length; ++c) {
+                _trendCharts[c].viewFrom = _trend.viewFrom;
+                _trendCharts[c].viewTo = _trend.viewTo;
+            }
+
+            _trend.loading = true;
+            _trend.problem = "";
+            _trend.batch = DCSChart.fetchHistory(Object.keys(_trendSeries), _trend.viewFrom / 1000, _trend.viewTo / 1000,
+                trendSeriesHandler, trendDoneHandler);
+            drawTrendCharts();
+        } //end fetchTrends()
+
+        //=====================================================================================
+        //trendSeriesHandler ~~
+        //	called with the history of each pv
+        function trendSeriesHandler(pv, reply, errStr) {
+            if (errStr) {
+                _trend.problem = "History request failed: " + errStr;
+                return;
+            }
+            if (reply.archiveProblem) _trend.problem = "Archiver history: " + reply.archiveProblem;
+            if (reply.units) _trend.units = reply.units;
+
+            DCSChart.keepRange(reply.points, TREND_VALID_RANGE[0], TREND_VALID_RANGE[1]);
+            var seriesList = _trendSeries[pv];
+            for (var i = 0; i < seriesList.length; ++i) {
+                seriesList[i].points = reply.points;
+                if (typeof reply.highLimit == "number") seriesList[i].chart.highLimit = reply.highLimit;
+                DCSChart.draw(seriesList[i].chart);
+            }
+        } //end trendSeriesHandler()
+
+        //=====================================================================================
+        //trendDoneHandler ~~
+        //	called when the history of all the pvs was read
+        function trendDoneHandler() {
+            _trend.loading = false;
+            drawTrendCharts();
+
+            if (_trend.seconds) //a long time range changes slowly
+                _trend.timer = window.setTimeout(fetchTrends, Math.max(TREND_REFRESH_MS, _trend.seconds * 1000 / 200));
+        } //end trendDoneHandler()
+
+        //=====================================================================================
+        function drawTrendCharts() {
+            var noteEl = document.getElementById("trendNote");
+            noteEl.classList.toggle("problem", !!_trend.problem);
+            noteEl.textContent = _trend.problem || (_trend.loading ? "loading..." : "");
+
+            for (var c = 0; c < _trendCharts.length; ++c)
+                DCSChart.draw(_trendCharts[c]);
+        } //end drawTrendCharts()
 
     </script>
 </head>
 
 <body onload='//init() called by DesktopContent.js'>
-    <div class="mainBlockContainer">
-        <div class="legend">
-            <div>Color legend:</div>
-            <div style="background-color: green">No alarm</div>
-            <div style="background-color: orange">Warning</div>
-            <div style="background-color: red">Alarm</div>
-            <div style="background-color: gray">Stale</div>
-            <div style="background-color: darkslategray">Undefined state</div>
-            <div style="align:right">
-                <h2 align="center">DAQ room health</h2>
-            </div>
+
+    <div id="header">
+        <span id="title">DAQ room health</span>
+        <span id="status"></span>
+        <div id="legend">
+            <span class="swatch ok"></span>No alarm
+            <span class="swatch minor"></span>Warning
+            <span class="swatch major"></span>Alarm
+            <span class="swatch invalid"></span>Invalid
+            <span class="swatch stale"></span>Stale
+            <span class="swatch unknown"></span>Undefined state
+            <span class="hint">click a value to plot it</span>
         </div>
+    </div>
 
-        <div class="topBlockContainer">
-            <div id="rackTemp"></div>
-            <div class="rack" id="rack7E"><center>7E</center></div>
-            <div class="rack" id="rack6E"><center>6E</center></div>
-            <div class="rack" id="rack5E"><center>5E</center></div>
-            <div class="rack" id="rack4E"><center>4E</center></div>
-            <div class="rack" id="rack3E"><center>3E</center></div>
-            <div class="rack" id="rack2E"><center>2E</center></div>
-            <div class="rack" id="rack1E"><center>1E</center></div>
-        </div> <!-- end top block container -->
+    <div id="racks"></div>
 
-        <div class="bottomBlockContainer">
-            <div class="rack" id="rack7W"><center>7W</center></div>
-            <div class="rack" id="rack6W"><center>6W</center></div>
-            <div class="rack" id="rack5W"><center>5W</center></div>
-            <div class="rack" id="rack4W"><center>4W</center></div>
-            <div class="rack" id="rack3W"><center>3W</center></div>
-            <div class="rack" id="rack2W"><center>2W</center></div>
-            <div class="rack" id="rack1W"><center>1W</center></div>
-        </div> <!-- end bottom block container -->
-    </div> <!-- end main block container -->
+    <div class="sectionHead">
+        <span class="sectionTitle">DTC temperature trends</span>
+        <span id="rangeButtons"></span>
+        <span class="hint">from the archiver, local time - solid line DTC0, dashed line DTC1 - drag in a chart to zoom</span>
+        <span class="hint" id="trendNote"></span>
+    </div>
+    <div id="charts"></div>
+
 </body>
 </html>

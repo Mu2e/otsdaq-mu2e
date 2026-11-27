@@ -1,32 +1,32 @@
+/* Plot page, same look as the Alarms page (KafkaAlarms.html) */
 
-* {
-    box-sizing: border-box;
-}
+* 					{ box-sizing: border-box; }
 
-body {
-    background-color: white;
-    overflow: hidden;
-    transition: background-color .25s;
-    overflow-x: scroll;
-    overflow-y: scroll;
-}
+html, body 			{ height: 100%; }
+body 				{ display: flex; flex-direction: column; margin: 0; font-family: 'Inconsolata', monospace; font-size: 14px;
+					  background-color: rgb(40, 44, 52); color: rgb(225, 225, 225); }
+button 				{ font: inherit; color: inherit; cursor: pointer; }
 
-/* Column containers */
-.mainBlockContainer {
-    display: flex;
-    flex-direction: column;
-    margin: 20px;
-}
+/* top bar */
+#header 			{ padding: 8px 12px; background-color: rgb(28, 31, 37); }
+#title 				{ font-family: 'Comfortaa', sans-serif; font-size: 16px; margin-right: 12px; }
+#rangeButtons button { padding: 2px 8px; margin-right: 4px; font-size: 12px; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 4px;
+					  background-color: rgb(55, 60, 70); }
+#rangeButtons button:hover { background-color: rgb(70, 76, 88); }
+#rangeButtons button.active { background-color: rgb(90, 100, 120); color: white; border-color: white; }
+.hint 				{ margin-left: 12px; font-size: 12px; color: rgb(140, 140, 140); }
+#note 				{ padding-top: 6px; min-height: 20px; font-size: 12px; color: rgb(170, 170, 170); }
+.problem 			{ color: rgb(255, 120, 120) !important; }
 
-/* Main column */
-.plotContainer {
-    width: 100%;
-    height: 100%;
-    background-color: white;
-}
+/* chart */
+#plot 				{ flex: 1; min-height: 120px; padding: 8px 12px 0 12px; }
+.dcsChart 			{ display: block; width: 100%; height: 100%; cursor: crosshair; }
 
-/* TIME button */
-.timeButton {
-    margin-left: 3px;
-    margin-bottom: 6px;
-}
+/* legend */
+#legend 			{ display: flex; flex-wrap: wrap; gap: 2px 6px; max-height: 30%; overflow-y: auto; padding: 6px 12px 10px 12px; font-size: 12px; }
+.legendItem 		{ padding: 1px 6px; border: none; border-radius: 3px; background: none; white-space: nowrap; color: rgb(170, 170, 170); }
+.legendItem:hover 	{ background-color: rgb(55, 60, 70); }
+.legendItem.nearest { background-color: rgb(90, 100, 120); }
+.legendItem.hidden 	{ opacity: 0.4; text-decoration: line-through; }
+.swatch 			{ display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; }
+.legendValue 		{ margin-left: 8px; color: rgb(225, 225, 225); }

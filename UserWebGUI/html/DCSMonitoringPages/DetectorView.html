@@ -1,0 +1,1236 @@
+<!DOCTYPE HTML>
+<html lang="en">
+<head>
+    <title>Detector view</title>
+
+    <link href='/WebPath/css/fonts.css?family=Inconsolata:400' rel='stylesheet' type='text/css'>
+    <link href='/WebPath/css/fonts.css?family=Comfortaa:400' rel='stylesheet' type='text/css'>
+    <link rel="stylesheet" type="text/css" href="/WebPath/UserWebPath/css/DCSMonitoringPages/DetectorView.css">
+
+    <script type="text/JavaScript" src="/WebPath/js/Globals.js"></script>
+    <script type="text/JavaScript" src="/WebPath/js/Debug.js"></script>
+    <script type="text/JavaScript" src="/WebPath/js/DesktopContent.js"></script>
+    <script type="text/JavaScript" src="/WebPath/UserWebPath/js/DCSChart.js"></script>
+
+    <script>
+
+        //functions:
+        //	init()
+        //	addEl(parentEl, tag, className, text)
+        //
+        //	view and masks, static files:
+        //		loadFile(file, handler)
+        //		viewHandler(text)
+        //		maskHandler(file, text)
+        //		parseMask(text)
+        //		fail(problem)
+        //
+        //	page:
+        //		makeSelectors()
+        //		select(selectorIndex, optionIndex)
+        //		makeIndicators()
+        //		makeRangeButtons()
+        //		togglePicture()
+        //		makePanels()
+        //		makePanel(panel)
+        //		expand(template, values)
+        //		assignPvs()
+        //
+        //	drawing:
+        //		stateOf(pvName)
+        //		valueText(value)
+        //		toolTipText(pvName)
+        //		drawAll()
+        //		drawIndicators()
+        //		drawPanel(panel)
+        //		drawEdges(panel, context, onlyKey)
+        //		cellAt(panel, event)
+        //		hover(panel, key, event)
+        //		selectKey(panel, key)
+        //		updateHighlight(panel)
+        //
+        //	trends, read from the archiver database (charts of DCSChart.js):
+        //		makeSeries()
+        //		trendChartDrawn(chart, readout)
+        //		setTrendRange(seconds)
+        //		zoomTrends(fromTime, toTime)
+        //		fetchTrends()
+        //		trendSeriesHandler(pv, reply, errStr)
+        //		trendDoneHandler()
+        //		drawTrends()
+        //
+        //	live values:
+        //		getPvSettings()
+        //		pvSettingsHandler(req, generation)
+        //		generateUID()
+        //		generateUIDHandler(req, generation, errStr)
+        //		pollServer()
+        //		pollServerHandler(req, generation, errStr)
+        //		showStatus(problem)
+        //
+        //	commands, only for the users that the server allows:
+        //		getCommandInfo()
+        //		commandInfoHandler(req, generation)
+        //		commandState(panel, key)
+        //		askCommand(panel, keys, on)
+        //		sendCommand(panel, keys, on)
+        //		commandHandler(req, command, errStr)
+        //		showDialog(title, text, buttons)
+        //		closeDialog()
+        //
+        //====================== start high-level behavior description
+        //
+        //	Generic stop light view of a detector, with no code specific to the detector:
+        //	the url parameter view (e.g. ?view=calorimeter) is the name of a folder in
+        //	UserWebGUI/masks, with the file view.json and the files that it refers to.
+        //
+        //	A mask is a csv file in the format of the 2D stop light widget of the Slow Controls
+        //	Dashboard: one line for each row of the grid, cells separated by ; or by comma,
+        //	each cell is -1 (empty) or the key of a channel. All the cells with the same key
+        //	are drawn as one area, with the color of the alarm severity of the pv of the channel.
+        //
+        //	view.json:
+        //		title 		title of the page
+        //		pv 			template of the pv names, e.g. "Mu2e:CALO:{system}:{disk}:{channel}:{kind}":
+        //					{channel} is the key in the mask, the other fields come from the
+        //					values of the panel and of the selected options.
+        //					Without template, the keys in the masks are the pv names.
+        //		selectors 	optional array of { label, options: [{ label, values: { field: text, ... } }] }:
+        //					one row of buttons for each selector, the first option is the default.
+        //					A value may hold other fields, e.g. "GET{system}".
+        //		panels 		array of { title, mask, values, pv, aspect, image }:
+        //					mask is the csv file, values and pv (template of this panel) are optional.
+        //					image is optional: { file, left, top, width, height } is the picture drawn
+        //					behind the grid and the area of the grid, as fractions of the picture.
+        //					Without image, aspect is width / height of the grid (default: square cells).
+        //		indicators 	optional array of { label, pv, detail, alive, notAlive }: one box for each, after
+        //					the selectors, with the value of pv and the color of its alarm severity.
+        //					detail is optional: a pv with a text that is shown when pv is in alarm.
+        //					alive is optional: a pv that is 0 when the value of pv is not maintained
+        //					(e.g. its source is not running), then the text notAlive is shown as a warning.
+        //		command 	optional { name, pv, state, onValue, offValue, onState, offState }: the channels can be
+        //					switched on and off by writing onValue (default 1) or offValue (default 0) to pv,
+        //					a template like the one of the pv names; state is the template of the pv that
+        //					then becomes onState (default ON) or offState (default OFF).
+        //					The server writes only what is allowed by the file channelCommandRules.txt
+        //					in the folder of the view.
+        //					name (a template, e.g. "{system}") is what is switched, for the texts.
+        //
+        //	- init() is called by DesktopContent.js: view.json and the masks are loaded,
+        //		then the page is built and assignPvs() sets the pv of each channel
+        //	- generateUID() registers the pv list at the server, then pollServer() is called
+        //		periodically: only the pvs that changed are returned
+        //	- select() of another option changes the pvs and registers the new list
+        //	- below each panel a chart shows the history of the pvs of its channels, read from the
+        //		archiver: one line for each channel, for the last hours or for the time range
+        //		selected by dragging the mouse in a chart
+        //	- a click on a channel (in the grid, in the boxes or in the chart) selects its line in the
+        //		chart of the panel, another click on it clears the selection
+        //	- if the view has a command and the server allows the user (see getCommandInfo()), a double
+        //		click on a channel asks to switch it on or off, and each panel has the buttons to switch
+        //		all its channels. The server decides if each channel can be switched (e.g. it refuses
+        //		to switch on without the permit of an interlock), the page shows what was refused
+        //
+        //====================== end high-level behavior description
+        //
+        /////////////////////////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////////////////////////
+
+        var MASKS_PATH = "/WebPath/UserWebPath/masks/";
+        var POLL_PERIOD_MS = 5000;
+        var STALE_SECONDS = 86400; 			//a pv not updated for longer is shown as stale
+        var RANGE_PRESETS = [["1 h", 3600], ["6 h", 21600], ["24 h", 86400], ["7 d", 604800], ["30 d", 2592000]];
+        var TREND_DEFAULT_SECONDS = 21600;
+        var TREND_REFRESH_MS = 60000; 		//at least, a long time range is refreshed less often
+        var CLICK_MAX_PIXELS = 4; 			//a mouse move longer than this in the chart is a zoom, not a click
+        var EMPTY_CELL = "-1";
+        var EXPAND_PASSES = 4; 				//a value of a field may hold other fields
+        var PICTURE_CELL_ALPHA = 0.8; 		//the picture is visible through the cells
+        var COMMAND_TIMEOUT_MS = 20000; 	//a channel that did not switch within this time after the command is reported
+        var MAX_REFUSED_SHOWN = 6; 			//refused channels listed in the dialog
+
+        var SEVERITY_CLASS = { "NO_ALARM": "ok", "MINOR": "minor", "MAJOR": "major", "INVALID": "invalid" };
+        var STATE_COLOR = {
+            "ok": "rgb(0, 200, 0)", "minor": "rgb(255, 225, 0)", "major": "rgb(255, 40, 40)",
+            "invalid": "rgb(255, 0, 255)", "stale": "rgb(130, 130, 130)", "unknown": "rgb(70, 76, 88)"
+        };
+        var EDGE_COLOR = "rgb(28, 31, 37)";
+        var HOVER_COLOR = "white";
+
+        var _viewPath = ""; 	//folder of the view, with / at the end
+        var _view = null; 		//the content of view.json
+        var _masks = {}; 		//mask file => array of rows, each an array of keys (null if empty cell)
+        var _masksToLoad = 0;
+        var _selection = []; 	//for each selector, the index of the selected option
+        var _showPicture = true;
+        var _panels = []; 		//{ config, rows, keys, pvOfKey, boxOfKey, stageEl, canvasEl, noteEl, hoverKey, selectedKey, chart, chartNoteEl, nearestKey,
+                                        //	commandEl, commandName, commandOfKey, pendingOfKey, failedCount }
+        var _pvs = {}; 			//pv name => { value, time, status, severity }
+        var _indicatorPvs = {}; //pv name => { value, time, status, severity }, the pvs of the indicators
+        var _statePvs = {}; 	//pv name => { value, time, status, severity }, the state pvs of the commands
+        var _canCommand = false; //the server allows the user to switch the channels
+        var _pvSettings = {}; 	//pv name => { Units, Upper_Alarm_Limit, ... }
+        var _generation = 0; 	//incremented when the pv list changes, to ignore the replies about the old list
+        var _uid = "";
+        var _pollTimer = 0;
+        var _lastPollTime = 0;
+
+        //trends
+        var _trendSeries = {}; 	//pv name => array of the series (of different charts) that show it
+        var _trend = {
+            seconds: TREND_DEFAULT_SECONDS, 	//the charts show the last seconds, or 0 if they show the fixed time range
+            viewFrom: 0, viewTo: 0, 			//	selected with the mouse
+            batch: null, timer: 0, loading: false, problem: "", units: ""
+        };
+
+
+        //=====================================================================================
+        //init called once body has loaded
+        function init() {
+            Debug.log("init() was called");
+
+            var viewName = DesktopContent.getParameter(0, "view") || "";
+            if (!/^[\w\-]+$/.test(viewName)) {
+                fail("No view to show: the url parameter view is missing or illegal");
+                return;
+            }
+            _viewPath = MASKS_PATH + viewName + "/";
+
+            loadFile("view.json", viewHandler);
+            window.addEventListener("resize", function () { drawAll(); drawTrends(); });
+        } //end init()
+
+        //=====================================================================================
+        //addEl ~~
+        //	returns a new element appended to parentEl
+        function addEl(parentEl, tag, className, text) {
+            var el = parentEl.appendChild(document.createElement(tag));
+            if (className) el.className = className;
+            if (text !== undefined) el.textContent = text;
+            return el;
+        } //end addEl()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //view and masks, static files
+
+        //=====================================================================================
+        //loadFile ~~
+        //	reads a file of the view folder and calls handler(text)
+        function loadFile(file, handler) {
+            var req = new XMLHttpRequest();
+            req.onload = function () {
+                if (req.status == 200) handler(req.responseText);
+                else fail("Unable to load " + _viewPath + file + " (http status " + req.status + ")");
+            };
+            req.onerror = function () { fail("Unable to load " + _viewPath + file); };
+            req.open("GET", _viewPath + file + "?time=" + Date.now()); //do not use a cached copy
+            req.overrideMimeType("text/plain");
+            req.send();
+        } //end loadFile()
+
+        //=====================================================================================
+        //viewHandler ~~
+        //	called with the text of view.json: loads the masks of the panels
+        function viewHandler(text) {
+            try {
+                _view = JSON.parse(text);
+                if (!Array.isArray(_view.panels) || !_view.panels.length) throw "no panels";
+            }
+            catch (e) {
+                fail("Illegal view.json: " + e);
+                return;
+            }
+            _view.selectors = _view.selectors || [];
+            _view.indicators = _view.indicators || [];
+            if (_view.command && !_view.command.pv) _view.command = null;
+
+            document.getElementById("title").textContent = _view.title || "Detector view";
+            document.title = _view.title || "Detector view";
+
+            var files = [];
+            for (var p = 0; p < _view.panels.length; ++p)
+                if (files.indexOf(_view.panels[p].mask) == -1)
+                    files.push(_view.panels[p].mask);
+
+            _masksToLoad = files.length;
+            for (var f = 0; f < files.length; ++f) {
+                if (!/^[\w\-.]+$/.test(files[f])) {
+                    fail("Illegal mask file name in view.json: " + files[f]);
+                    return;
+                }
+                loadFile(files[f], maskHandler.bind(null, files[f]));
+            }
+        } //end viewHandler()
+
+        //=====================================================================================
+        //maskHandler ~~
+        //	called with the text of a mask: when all are loaded the page is built
+        function maskHandler(file, text) {
+            _masks[file] = parseMask(text);
+            if (!_masks[file].length) {
+                fail("The mask " + file + " is empty");
+                return;
+            }
+            if (--_masksToLoad) return;
+
+            makeSelectors();
+            makeIndicators();
+            makePanels();
+            assignPvs();
+        } //end maskHandler()
+
+        //=====================================================================================
+        //parseMask ~~
+        //	returns the rows of the csv mask, each an array of keys (null for the empty cells)
+        function parseMask(text) {
+            var delimiter = text.indexOf(";") != -1 ? ";" : ",";
+            var lines = text.split(/\r?\n/);
+            var rows = [];
+            for (var i = 0; i < lines.length; ++i) {
+                if (!lines[i].trim()) continue;
+                rows.push(lines[i].split(delimiter).map(function (cell) {
+                    cell = cell.trim();
+                    return cell && cell != EMPTY_CELL ? cell : null;
+                }));
+            }
+            return rows;
+        } //end parseMask()
+
+        //=====================================================================================
+        function fail(problem) {
+            Debug.log(problem);
+            showStatus(problem);
+        } //end fail()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //page
+
+        //=====================================================================================
+        //makeSelectors ~~
+        //	one row of buttons for each selector of the view, and the button of the pictures
+        function makeSelectors() {
+            var selectorsEl = document.getElementById("selectors");
+
+            for (var s = 0; s < _view.selectors.length; ++s) {
+                var selectorEl = addEl(selectorsEl, "span", "selector");
+                addEl(selectorEl, "span", "selectorLabel", _view.selectors[s].label);
+                for (var o = 0; o < _view.selectors[s].options.length; ++o)
+                    addEl(selectorEl, "button", o ? "" : "active", _view.selectors[s].options[o].label).onclick = select.bind(null, s, o);
+                _view.selectors[s].el = selectorEl;
+                _selection.push(0);
+            }
+
+            var hasPicture = _view.panels.some(function (panel) { return panel.image; });
+            if (hasPicture) {
+                var pictureEl = addEl(selectorsEl, "span", "selector");
+                addEl(pictureEl, "span", "selectorLabel", "Picture");
+                var buttonEl = addEl(pictureEl, "button", "active", "show");
+                buttonEl.id = "pictureButton";
+                buttonEl.onclick = togglePicture;
+            }
+        } //end makeSelectors()
+
+        //=====================================================================================
+        //makeIndicators ~~
+        //	one box for each indicator of the view, after the selectors (before the button of the pictures),
+        //	their pvs do not depend on the selected options
+        function makeIndicators() {
+            var selectorsEl = document.getElementById("selectors");
+            var pictureButtonEl = document.getElementById("pictureButton");
+
+            for (var i = 0; i < _view.indicators.length; ++i) {
+                var indicator = _view.indicators[i];
+                var indicatorEl = addEl(selectorsEl, "span", "selector");
+                if (pictureButtonEl) selectorsEl.insertBefore(indicatorEl, pictureButtonEl.parentNode);
+                addEl(indicatorEl, "span", "selectorLabel", indicator.label);
+                indicator.el = addEl(indicatorEl, "span", "indicator unknown", "-");
+
+                var pvNames = [indicator.pv, indicator.detail, indicator.alive];
+                for (var n = 0; n < pvNames.length; ++n)
+                    if (pvNames[n]) _indicatorPvs[pvNames[n]] = {};
+            }
+        } //end makeIndicators()
+
+        //=====================================================================================
+        //makeRangeButtons ~~
+        //	adds to parentEl one button for each time range of the trend charts
+        //	(all the charts have them, and show the same time range)
+        function makeRangeButtons(parentEl) {
+            var rangeEl = addEl(parentEl, "span", "rangeButtons");
+            for (var i = 0; i < RANGE_PRESETS.length; ++i) {
+                var buttonEl = addEl(rangeEl, "button", RANGE_PRESETS[i][1] == _trend.seconds ? "active" : "", RANGE_PRESETS[i][0]);
+                buttonEl.rangeSeconds = RANGE_PRESETS[i][1];
+                buttonEl.onclick = setTrendRange.bind(null, RANGE_PRESETS[i][1]);
+            }
+        } //end makeRangeButtons()
+
+        //=====================================================================================
+        //select ~~
+        //	selects an option of a selector: the channels show other pvs
+        function select(selectorIndex, optionIndex) {
+            _selection[selectorIndex] = optionIndex;
+            var buttonEls = _view.selectors[selectorIndex].el.getElementsByTagName("button");
+            for (var o = 0; o < buttonEls.length; ++o)
+                buttonEls[o].classList.toggle("active", o == optionIndex);
+            assignPvs();
+        } //end select()
+
+        //=====================================================================================
+        //togglePicture ~~
+        //	shows or hides the pictures behind the grids
+        function togglePicture() {
+            _showPicture = !_showPicture;
+            document.getElementById("pictureButton").classList.toggle("active", _showPicture);
+            for (var p = 0; p < _panels.length; ++p)
+                if (_panels[p].imageEl)
+                    _panels[p].imageEl.style.visibility = _showPicture ? "" : "hidden";
+            drawAll();
+        } //end togglePicture()
+
+        //=====================================================================================
+        function makePanels() {
+            for (var p = 0; p < _view.panels.length; ++p)
+                makePanel(_view.panels[p]);
+        } //end makePanels()
+
+        //=====================================================================================
+        //makePanel ~~
+        //	builds a panel: title, grid drawn in a canvas (over the picture, if any)
+        //	and one box with the value for each channel
+        function makePanel(config) {
+            var rows = _masks[config.mask];
+            var panel = { config: config, rows: rows, keys: [], pvOfKey: {}, boxOfKey: {}, hoverKey: null,
+                commandName: "", commandOfKey: {}, pendingOfKey: {}, failedCount: 0 };
+            panel.columnCount = Math.max.apply(null, rows.map(function (row) { return row.length; }));
+            for (var y = 0; y < rows.length; ++y)
+                for (var x = 0; x < rows[y].length; ++x)
+                    if (rows[y][x] && panel.keys.indexOf(rows[y][x]) == -1)
+                        panel.keys.push(rows[y][x]);
+            panel.keys.sort();
+
+            var panelEl = addEl(document.getElementById("panels"), "div", "panel");
+            addEl(panelEl, "span", "panelTitle", config.title);
+            panel.noteEl = addEl(panelEl, "span", "panelNote");
+
+            //the buttons to switch all the channels, shown if the server allows the user
+            panel.commandEl = addEl(panelEl, "span", "commands");
+            panel.commandEl.style.display = "none";
+            addEl(panel.commandEl, "button", "", "all ON").onclick = function () { askCommand(panel, panel.keys, true /*on*/); };
+            addEl(panel.commandEl, "button", "", "all OFF").onclick = function () { askCommand(panel, panel.keys, false /*on*/); };
+
+            panel.stageEl = addEl(panelEl, "div", "stage");
+            if (config.image) {
+                panel.imageEl = addEl(panel.stageEl, "img");
+                panel.imageEl.alt = "";
+                panel.imageEl.onload = drawPanel.bind(null, panel);
+                panel.imageEl.src = _viewPath + config.image.file;
+            }
+            else
+                panel.stageEl.style.aspectRatio = config.aspect || panel.columnCount / rows.length;
+
+            panel.canvasEl = addEl(panel.stageEl, "canvas");
+            panel.canvasEl.onmousemove = function (event) { hover(panel, cellAt(panel, event), event); };
+            panel.canvasEl.onmouseleave = function () { hover(panel, null); };
+            panel.canvasEl.onclick = function (event) { selectKey(panel, cellAt(panel, event)); };
+            panel.canvasEl.ondblclick = function (event) { askCommand(panel, [cellAt(panel, event)]); };
+
+            var boxesEl = addEl(panelEl, "div", "boxes");
+            panel.keys.forEach(function (key) {
+                var boxEl = panel.boxOfKey[key] = addEl(boxesEl, "button");
+                boxEl.labelEl = addEl(boxEl, "span", "", key);
+                boxEl.valueEl = addEl(boxEl, "span");
+                boxEl.onclick = function () { selectKey(panel, key); };
+                boxEl.ondblclick = function () { askCommand(panel, [key]); };
+                boxEl.onmouseenter = function () { hover(panel, key); };
+                boxEl.onmouseleave = function () { hover(panel, null); };
+            });
+
+            //the trend chart: a click selects the line closest to the mouse (not after a drag, that is a zoom)
+            var trendHeadEl = addEl(panelEl, "div", "trendHead");
+            addEl(trendHeadEl, "span", "panelTitle", "Trend");
+            makeRangeButtons(trendHeadEl);
+            addEl(trendHeadEl, "span", "hint trendNote", "drag in the chart to zoom");
+            panel.chartNoteEl = addEl(addEl(panelEl, "div", "chartLine"), "span", "panelNote");
+            panel.chart = DCSChart.create(panelEl, { highlightNearest: true, onDraw: trendChartDrawn, onZoom: zoomTrends });
+            panel.chart.panel = panel;
+            var mouseDownX = 0;
+            panel.chart.canvas.addEventListener("mousedown", function (event) { mouseDownX = event.clientX; });
+            panel.chart.canvas.addEventListener("click", function (event) {
+                if (Math.abs(event.clientX - mouseDownX) <= CLICK_MAX_PIXELS) selectKey(panel, panel.nearestKey);
+            });
+
+            _panels.push(panel);
+        } //end makePanel()
+
+        //=====================================================================================
+        //expand ~~
+        //	returns the template with each {field} replaced by its value
+        function expand(template, values) {
+            for (var pass = 0; pass < EXPAND_PASSES && template.indexOf("{") != -1; ++pass)
+                template = template.replace(/\{(\w+)\}/g, function (match, field) {
+                    return values[field] !== undefined ? values[field] : match;
+                });
+            return template;
+        } //end expand()
+
+        //=====================================================================================
+        //assignPvs ~~
+        //	sets the pv of each channel of each panel, from the selected options,
+        //	and registers the new pv list at the server
+        function assignPvs() {
+            var oldPvs = _pvs, oldStatePvs = _statePvs;
+            _pvs = {};
+            _statePvs = {};
+
+            for (var p = 0; p < _panels.length; ++p) {
+                var panel = _panels[p];
+                var template = panel.config.pv !== undefined ? panel.config.pv : _view.pv;
+
+                var values = {};
+                for (var s = 0; s < _view.selectors.length; ++s)
+                    Object.assign(values, _view.selectors[s].options[_selection[s]].values);
+                Object.assign(values, panel.config.values);
+
+                for (var k = 0; k < panel.keys.length; ++k) {
+                    values.channel = panel.keys[k];
+                    var pvName = template ? expand(template, values) : panel.keys[k];
+                    panel.pvOfKey[panel.keys[k]] = pvName;
+                    _pvs[pvName] = oldPvs[pvName] || {}; //keep the values of the pvs that are still shown
+
+                    if (!_view.command) continue;
+                    var command = panel.commandOfKey[panel.keys[k]] = { pv: expand(_view.command.pv, values), statePv: expand(_view.command.state || "", values) };
+                    if (command.statePv) _statePvs[command.statePv] = oldStatePvs[command.statePv] || {};
+                }
+
+                //the commands of the other pvs are not awaited any more
+                panel.pendingOfKey = {};
+                panel.failedCount = 0;
+                panel.commandName = _view.command ? expand(_view.command.name || "", values) : "";
+                var buttonEls = panel.commandEl.getElementsByTagName("button");
+                buttonEls[0].textContent = (panel.commandName + " all ON").trim();
+                buttonEls[1].textContent = (panel.commandName + " all OFF").trim();
+            }
+
+            ++_generation;
+            makeSeries();
+            drawAll();
+            fetchTrends();
+            getPvSettings();
+            generateUID();
+            getCommandInfo();
+        } //end assignPvs()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //drawing
+
+        //=====================================================================================
+        //stateOf ~~
+        //	returns the state of the pv, that is the name of its css class and of its color
+        function stateOf(pvName) {
+            var pv = _pvs[pvName] || _indicatorPvs[pvName] || _statePvs[pvName];
+            if (!pv || pv.time === undefined) return "unknown";
+            if (!(Date.now() / 1000 - pv.time < STALE_SECONDS)) return "stale";
+            return SEVERITY_CLASS[pv.severity] || "unknown";
+        } //end stateOf()
+
+        //=====================================================================================
+        //valueText ~~
+        //	returns the short text of a value
+        function valueText(value) {
+            if (value === undefined) return "-";
+            var number = Number(value);
+            if (value === "" || isNaN(number)) return String(value);
+            return String(Number.parseFloat(number.toPrecision(5)));
+        } //end valueText()
+
+        //=====================================================================================
+        function toolTipText(pvName) {
+            var pv = _pvs[pvName] || _indicatorPvs[pvName] || _statePvs[pvName];
+            var settings = _pvSettings[pvName];
+
+            var toolTip = pvName;
+            if (!pv || pv.time === undefined)
+                toolTip += "\nNo value received yet";
+            else
+                toolTip += "\nValue: " + pv.value + (settings && settings.Units ? " " + settings.Units : "") +
+                    "\nTime: " + new Date(pv.time * 1000).toLocaleString("en-GB") + (stateOf(pvName) == "stale" ? " (stale)" : "") +
+                    "\nStatus: " + pv.status +
+                    "\nSeverity: " + pv.severity;
+            if (settings && settings.Upper_Alarm_Limit !== undefined)
+                toolTip += "\nWarning limits: " + Number.parseFloat(settings.Lower_Warning_Limit) + " to " + Number.parseFloat(settings.Upper_Warning_Limit) +
+                    "\nAlarm limits: " + Number.parseFloat(settings.Lower_Alarm_Limit) + " to " + Number.parseFloat(settings.Upper_Alarm_Limit);
+            return toolTip;
+        } //end toolTipText()
+
+        //=====================================================================================
+        function drawAll() {
+            for (var p = 0; p < _panels.length; ++p)
+                drawPanel(_panels[p]);
+            drawIndicators();
+        } //end drawAll()
+
+        //=====================================================================================
+        //drawIndicators ~~
+        //	updates text and color of the boxes of the indicators
+        function drawIndicators() {
+            for (var i = 0; i < _view.indicators.length; ++i) {
+                var indicator = _view.indicators[i];
+                var state = stateOf(indicator.pv);
+                var text = valueText(_indicatorPvs[indicator.pv].value);
+                var toolTip = toolTipText(indicator.pv);
+
+                if (indicator.detail) {
+                    var detail = _indicatorPvs[indicator.detail].value;
+                    if (detail && (state == "minor" || state == "major")) text += ": " + detail;
+                    toolTip += "\n\n" + toolTipText(indicator.detail);
+                }
+
+                if (indicator.alive) {
+                    var alive = _indicatorPvs[indicator.alive].value;
+                    if (alive !== undefined && Number(alive) == 0) { //the value of the pv is not maintained
+                        state = "minor";
+                        text = indicator.notAlive || "not alive";
+                    }
+                    toolTip += "\n\n" + toolTipText(indicator.alive);
+                }
+
+                indicator.el.className = "indicator " + state;
+                indicator.el.textContent = text;
+                indicator.el.title = toolTip;
+            }
+        } //end drawIndicators()
+
+        //=====================================================================================
+        //drawPanel ~~
+        //	draws the grid of the panel and updates the boxes of its channels
+        function drawPanel(panel) {
+            var canvasEl = panel.canvasEl;
+            var scale = window.devicePixelRatio || 1;
+            var width = panel.stageEl.clientWidth, height = panel.stageEl.clientHeight;
+            if (!width || !height) return; //e.g. the picture is not loaded yet
+
+            canvasEl.width = Math.round(width * scale);
+            canvasEl.height = Math.round(height * scale);
+            var context = canvasEl.getContext("2d");
+            context.scale(scale, scale);
+
+            //the area of the grid
+            var image = panel.config.image;
+            panel.gridLeft = image ? image.left * width : 0;
+            panel.gridTop = image ? image.top * height : 0;
+            panel.cellWidth = (image ? image.width * width : width) / panel.columnCount;
+            panel.cellHeight = (image ? image.height * height : height) / panel.rows.length;
+
+            context.translate(panel.gridLeft, panel.gridTop);
+
+            //the cells
+            var stateOfKey = {};
+            var counts = {};
+            for (var k = 0; k < panel.keys.length; ++k) {
+                var state = stateOfKey[panel.keys[k]] = stateOf(panel.pvOfKey[panel.keys[k]]);
+                counts[state] = (counts[state] || 0) + 1;
+            }
+            context.globalAlpha = image && _showPicture ? PICTURE_CELL_ALPHA : 1;
+            for (var y = 0; y < panel.rows.length; ++y)
+                for (var x = 0; x < panel.rows[y].length; ++x) {
+                    var key = panel.rows[y][x];
+                    if (!key) continue;
+                    context.fillStyle = STATE_COLOR[stateOfKey[key]];
+                    //no gap between the cells
+                    var left = Math.floor(x * panel.cellWidth), top = Math.floor(y * panel.cellHeight);
+                    context.fillRect(left, top, Math.ceil((x + 1) * panel.cellWidth) - left, Math.ceil((y + 1) * panel.cellHeight) - top);
+                }
+            context.globalAlpha = 1;
+
+            //the borders of the channels
+            context.strokeStyle = EDGE_COLOR;
+            context.lineWidth = 1;
+            drawEdges(panel, context, null);
+            context.strokeStyle = HOVER_COLOR;
+            context.lineWidth = 2;
+            if (panel.selectedKey) drawEdges(panel, context, panel.selectedKey);
+            if (panel.hoverKey) drawEdges(panel, context, panel.hoverKey);
+
+            //the boxes
+            for (var k = 0; k < panel.keys.length; ++k) {
+                var key = panel.keys[k];
+                var pvName = panel.pvOfKey[key];
+                var boxEl = panel.boxOfKey[key];
+                boxEl.className = "pv " + stateOfKey[key] + (key == panel.hoverKey || key == panel.selectedKey ? " highlight" : "");
+                boxEl.valueEl.textContent = valueText((_pvs[pvName] || {}).value);
+                boxEl.title = toolTipText(pvName);
+            }
+
+            //the channels that were commanded: done when their state is the commanded one
+            var pendingCount = 0;
+            for (var key in panel.pendingOfKey) {
+                var pending = panel.pendingOfKey[key];
+                if (commandState(panel, key) == (pending.on ? "on" : "off"))
+                    delete panel.pendingOfKey[key];
+                else if (Date.now() > pending.until) {
+                    delete panel.pendingOfKey[key];
+                    ++panel.failedCount;
+                }
+                else
+                    ++pendingCount;
+            }
+
+            panel.noteEl.textContent = panel.keys.length + " channels" +
+                (counts.major ? ", " + counts.major + " alarm" : "") +
+                (counts.minor ? ", " + counts.minor + " warning" : "") +
+                (counts.invalid ? ", " + counts.invalid + " invalid" : "") +
+                (pendingCount ? ", waiting for " + pendingCount + " to switch" : "") +
+                (panel.failedCount ? ", " + panel.failedCount + " did not switch" : "");
+            panel.noteEl.classList.toggle("problem", !!panel.failedCount);
+        } //end drawPanel()
+
+        //=====================================================================================
+        //drawEdges ~~
+        //	draws the lines between the cells of different channels,
+        //	or only the border of the channel onlyKey
+        function drawEdges(panel, context, onlyKey) {
+            var rows = panel.rows;
+            var cellWidth = panel.cellWidth, cellHeight = panel.cellHeight;
+
+            context.beginPath();
+            for (var y = 0; y < rows.length; ++y)
+                for (var x = 0; x < rows[y].length; ++x) {
+                    var key = rows[y][x];
+                    if (!key || (onlyKey && key != onlyKey)) continue;
+
+                    var left = Math.round(x * cellWidth), right = Math.round((x + 1) * cellWidth);
+                    var top = Math.round(y * cellHeight), bottom = Math.round((y + 1) * cellHeight);
+                    if (x == 0 || rows[y][x - 1] != key) { context.moveTo(left, top); context.lineTo(left, bottom); }
+                    if (rows[y][x + 1] != key) { context.moveTo(right, top); context.lineTo(right, bottom); }
+                    if (y == 0 || rows[y - 1][x] != key) { context.moveTo(left, top); context.lineTo(right, top); }
+                    if (y == rows.length - 1 || rows[y + 1][x] != key) { context.moveTo(left, bottom); context.lineTo(right, bottom); }
+                }
+            context.stroke();
+        } //end drawEdges()
+
+        //=====================================================================================
+        //cellAt ~~
+        //	returns the key of the channel at the mouse position, or null
+        function cellAt(panel, event) {
+            var rect = panel.canvasEl.getBoundingClientRect();
+            var x = Math.floor((event.clientX - rect.left - panel.gridLeft) / panel.cellWidth);
+            var y = Math.floor((event.clientY - rect.top - panel.gridTop) / panel.cellHeight);
+            return (panel.rows[y] && panel.rows[y][x]) || null;
+        } //end cellAt()
+
+        //=====================================================================================
+        //hover ~~
+        //	highlights the channel of the panel (none if key is null) and,
+        //	if the mouse is in the grid (event is given), shows its tooltip at the mouse
+        function hover(panel, key, event) {
+            var toolTipEl = document.getElementById("toolTip");
+            if (key && event) {
+                toolTipEl.textContent = toolTipText(panel.pvOfKey[key]);
+                toolTipEl.style.display = "block";
+                var flip = event.clientX > window.innerWidth / 2; //keep it in the window
+                toolTipEl.style.left = flip ? "" : (event.clientX + 14) + "px";
+                toolTipEl.style.right = flip ? (window.innerWidth - event.clientX + 14) + "px" : "";
+                toolTipEl.style.top = (event.clientY + 14) + "px";
+            }
+            else
+                toolTipEl.style.display = "none";
+
+            panel.canvasEl.style.cursor = key ? "pointer" : "default";
+            if (key == panel.hoverKey) return;
+            panel.hoverKey = key;
+            drawPanel(panel);
+            updateHighlight(panel);
+        } //end hover()
+
+        //=====================================================================================
+        //selectKey ~~
+        //	selects the channel of the panel, that is its line in the chart and its border in the grid:
+        //	selecting the selected channel, or no channel (null), clears the selection
+        function selectKey(panel, key) {
+            panel.selectedKey = key && key != panel.selectedKey ? key : null;
+            drawPanel(panel);
+            updateHighlight(panel);
+        } //end selectKey()
+
+        //=====================================================================================
+        //updateHighlight ~~
+        //	the chart of the panel highlights the line of the channel under the mouse in the grid,
+        //	or of the selected channel
+        function updateHighlight(panel) {
+            panel.chart.highlightGroup = panel.hoverKey || panel.selectedKey || null;
+            DCSChart.draw(panel.chart);
+        } //end updateHighlight()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //trends
+
+        //=====================================================================================
+        //makeSeries ~~
+        //	one line for each channel of each chart, for the current pvs (the history is read by fetchTrends())
+        function makeSeries() {
+            _trendSeries = {};
+            for (var p = 0; p < _panels.length; ++p) {
+                var panel = _panels[p];
+                panel.chart.series = [];
+                for (var k = 0; k < panel.keys.length; ++k) {
+                    var pvName = panel.pvOfKey[panel.keys[k]];
+                    var series = { chart: panel.chart, name: panel.keys[k], group: panel.keys[k], color: DCSChart.COLORS[k % DCSChart.COLORS.length],
+                        dashed: k >= DCSChart.COLORS.length, points: [] };
+                    panel.chart.series.push(series);
+                    (_trendSeries[pvName] = _trendSeries[pvName] || []).push(series);
+                }
+            }
+        } //end makeSeries()
+
+        //=====================================================================================
+        //trendChartDrawn ~~
+        //	called after a chart was drawn: the note of the chart shows the selected line,
+        //	or the one closest to the mouse, with its value at the position of the mouse
+        function trendChartDrawn(chart, readout) {
+            var panel = chart.panel;
+            panel.nearestKey = readout.nearest ? readout.nearest.group : null;
+
+            var series = readout.nearest;
+            for (var s = 0; s < chart.series.length; ++s)
+                if (panel.selectedKey && chart.series[s].group == panel.selectedKey) series = chart.series[s];
+
+            var note = "";
+            if (series)
+                note = series.name + ": " + DCSChart.valueText(readout.values[chart.series.indexOf(series)]) +
+                    (_trend.units ? " " + _trend.units : "") + (readout.pointerInPlot ? " at " + DCSChart.timeText(readout.time) : "");
+            else if (!readout.hasData && !_trend.loading)
+                note = "no archived values";
+            panel.chartNoteEl.textContent = note;
+        } //end trendChartDrawn()
+
+        //=====================================================================================
+        //setTrendRange ~~
+        //	the charts show the last seconds until now, and are refreshed periodically
+        function setTrendRange(seconds) {
+            _trend.seconds = seconds;
+            var buttonEls = document.querySelectorAll(".rangeButtons button");
+            for (var i = 0; i < buttonEls.length; ++i)
+                buttonEls[i].classList.toggle("active", buttonEls[i].rangeSeconds == seconds);
+            fetchTrends();
+        } //end setTrendRange()
+
+        //=====================================================================================
+        //zoomTrends ~~
+        //	called when a time range (ms) was selected with the mouse in a chart:
+        //	all the charts show it, until a range button is clicked
+        function zoomTrends(fromTime, toTime) {
+            _trend.viewFrom = fromTime;
+            _trend.viewTo = toTime;
+            setTrendRange(0);
+        } //end zoomTrends()
+
+        //=====================================================================================
+        //fetchTrends ~~
+        //	starts to read from the archiver the history of all the pvs of the charts
+        function fetchTrends() {
+            window.clearTimeout(_trend.timer);
+            if (_trend.batch) _trend.batch.cancelled = true; //ignore the replies to the previous requests
+
+            if (_trend.seconds) {
+                _trend.viewTo = Date.now();
+                _trend.viewFrom = _trend.viewTo - _trend.seconds * 1000;
+            }
+            for (var p = 0; p < _panels.length; ++p) {
+                _panels[p].chart.viewFrom = _trend.viewFrom;
+                _panels[p].chart.viewTo = _trend.viewTo;
+            }
+
+            _trend.loading = true;
+            _trend.problem = "";
+            _trend.batch = DCSChart.fetchHistory(Object.keys(_trendSeries), _trend.viewFrom / 1000, _trend.viewTo / 1000,
+                trendSeriesHandler, trendDoneHandler);
+            drawTrends();
+        } //end fetchTrends()
+
+        //=====================================================================================
+        //trendSeriesHandler ~~
+        //	called with the history of each pv
+        function trendSeriesHandler(pv, reply, errStr) {
+            if (errStr) {
+                _trend.problem = "History request failed: " + errStr;
+                return;
+            }
+            if (reply.archiveProblem) _trend.problem = "Archiver history: " + reply.archiveProblem;
+            if (reply.units) _trend.units = reply.units;
+
+            var seriesList = _trendSeries[pv];
+            for (var i = 0; i < seriesList.length; ++i) {
+                seriesList[i].points = reply.points;
+                if (typeof reply.lowLimit == "number") seriesList[i].chart.lowLimit = reply.lowLimit;
+                if (typeof reply.highLimit == "number") seriesList[i].chart.highLimit = reply.highLimit;
+                DCSChart.draw(seriesList[i].chart);
+            }
+        } //end trendSeriesHandler()
+
+        //=====================================================================================
+        //trendDoneHandler ~~
+        //	called when the history of all the pvs was read
+        function trendDoneHandler() {
+            _trend.loading = false;
+            drawTrends();
+
+            if (_trend.seconds) //a long time range changes slowly
+                _trend.timer = window.setTimeout(fetchTrends, Math.max(TREND_REFRESH_MS, _trend.seconds * 1000 / 200));
+        } //end trendDoneHandler()
+
+        //=====================================================================================
+        function drawTrends() {
+            var noteEls = document.querySelectorAll(".trendNote");
+            for (var n = 0; n < noteEls.length; ++n) {
+                noteEls[n].classList.toggle("problem", !!_trend.problem);
+                noteEls[n].textContent = _trend.problem || (_trend.loading ? "loading..." : "drag in the chart to zoom");
+            }
+
+            for (var p = 0; p < _panels.length; ++p)
+                DCSChart.draw(_panels[p].chart);
+        } //end drawTrends()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //live values
+
+        //=====================================================================================
+        //getPvSettings ~~
+        //	requests units and limits of all the pvs, they are only used in the tooltips
+        function getPvSettings() {
+            DesktopContent.XMLHttpRequest("Request?RequestType=getPVSettings",
+                "pvList=" + Object.keys(_pvs).join(",") + "," + //the server expects a comma after each pv
+                "&id=0",
+                pvSettingsHandler /*returnHandler*/,
+                _generation /*reqParam*/,
+                0 /*progressHandler*/,
+                0 /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end getPvSettings()
+
+        //=====================================================================================
+        function pvSettingsHandler(req, generation) {
+            if (generation != _generation) return; //the pv list has changed
+            try {
+                _pvSettings = JSON.parse(DesktopContent.getXMLValue(req, "JSON"));
+            }
+            catch (e) {
+                Debug.log("Illegal pv settings from server: " + e);
+                return;
+            }
+            drawAll();
+        } //end pvSettingsHandler()
+
+        //=====================================================================================
+        //generateUID ~~
+        //	registers the list of pvs at the server, the returned uid is then used to poll
+        function generateUID() {
+            _uid = "";
+            window.clearTimeout(_pollTimer);
+
+            DesktopContent.XMLHttpRequest("Request?RequestType=generateUID",
+                "pvList=" + Object.keys(_pvs).concat(Object.keys(_indicatorPvs), Object.keys(_statePvs)).join(",") + ",",
+                generateUIDHandler /*returnHandler*/,
+                _generation /*reqParam*/,
+                0 /*progressHandler*/,
+                true /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end generateUID()
+
+        //=====================================================================================
+        function generateUIDHandler(req, generation, errStr) {
+            if (generation != _generation) return; //the pv list has changed
+
+            if (!errStr) {
+                try {
+                    var uid = JSON.parse(DesktopContent.getXMLValue(req, "JSON")).message;
+                    if (uid == "-1") errStr = "Unable to generate UID";
+                    else _uid = uid;
+                }
+                catch (e) {
+                    errStr = "Illegal response from server: " + e;
+                }
+            }
+
+            if (errStr) { //try again later
+                showStatus(errStr);
+                _pollTimer = window.setTimeout(generateUID, POLL_PERIOD_MS);
+                return;
+            }
+            pollServer();
+        } //end generateUIDHandler()
+
+        //=====================================================================================
+        function pollServer() {
+            DesktopContent.XMLHttpRequest("Request?RequestType=poll&uid=" + _uid,
+                "",
+                pollServerHandler /*returnHandler*/,
+                _generation /*reqParam*/,
+                0 /*progressHandler*/,
+                true /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end pollServer()
+
+        //=====================================================================================
+        //pollServerHandler ~~
+        //	the server returns only the pvs that changed since the last poll
+        function pollServerHandler(req, generation, errStr) {
+            if (generation != _generation) return; //the pv list has changed
+
+            var response;
+            if (!errStr) {
+                try {
+                    var jsonStr = DesktopContent.getXMLValue(req, "JSON") || "";
+                    response = JSON.parse(jsonStr.replace(/\s/g, "")); //the values may hold whitespace that is illegal in JSON
+                }
+                catch (e) {
+                    errStr = "Illegal response from server: " + e;
+                }
+            }
+
+            if (!errStr && response.message == "NOT_FOUND") { //e.g. the server was restarted
+                Debug.log("Have to generate new UID!");
+                generateUID();
+                return;
+            }
+
+            if (!errStr) {
+                for (var pvName in response) {
+                    var pvs = [_pvs[pvName], _indicatorPvs[pvName], _statePvs[pvName]];
+                    for (var i = 0; i < pvs.length; ++i) {
+                        if (!pvs[i]) continue;
+                        pvs[i].value = response[pvName].Value;
+                        pvs[i].time = response[pvName].Timestamp;
+                        pvs[i].status = response[pvName].Status;
+                        pvs[i].severity = response[pvName].Severity;
+                    }
+                }
+                _lastPollTime = Date.now();
+            }
+
+            //draw also the pvs that did not change, since they may have become stale
+            drawAll();
+            showStatus(errStr);
+
+            _pollTimer = window.setTimeout(pollServer, POLL_PERIOD_MS);
+        } //end pollServerHandler()
+
+        //=====================================================================================
+        //showStatus ~~
+        //	shows in the header the time of the last poll and the count of pvs in alarm, or the problem
+        function showStatus(problem) {
+            var statusEl = document.getElementById("status");
+            statusEl.classList.toggle("problem", !!problem);
+            if (problem) {
+                statusEl.textContent = problem;
+                return;
+            }
+
+            var majorCount = 0, minorCount = 0;
+            for (var pvName in _pvs) {
+                var state = stateOf(pvName);
+                if (state == "major") ++majorCount;
+                if (state == "minor") ++minorCount;
+            }
+            statusEl.textContent = majorCount + " alarm, " + minorCount + " warning  -  updated " +
+                new Date(_lastPollTime).toLocaleTimeString("en-GB");
+        } //end showStatus()
+
+        /////////////////////////////////////////////////////////////////////////////////////////
+        //commands
+
+        //=====================================================================================
+        //getCommandInfo ~~
+        //	asks the server if the user may switch the channels, the server also
+        //	prepares the connection to the pvs of the commands
+        function getCommandInfo() {
+            if (!_view.command) return;
+
+            var commandPvs = [];
+            for (var p = 0; p < _panels.length; ++p)
+                for (var key in _panels[p].commandOfKey)
+                    commandPvs.push(_panels[p].commandOfKey[key].pv);
+
+            DesktopContent.XMLHttpRequest("Request?RequestType=getChannelCommandInfo",
+                "pvList=" + commandPvs.join(","),
+                commandInfoHandler /*returnHandler*/,
+                _generation /*reqParam*/,
+                0 /*progressHandler*/,
+                0 /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end getCommandInfo()
+
+        //=====================================================================================
+        //commandInfoHandler ~~
+        //	shows the command buttons if the server allows the user
+        function commandInfoHandler(req, generation) {
+            if (generation != _generation) return; //the pv list has changed
+
+            var reply = {};
+            try { reply = JSON.parse(decodeURIComponent(DesktopContent.getXMLValue(req, "JSON"))); }
+            catch (e) { Debug.log("Illegal command info from server: " + e); }
+            Debug.log("Commands " + (reply.canCommand ? "allowed" : "not allowed: " + reply.reason));
+
+            _canCommand = !!reply.canCommand;
+            for (var p = 0; p < _panels.length; ++p)
+                _panels[p].commandEl.style.display = _canCommand ? "" : "none";
+            document.getElementById("commandHint").style.display = _canCommand ? "" : "none";
+        } //end commandInfoHandler()
+
+        //=====================================================================================
+        //commandState ~~
+        //	returns "on" or "off" from the state pv of the command of the channel, or "" if not known
+        function commandState(panel, key) {
+            var command = panel.commandOfKey[key];
+            if (!command || stateOf(command.statePv) == "unknown" || stateOf(command.statePv) == "stale") return "";
+
+            var value = String(_statePvs[command.statePv].value);
+            if (value == (_view.command.onState || "ON")) return "on";
+            if (value == (_view.command.offState || "OFF")) return "off";
+            return "";
+        } //end commandState()
+
+        //=====================================================================================
+        //askCommand ~~
+        //	asks to confirm the switch of the channels of the panel:
+        //	on is true or false for all the channels, or undefined to choose for one channel
+        function askCommand(panel, keys, on) {
+            if (!_canCommand || !keys.length || !keys[0]) return;
+            var name = (panel.commandName + " " + panel.config.title).trim();
+
+            if (on === undefined) {
+                var state = commandState(panel, keys[0]);
+                showDialog(name + " " + keys[0],
+                    panel.commandOfKey[keys[0]].pv + "\nNow: " + (state ? state.toUpperCase() : "state not known"),
+                    [{ label: "Switch ON", className: "on", disabled: state == "on", handler: sendCommand.bind(null, panel, keys, true /*on*/) },
+                     { label: "Switch OFF", className: "off", disabled: state == "off", handler: sendCommand.bind(null, panel, keys, false /*on*/) },
+                     { label: "Cancel" }]);
+                return;
+            }
+
+            //only the channels that are not in the state already
+            var target = on ? "on" : "off";
+            keys = keys.filter(function (key) { return commandState(panel, key) != target; });
+            if (!keys.length) {
+                showDialog(name, "All the channels are " + target.toUpperCase() + " already.", [{ label: "Close" }]);
+                return;
+            }
+            showDialog(name, "Switch " + target.toUpperCase() + " " + keys.length + " channels?\n" + keys.join(" "),
+                [{ label: "Switch " + target.toUpperCase() + " " + keys.length + " channels", className: target, handler: sendCommand.bind(null, panel, keys, on) },
+                 { label: "Cancel" }]);
+        } //end askCommand()
+
+        //=====================================================================================
+        //sendCommand ~~
+        //	sends the confirmed command to the server
+        function sendCommand(panel, keys, on) {
+            var value = on ? (_view.command.onValue !== undefined ? _view.command.onValue : 1) :
+                (_view.command.offValue !== undefined ? _view.command.offValue : 0);
+            var title = (panel.commandName + " " + panel.config.title).trim() + (keys.length == 1 ? " " + keys[0] : "");
+            showDialog(title, "Sending the command...", []);
+
+            DesktopContent.XMLHttpRequest("Request?RequestType=setChannelValues",
+                "pvList=" + keys.map(function (key) { return panel.commandOfKey[key].pv; }).join(",") +
+                "&value=" + encodeURIComponent(value),
+                commandHandler /*returnHandler*/,
+                { panel: panel, keys: keys, on: on, title: title, generation: _generation } /*reqParam*/,
+                0 /*progressHandler*/,
+                true /*callHandlerOnErr*/,
+                true /*doNotShowLoadingOverlay*/);
+        } //end sendCommand()
+
+        //=====================================================================================
+        //commandHandler ~~
+        //	shows what the server refused, the channels that were commanded are followed until they switch
+        function commandHandler(req, command, errStr) {
+            var reply;
+            if (!errStr) {
+                try { reply = JSON.parse(decodeURIComponent(DesktopContent.getXMLValue(req, "JSON"))); }
+                catch (e) { errStr = DesktopContent.getXMLValue(req, "Error") || "Illegal response from server: " + e; }
+            }
+            if (errStr) {
+                showDialog(command.title, "The command failed: " + errStr, [{ label: "Close" }]);
+                return;
+            }
+
+            var panel = command.panel;
+            var refusedPvs = {};
+            var text = reply.writtenCount + " of " + command.keys.length + " channels commanded to switch " + (command.on ? "ON" : "OFF") + ".";
+            for (var r = 0; r < reply.refused.length; ++r) {
+                refusedPvs[reply.refused[r].pv] = true;
+                if (r < MAX_REFUSED_SHOWN) text += "\n\nRefused " + reply.refused[r].pv + ":\n" + reply.refused[r].reason;
+            }
+            if (reply.refused.length > MAX_REFUSED_SHOWN)
+                text += "\n\n... and " + (reply.refused.length - MAX_REFUSED_SHOWN) + " more refused";
+
+            if (command.generation == _generation) { //else other pvs are shown now
+                panel.failedCount = 0;
+                for (var k = 0; k < command.keys.length; ++k)
+                    if (!refusedPvs[panel.commandOfKey[command.keys[k]].pv])
+                        panel.pendingOfKey[command.keys[k]] = { on: command.on, until: Date.now() + COMMAND_TIMEOUT_MS };
+                drawPanel(panel);
+            }
+
+            if (reply.refused.length) showDialog(command.title, text, [{ label: "Close" }]);
+            else closeDialog();
+        } //end commandHandler()
+
+        //=====================================================================================
+        //showDialog ~~
+        //	shows the dialog with one button for each of buttons { label, className, disabled, handler }:
+        //	a button closes the dialog and calls its handler, if any
+        function showDialog(title, text, buttons) {
+            document.getElementById("dialogTitle").textContent = title;
+            document.getElementById("dialogText").textContent = text;
+
+            var buttonsEl = document.getElementById("dialogButtons");
+            buttonsEl.textContent = "";
+            buttons.forEach(function (button) {
+                var buttonEl = addEl(buttonsEl, "button", button.className || "", button.label);
+                buttonEl.disabled = !!button.disabled;
+                buttonEl.onclick = function () {
+                    closeDialog();
+                    if (button.handler) button.handler();
+                };
+            });
+            document.getElementById("dialog").style.display = "flex";
+        } //end showDialog()
+
+        //=====================================================================================
+        function closeDialog() {
+            document.getElementById("dialog").style.display = "none";
+        } //end closeDialog()
+
+    </script>
+</head>
+
+<body onload='//init() called by DesktopContent.js'>
+
+    <div id="header">
+        <span id="title">Detector view</span>
+        <span id="status"></span>
+        <div id="legend">
+            <span class="swatch ok"></span>No alarm
+            <span class="swatch minor"></span>Warning
+            <span class="swatch major"></span>Alarm
+            <span class="swatch invalid"></span>Invalid
+            <span class="swatch stale"></span>Stale
+            <span class="swatch unknown"></span>Undefined state
+            <span class="hint">click a channel to select its line in the chart</span>
+            <span class="hint" id="commandHint" style="display: none">double click a channel to switch it on or off</span>
+        </div>
+    </div>
+
+    <div id="selectors"></div>
+    <div id="panels"></div>
+    <div id="toolTip"></div>
+
+    <div id="dialog">
+        <div id="dialogBox">
+            <div id="dialogTitle"></div>
+            <div id="dialogText"></div>
+            <div id="dialogButtons"></div>
+        </div>
+    </div>
+
+</body>
+</html>

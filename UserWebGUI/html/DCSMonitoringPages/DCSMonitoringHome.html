@@ -1,333 +1,116 @@
 <!DOCTYPE HTML>
 <html lang="en">
-
 <head>
-    <title>DQM HOME PAGE</title>
+    <title>DCS Monitoring Home</title>
 
+    <link href='/WebPath/css/fonts.css?family=Inconsolata:400' rel='stylesheet' type='text/css'>
+    <link href='/WebPath/css/fonts.css?family=Comfortaa:400' rel='stylesheet' type='text/css'>
     <link rel="stylesheet" type="text/css" href="/WebPath/UserWebPath/css/DCSMonitoringPages/DCSMonitoringHome.css">
 
     <script type="text/JavaScript" src="/WebPath/js/Globals.js"></script>
     <script type="text/JavaScript" src="/WebPath/js/Debug.js"></script>
     <script type="text/JavaScript" src="/WebPath/js/DesktopContent.js"></script>
-    <script type="text/JavaScript" src="/WebPath/js/widgetLibrary.js"></script>
-    <script type="text/JavaScript" src="/WebPath/js/js_lib/ConfigurationAPI.js"></script>
-
-    <!-- MultiSelectBox: Must include .css style sheet and .js functionality -->
-    <link rel="stylesheet" type="text/css" href="/WebPath/css/MultiSelectBox.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
-    <script type="text/JavaScript" src="/WebPath/js/js_lib/MultiSelectBox.js"></script>
-    <script type="text/javascript" src="/WebPath/html/widgets/libraries/plotly-1.27.1.min.js"></script>
 
     <script>
 
         //functions:
         //	init()
-        //	makeMainPage()
-
-        //	drawNewValue(widget, pvName, pvValue, pvTime, pvStatus, pvSeverity)
-
-        //	pollServer()
-        //	generateUID()
-        //	pollServerHandlerFunction(req)
-        //	generateUIDHandlerFunction(req)
-
-        //====================== start high-level behavior description
+        //	makeTiles()
+        //	navigateToPage(url)
         //
-        //	High-level description of page interactions:
-        //
-        //	- page init() is called by DesktopContent.js:
-        //		* make Page_ to collect all objects to show PVs
-        //		* makeMainPage()
-        //		* pollServer()
-        //		* generateUID()
-        //
-        //	- setupPvParams(settings)
-        //		* Pass alarm thresholds, etc associated with pvList to widget content
-        //
-        //	- drawNewValue()
-        //		* Update widget drawing based on new value (and append to history if needed)
-        //
-        //====================== end high-level behavior description
+        /////////////////////////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////////////////////////
 
-        var windowWidth_, windowHeight_;
+        var PAGES_PATH = "/WebPath/UserWebPath/html/DCSMonitoringPages/";
+        var GRAFANA_URL = "http://localhost:3000/d/";
+        var GRAFANA_FOLDER_URL = "http://localhost:3000/dashboards/f/";
 
-        var mainBlock_ = { name: "", isHidden: false, el: "" }; // = ["mainBlock", false ];
-
-        var refreshRate_ = 15000; //set default to refresh every 15 seconds (ms)
-        var timerVariable_;
-        //var lastAlarmsTimerVariable_;
-        //var alarmsLogTimerVariable_;
-        var UID_ = 0;
-        var timeToPoll_ = false;
-
-        var datalist_;
-
-        var page_ = page_ || {}; 	//define the page object if needed
-
-        page_.createPage = function () {
-
-            this.name = "MyPage";
-            this.widgets = {};
-            this.addPV = function (pv) {
-                console.log("Reached " + pv);
-            }
-        }
-
-        var pvToUse_1 = [
+        //one tile per subsystem: without a url the subsystem has no page yet,
+        //	the urls must be the same as in the menu of DCSMonitoring.html to have the menu entry selected
+        var SUBSYSTEMS = [
+            { name: "Beam info", url: GRAFANA_URL + "deg41o77g2tkowd/mu2e-accel-acnet",
+                image: "/WebPath/UserWebPath/images/beam_preview.jpg" },
+            { name: "Solenoid", image: "/WebPath/UserWebPath/images/solenoid_preview.jpg" },
+            { name: "Hall", url: GRAFANA_URL + "dfg2k0w6k5n280b/mc-2-hall",
+                image: "/WebPath/UserWebPath/images/hall_preview.jpg" },
+            { name: "Trigger", url: GRAFANA_URL + "deg0gb152gv18gd/trigger",
+                image: "/WebPath/UserWebPath/images/trigger_preview.jpg" },
+            { name: "DAQ", url: PAGES_PATH + "daq/DaqRoomHealth.html",
+                image: "/WebPath/UserWebPath/images/daq_preview.jpg" },
+            { name: "STM", url: GRAFANA_URL + "a00484dd-afc1-45e2-92ed-0a2679dbd49/mu2estm",
+                image: "/WebPath/UserWebPath/images/stm_preview.jpg" },
+            { name: "ExtMon", image: "/WebPath/UserWebPath/images/extmon_preview.jpg" },
+            { name: "Tracker", url: GRAFANA_FOLDER_URL + "afljliedwq874a/tracker",
+                image: "/WebPath/UserWebPath/images/tracker_preview.jpg" },
+            { name: "Calorimeter", url: PAGES_PATH + "DetectorView.html?view=calorimeter",
+                image: "/WebPath/UserWebPath/images/calorimeter_preview.jpg" },
+            { name: "CRV", url: GRAFANA_URL + "dbfws2vt05u328c/crv-slow-controls",
+                image: "/WebPath/UserWebPath/images/crv_preview.jpg" },
         ];
 
-        /////////////////////////////////////////////////////////////////////////////////////////
-        /////////////////////////////////////////////////////////////////////////////////////////
-
-        //=====================================================================================
-        //Navigate to a page via parent window
-        function navigateToPage(url) {
-            if (url && url != "") {
-                try {
-                    //Try to access parent window's openPage function
-                    if (window.parent && window.parent.openPage) {
-                        window.parent.openPage(url);
-                    }
-                    else {
-                        //Fallback: navigate directly
-                        window.location.href = url;
-                    }
-                }
-                catch (e) {
-                    Debug.log("Error navigating to page: " + e);
-                }
-            }
-        } //end navigateToPage()
 
         //=====================================================================================
         //init called once body has loaded
         function init() {
             Debug.log("init() was called");
-
-            page_.createPage();
-
-            //get command string if opening a new window
-            var cmdStr = DesktopContent.getParameter(2); //from  location.search
-            if (cmdStr && cmdStr != "") {
-                //do incoming commands!
-                Debug.log("cmdStr=" + cmdStr);
-                //replace %22 with "
-                cmdStr = cmdStr.replace(/%22/g, "\"");
-                //evaluateJS(cmdStr);
-            }
-
-            UID_ = 0;
-
-            window.clearTimeout(timerVariable_);
-
-            //makeMainPage();
-            //generateUID();
-            //pollServer();
+            makeTiles();
         } //end init()
 
-
         //=====================================================================================
-        //Make main page here
-        function makeMainPage() {
+        //makeTiles ~~
+        //	builds one tile for each entry of SUBSYSTEMS
+        function makeTiles() {
+            var tilesEl = document.getElementById("tiles");
 
-        } //end makeMainPage()
+            for (var i = 0; i < SUBSYSTEMS.length; ++i) {
+                var tileEl = tilesEl.appendChild(document.createElement("button"));
+                tileEl.className = "tile";
+                tileEl.disabled = !SUBSYSTEMS[i].url;
+                if (SUBSYSTEMS[i].url)
+                    tileEl.onclick = navigateToPage.bind(null, SUBSYSTEMS[i].url);
 
+                var nameEl = tileEl.appendChild(document.createElement("div"));
+                nameEl.className = "tileName";
+                nameEl.textContent = SUBSYSTEMS[i].name;
 
-        //=====================================================================================
-        //write a new value of a PV
-        function drawNewValue(widget, pvName, pvValue, pvTime, pvStatus, pvSeverity) {
-            console.log("Text newValue() reached", pvName, pvValue);
-
-        } //end drawNewValue()
-
-
-        //=====================================================================================
-        function pollServer() {
-            timeToPoll_ = false;
-            Debug.log("pollServer: polling server!");
-            console.log("pollServer(): ", page_.widgets);
-            //console.log("UID is ", UID_);
-            if (page_.widgets) {
-                DesktopContent.XMLHttpRequest(
-                    "Request?RequestType=poll&uid=" + UID_,
-                    "",
-                    pollServerHandlerFunction /*returnHandler*/,
-                    0 /*reqParam*/,
-                    0 /*progressHandler*/,
-                    0 /*callHandlerOnErr*/,
-                    true /*doNoShowLoadingOverlay*/);
-            }
-        } //end pollServer()
-
-
-        //=====================================================================================
-        function generateUID() {
-            //BEGIN Put all pvs in a JSON and send to server
-            var pvList = "";
-            //console.log("page: ", page_);
-            for (var widget in page_.widgets) {
-                console.log("generateUID: " + page_.widgets[widget] + " " + page_.widgets[widget].pvList);
-
-                for (var pv in page_.widgets[widget].pvList) {
-                    //pvList += pv + ":"  + page_.widgets[widget].pvList.valueOf()[pv] + ",";
-                    pvList += pv + ",";
+                var previewEl = tileEl.appendChild(document.createElement("div"));
+                previewEl.className = "tilePreview";
+                if (SUBSYSTEMS[i].image) {
+                    var imageEl = previewEl.appendChild(document.createElement("img"));
+                    imageEl.src = SUBSYSTEMS[i].image;
+                    imageEl.alt = "";
                 }
+                else
+                    previewEl.textContent = SUBSYSTEMS[i].url ? "open page" : "no page yet";
             }
-
-            timeToPoll_ = true;
-
-            //END Put all pvs in a JSON and send to server
-            DesktopContent.XMLHttpRequest(
-                "Request?RequestType=generateUID",
-                "pvList=" + pvList,
-                generateUIDHandlerFunction);//, undefined, undefined, "sequence");
-        } //end generateUID()
-
+        } //end makeTiles()
 
         //=====================================================================================
-        function pollServerHandlerFunction(req) {
-            Debug.log("pollServerHandlerFunction() was called. Req: " + req.responseText);
-
-            var jsonStr = DesktopContent.getXMLValue(req, "JSON");
-            jsonStr = jsonStr.replace(/\s/g, ''); //hack for removing whitespace
-            if (!jsonStr || jsonStr == "")
-                return;
-
-            Debug.log(jsonStr);
-
-            var serverResponse;
-
-            serverResponse = JSON.parse(jsonStr);
-
-            Debug.log(serverResponse);
-
-            if (serverResponse.message == "NOT_FOUND") {
-                console.log("Have to generate new UID!");
-                generateUID();
-                timeToPoll_ = true;
+        //navigateToPage ~~
+        //	opens url through DCSMonitoring.html, to keep its menu up to date,
+        //	or directly here if this page is not inside DCSMonitoring.html
+        function navigateToPage(url) {
+            var parentOpenPage;
+            try {
+                parentOpenPage = window.parent != window && window.parent.openPage;
             }
-            else {
-                for (var pv in serverResponse)//have to use each pv and then loop through
-                {
-                    console.log("pollServerHandlerFunction: pv" + pv);
-                    for (var widget in page_.widgets) {
-                        console.log("pollServerHandlerFunction: " + page_.widgets[widget]);
-                        for (var dependendentPV in page_.widgets[widget].pvList) {
-                            console.log("poll: " + dependendentPV);
-                            if (pv == dependendentPV && page_.widgets[widget].loaded != "false") {
-                                console.log("Widget*************", widget, pv);
-                                try {
-                                    drawNewValue(
-                                        widget,
-                                        pv,
-                                        serverResponse[pv].Value,
-                                        serverResponse[pv].Timestamp,
-                                        serverResponse[pv].Status,
-                                        serverResponse[pv].Severity);
-                                }
-                                catch (e) {
-                                    Debug.log("Error was caught updating new value to widget 'widget-" +
-                                        widget + "': " + e);
-                                }
-                            }
-                        }
-                    }
-                }
+            catch (e) {
+                Debug.log("No access to the parent window: " + e);
             }
 
-            timerVariable_ = window.setTimeout(pollServer, refreshRate_);
-        } //end pollServerHandlerFunction()
-
-
-        //=====================================================================================
-        function generateUIDHandlerFunction(req) {
-            var uid = JSON.parse(DesktopContent.getXMLValue(req, "JSON"));
-
-            if (uid.message != "-1")
-                UID_ = uid.message;
-            else {
-                UID_ = "";
-                Debug.log("Unable to generate UID!", Debug.HIGH_PRIORITY);
-            }
-
-            if (timeToPoll_) {
-                pollServer();
-            }
-        } //end generateUIDHandlerFunction()
+            if (parentOpenPage)
+                parentOpenPage(url);
+            else
+                window.location.href = url;
+        } //end navigateToPage()
 
     </script>
 </head>
 
 <body onload='//init() called by DesktopContent.js'>
 
-    <div id="mainBlockContainer" height="auto" width="auto">
-        <h2 align="center">Online monitoring Home Page</h2>
-        <div class="subSystemContainer disabled" onclick="">
-            <div class="containerTitle">BEAM INFO</div>
-            <div class="containerPreview">
-                <img src="" alt="BEAM Preview">
-            </div>
-        </div>
+    <div id="summary">Select a subsystem</div>
+    <div id="tiles"></div>
 
-        <div class="subSystemContainer disabled" onclick="">
-            <div class="containerTitle">MAGNETIC FIELD</div>
-            <div class="containerPreview">
-                <img src="" alt="Magnetic Field Preview">
-            </div>
-        </div>
-
-        <div class="subSystemContainer disabled" onclick="">
-            <div class="containerTitle">TRIGGER</div>
-            <div class="containerPreview">
-                <img src="" alt="Trigger Preview">
-            </div>
-        </div>
-
-        <div class="subSystemContainer"
-            onclick="navigateToPage('/WebPath/UserWebPath/html/DCSMonitoringPages/daq/DaqRoomHealth.html')">
-            <div class="containerTitle">DAQ</div>
-            <div class="containerPreview">
-                <img src="" alt="DAQ Preview">
-            </div>
-        </div>
-
-        <div class="subSystemContainer disabled" onclick="">
-            <div class="containerTitle">STM</div>
-            <div class="containerPreview">
-                <img src="" alt="STM Preview">
-            </div>
-        </div>
-
-        <div class="subSystemContainer disabled" onclick="">
-            <div class="containerTitle">EXTMON</div>
-            <div class="containerPreview">
-                <img src="" alt="EXTMON Preview">
-            </div>
-        </div>
-
-        <div class="subSystemContainer disabled" onclick="">
-            <div class="containerTitle">TRACKER</div>
-            <div class="containerPreview">
-                <img src="" alt="Tracker Preview">
-            </div>
-        </div>
-
-        <div class="subSystemContainer"
-            onclick="navigateToPage('/WebPath/UserWebPath/html/DCSMonitoringPages/calorimeter/CaloMain.html?readOnlyMode=1&standAloneMode=0')">
-            <div class="containerTitle">CALORIMETER</div>
-            <div class="containerPreview">
-                <img src="http://w3.lnf.infn.it/wp-content/uploads/2020/03/Mu2e_web.jpg" alt="Calorimeter Preview">
-            </div>
-        </div>
-
-        <div class="subSystemContainer disabled" onclick="">
-            <div class="containerTitle">CRV</div>
-            <div class="containerPreview">
-                <img src="" alt="CRV Preview">
-            </div>
-        </div>
-
-    </div> <!-- end main block container -->
 </body>
-
 </html>
